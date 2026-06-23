@@ -1,0 +1,9 @@
+# gitleaks allowlist of confirmed FAKE test fixtures.
+#
+# Format: one "file:rule:startline" fingerprint per line (comments on their OWN
+# line — gitleaks v8 treats a trailing comment as part of the fingerprint).
+#
+# This PUBLIC bundle ships no real credentials: only env-var NAMES (in
+# manifest.yaml) and obvious placeholders. If a fresh `gitleaks dir .` run flags
+# a test fixture, add its fingerprint here on its own line. Any new finding still
+# fails the gitleaks CI job.

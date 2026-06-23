@@ -1,0 +1,198 @@
+# Example client bundle for the fleet app.
+#
+# fleet ships NO client-specific content. At boot it loads a *bundle* from the
+# FLEET_CLIENT_CONFIG_DIR environment variable; this repo is a complete,
+# generic example bundle you can fork as the starting point for your own.
+#
+# It is deliberately NOT about any one industry. "Northwind" is a fictional
+# company used here only to show how white-label branding looks — rename it to
+# yours. The example MCP server, personas, protocols, and cards are written so
+# any team running agents (support, ops, research, engineering, analytics) can
+# see the shape and swap in their own.
+#
+# The full schema for every field below — ServerDef, Branding, Models,
+# EmptyState, Sandbox, Runtime, AgentPolicy — and the enable-gate / ${VAR}
+# interpolation semantics live in:
+#   /root/fleet/internal/clientconfig/clientconfig.go
+# A bundle is just this manifest plus the system_prompts/, personas/,
+# protocols/, mcp/, and sandbox/ directories alongside it.
+
+# ── Branding (white-label) ──────────────────────────────────────────────────
+# These strings are surfaced in the web UI and on the login screen. This is the
+# whole white-label surface — change five lines and the app is yours.
+branding:
+  app_name: "Northwind"
+  login_title: "Welcome aboard."
+  login_tagline: "Sign in to your workspace and pick up where you left off."
+  share_title: "Northwind — your team's AI workspace"
+  share_description: "Persistent, multi-turn conversations with real tool use across your files, data, and the tools your team already uses."
+
+# ── Model defaults ──────────────────────────────────────────────────────────
+# Advisory default tiers. fleet routes models OpenRouter-style, so you pick the
+# right model per task instead of hard-wiring one vendor. `core` is the everyday
+# workhorse; `max` is the heavier model for hard turns.
+models:
+  default_core: "google/gemini-3.5-flash"
+  default_max: "anthropic/claude-sonnet-4.5"
+
+# ── Execution sandbox ───────────────────────────────────────────────────────
+# Every agent tool call (bash, run_python, file I/O, MCP) runs inside this
+# rootless container over a per-conversation workspace. The image is a per-bundle
+# artifact: edit sandbox/Containerfile to add the tools your agents need. Default
+# deploy builds it on the box; set FLEET_SANDBOX_IMAGE to pull a prebuilt image.
+sandbox:
+  containerfile: sandbox/Containerfile
+  tag: localhost/fleet-sandbox-example:latest
+  image: "${FLEET_SANDBOX_IMAGE:-}"
+
+# ── Runtime flavors ─────────────────────────────────────────────────────────
+# fleet is an ACP client: it can run its own native agent loop OR drive other
+# coding agents (Claude Code, Goose, …) as sandboxed, selectable "flavors" you
+# pick per chat or per scheduled task. Native flavors are fully governed by
+# fleet; external (type: acp) flavors self-execute inside a locked,
+# model-only-egress sandbox (the "containment" tier). MCP credentials are NEVER
+# shipped into any agent container regardless of flavor. The external images
+# below are placeholders — a real deployment pins its own digest-pinned images
+# and supplies the provider's model key. See /root/fleet/docs/USING-AGENTS.md.
+runtimes:
+  native-inprocess:
+    type: native-inprocess
+    display_name: "Native (in-process)"
+    description: "Fast in-process loop. Dev/test/trusted-local; the parity oracle."
+    default: true
+  native-acp:
+    type: native-acp
+    image: "${FLEET_NATIVE_AGENT_IMAGE:-localhost/fleet-native-agent:latest}"
+    network: restricted
+    display_name: "Native (sandboxed)"
+    description: "Native loop wrapped as a sandboxed ACP agent. Fully governed."
+  claude-code:
+    type: acp
+    image: "${FLEET_CLAUDE_CODE_IMAGE:-localhost/fleet-claude-code:latest}"
+    network: model_only
+    delegated_policy: true
+    model_env: ["ANTHROPIC_API_KEY"]
+    display_name: "Claude Code (external)"
+    description: "Anthropic Claude Code via the ACP bridge. Self-executing; containment tier."
+    beta: true
+  goose:
+    type: acp
+    image: "${FLEET_GOOSE_IMAGE:-localhost/fleet-goose:latest}"
+    network: model_only
+    delegated_policy: true
+    model_env: ["OPENROUTER_API_KEY"]
+    args: ["acp"]
+    display_name: "Goose (external)"
+    description: "Block's Goose via native ACP. Self-executing; containment tier."
+    beta: true
+
+# ── MCP server catalog ──────────────────────────────────────────────────────
+# This is how you connect agents to your data and tools. Each entry declares a
+# subprocess (or HTTP endpoint), an ENABLE GATE over env vars, and the env the
+# subprocess gets — where ${VAR} resolves from the process environment at launch.
+# Credential VALUES never live here, only the variable NAMES: fleet brokers the
+# real secret host-side and injects it only when it runs a delegated MCP call, so
+# it never enters the sandbox or the model's context.
+#
+# This bundle ships two example servers so you can see both shapes:
+mcp_servers:
+  # 1) An ALWAYS-ON server with no credentials — runs the moment fleet boots.
+  #    A tiny "team knowledge base" over a bundled JSON handbook: the canonical
+  #    "point an agent at your own docs" pattern. Swap mcp/data/handbook.json
+  #    for your content (or rewrite the server to read your wiki / vector store).
+  - name: knowledge_base
+    type: stdio
+    command: python3
+    args: ["mcp/knowledge_base.py"]
+    always: true
+    display_name: "Team Knowledge Base"
+    description: "Search and read a bundled company handbook. No credentials required."
+
+  # 2) A CREDENTIAL-GATED server — the host-side broker pattern. It registers but
+  #    stays DARK until EXAMPLE_API_KEY is set in the environment, so a fresh
+  #    checkout runs clean with no secrets. A generic REST connector: point
+  #    EXAMPLE_API_BASE_URL at any JSON API and the key is brokered host-side.
+  - name: example_api
+    type: stdio
+    command: python3
+    args: ["mcp/example_api.py"]
+    enabled_env: ["EXAMPLE_API_KEY"]
+    account_vars: ["EXAMPLE_API_KEY"]
+    display_name: "Example REST Connector"
+    description: "A generic REST connector, gated on EXAMPLE_API_KEY. Demonstrates host-side credential brokering."
+    env:
+      EXAMPLE_API_KEY: "${EXAMPLE_API_KEY}"
+      EXAMPLE_API_BASE_URL: "${EXAMPLE_API_BASE_URL:-https://api.example.com/v1}"
+      EXAMPLE_API_TIMEOUT_SECONDS: "${EXAMPLE_API_TIMEOUT_SECONDS}"
+    optional_env:
+      - EXAMPLE_API_TIMEOUT_SECONDS
+
+# ── Chat empty-state catalog ────────────────────────────────────────────────
+# The quick-start cards on the chat home screen. The Go side passes each card to
+# the browser verbatim as opaque JSON (shape = the web's ProtocolPill).
+empty_state:
+  cards:
+    - id: "summarize"
+      section: "Get started"
+      type: "form"
+      icon: "file-text"
+      title: "Summarize a document"
+      desc: "Paste or attach a document and get a concise, structured summary."
+      cta: "Summarize"
+      fields:
+        - key: "focus"
+          label: "What should the summary focus on?"
+          type: "text"
+          placeholder: "key decisions, action items, risks…"
+      promptTemplate: "Summarize the attached/pasted document."
+    - id: "analyze-data"
+      section: "Get started"
+      type: "conversation"
+      optionalForm: true
+      icon: "bar-chart"
+      title: "Analyze a dataset"
+      desc: "Attach a CSV and ask questions — I'll run Python in the sandbox to dig in."
+      cta: "Start analysis"
+      starterPrompt: "I'd like to analyze a dataset. Ask me what you need to know, then load it with Python and walk me through what stands out."
+    - id: "ask-handbook"
+      section: "Get started"
+      type: "conversation"
+      icon: "book-open"
+      title: "Ask the handbook"
+      desc: "Questions about policies, processes, or how we do things — answered from the knowledge base."
+      cta: "Ask a question"
+      starterPrompt: "Search the team knowledge base and answer my question, citing the article you used. My question: "
+    - id: "draft"
+      section: "Get started"
+      type: "form"
+      icon: "edit"
+      title: "Draft something"
+      desc: "An email, a plan, a snippet of code — describe it and I'll draft it."
+      cta: "Draft it"
+      fields:
+        - key: "what"
+          label: "What should I draft?"
+          type: "text"
+          required: true
+          placeholder: "a kickoff plan for onboarding a new teammate…"
+      promptTemplate: "Draft the following for me, and ask me anything you need first."
+  protocol_pills: []
+
+# ── Agent tool-behavior policy ──────────────────────────────────────────────
+# How fleet governs the tools above. Read-only tools can be dispatched in
+# parallel within one turn; "critical" tools (by bare name suffix) require an
+# audit gate before they run. The generic send_email / send_template_email
+# suffixes are always enforced by fleet — list only your own additions here.
+agent_policy:
+  parallel_safe_tools:
+    - mcp_knowledge_base_kb_search
+    - mcp_knowledge_base_kb_get_article
+    - mcp_knowledge_base_kb_list_categories
+    - mcp_example_api_api_get_record
+    - mcp_example_api_api_list_records
+  # `api_submit_record` is a WRITE — gated behind an audit confirmation. This is
+  # how you make an agent stop and get sign-off before a consequential action.
+  critical_tools:
+    - submit_record
+  critical_tool_substitutes: {}
+  allow_ungoverned_scheduled_agents: false

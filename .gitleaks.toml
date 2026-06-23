@@ -1,0 +1,19 @@
+# gitleaks configuration for the example-config repo.
+#
+# This is a PUBLIC bundle: no real credentials ever belong in it. The repo ships
+# only env-var NAMES (in manifest.yaml) and obvious placeholders. gitleaks
+# inherits its full built-in ruleset; the path allowlist below just skips
+# gitignored build/dependency artifacts so a local `gitleaks dir .` run is clean
+# (a fresh CI checkout has none of these).
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Global path allowlist for gitignored build/dependency artifacts"
+paths = [
+  '''\.venv/''',
+  '''__pycache__/''',
+  '''\.pytest_cache/''',
+  '''\.ruff_cache/''',
+]
