@@ -6,16 +6,16 @@
 #
 # It is deliberately NOT about any one industry. "Northwind" is a fictional
 # company used here only to show how white-label branding looks — rename it to
-# yours. The example MCP server, personas, protocols, and cards are written so
-# any team running agents (support, ops, research, engineering, analytics) can
-# see the shape and swap in their own.
+# yours. The example MCP server, personas, protocols, skills, and cards are
+# written so any team running agents (support, ops, research, engineering,
+# analytics) can see the shape and swap in their own.
 #
 # The full schema for every field below — ServerDef, Branding, Models,
 # EmptyState, Sandbox, Runtime, AgentPolicy — and the enable-gate / ${VAR}
 # interpolation semantics live in:
 #   /root/fleet/internal/clientconfig/clientconfig.go
 # A bundle is just this manifest plus the system_prompts/, personas/,
-# protocols/, mcp/, and sandbox/ directories alongside it.
+# protocols/, skills/, mcp/, and sandbox/ directories alongside it.
 
 # ── Branding (white-label) ──────────────────────────────────────────────────
 # These strings are surfaced in the web UI and on the login screen. This is the
