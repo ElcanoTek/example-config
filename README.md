@@ -79,7 +79,8 @@ export PERSONA_DEFAULT=assistant        # selects "Aria" (personas/assistant.yam
 
 At boot fleet parses `manifest.yaml`, resolves each MCP server's **enable gate**
 and `${VAR}` env interpolation against the process environment, and reads the
-`system_prompts/`, `personas/`, and `protocols/` directories. `PERSONA_DEFAULT`
+`system_prompts/`, `personas/`, `protocols/`, and `skills/` directories.
+`PERSONA_DEFAULT`
 matches a persona's `name:` field and picks the default; users can still switch
 persona per-conversation in the UI. The loader and the full manifest schema live
 in
@@ -104,6 +105,9 @@ example-config/
     ask-the-handbook.md  #   grounded Q&A over the knowledge base, with citations
     research-report.md   #   web + attached-source research into a cited brief
     weekly-status.md     #   a SCHEDULED playbook: gather inputs → compute → write an artifact
+  skills/                # <name>/SKILL.md folders — Agent Skills: instructions + bundled code/refs
+    example-skill/       #   annotated template: skill format + progressive disclosure (+ demo script)
+    csv-profiler/        #   profile a CSV with the stdlib only (types, nulls, basic stats)
   mcp/                   # the bundle's Python MCP servers (+ tests, requirements.txt)
     knowledge_base.py    #   always-on; searches mcp/data/handbook.json
     example_api.py       #   credential-gated generic REST connector
@@ -185,6 +189,33 @@ agent — chat or scheduled — runs it the same way. Start with `example.md`
 (a **scheduled** playbook that gathers inputs, computes honest metrics in Python,
 and writes a status artifact to the workspace).
 
+### Skills — packaged capabilities (instructions + code)
+
+Skills under `skills/` follow the open
+[**Agent Skills**](https://github.com/anthropics/skills) standard that fleet
+implements. A skill is the packaged sibling of a protocol: where a protocol is a
+single Markdown playbook, a skill is a *folder* —
+`skills/<name>/SKILL.md` plus optional reference `.md` files and a `scripts/`
+directory — so it can bundle deterministic code and lookup material alongside its
+instructions. Each `SKILL.md` opens with YAML frontmatter (`name`, which must
+equal the folder name, and a specific `description`); the loader
+(`clientconfig.ReadSkills`) reads them at boot.
+
+Skills use **progressive disclosure** to keep context lean: (1) the
+`description` is always in the system-prompt roster — it is the trigger; (2) the
+`SKILL.md` body and any sibling reference files load only when the skill is used;
+(3) scripts are *run*, not read into context, so deterministic logic executes
+instead of being re-derived. The optional `allowed-tools` frontmatter field is
+advisory metadata only — fleet does **not** enforce it as an authorization gate;
+govern consequential tools through `agent_policy` instead.
+
+This bundle ships two:
+
+| Skill | What it shows |
+| --- | --- |
+| `example-skill` | The annotated **template** — frontmatter rules, the three disclosure levels, a `REFERENCE.md`, and a tiny stdlib demo script. Copy it to start your own. |
+| `csv-profiler` | A genuinely useful skill with a real **standard-library-only** script that profiles a CSV (row/col counts, per-column type inference, null counts, basic stats) — so it runs even without pandas. |
+
 ### Sandbox
 
 `sandbox/Containerfile` defines the rootless container that `bash` and
@@ -211,8 +242,10 @@ card relies on this stack. The image is a per-bundle artifact: add the packages
 4. **Govern new tools.** List read-only tools in `agent_policy.parallel_safe_tools`
    and writes / consequential actions in `critical_tools` so they require an
    audit gate before running.
-5. **Write personas and protocols.** Copy an existing `personas/*.yaml` and
-   `protocols/*.md` and adapt the voice, remit, and steps to your team.
+5. **Write personas, protocols, and skills.** Copy an existing `personas/*.yaml`
+   and `protocols/*.md` and adapt the voice, remit, and steps to your team. For a
+   capability that ships code or reference files, copy the `skills/example-skill/`
+   folder (the annotated template) and replace its body and `scripts/`.
 6. **Tune the sandbox.** Add packages your agents need to `sandbox/Containerfile`
    and refresh the pinned base digest on your own cadence.
 

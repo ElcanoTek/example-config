@@ -11,8 +11,9 @@ you. You don't need any of that to *try the pieces*. A local coding agent can:
 
 - run the bundle's [MCP servers](../mcp/) and call their tools,
 - adopt a [persona](../personas/) / [system prompt](../system_prompts/) so the
-  agent behaves like `fleet`'s "Aria" would, and
-- execute a [protocol](../protocols/) as a one-shot task.
+  agent behaves like `fleet`'s "Aria" would,
+- execute a [protocol](../protocols/) as a one-shot task, and
+- load a [skill](../skills/) and run its bundled script.
 
 **Claude Code is the first-class, primary environment for this** — it's the one
 this guide spells out in full. The other agents (Goose, opencode, Codex, Crush)
@@ -47,9 +48,10 @@ Throughout, replace `<bundle>` with the absolute path to your checkout (e.g.
 4. [Part 3 — Protocols & workflows](#part-3--protocols--workflows)
    - [What a protocol is here](#what-a-protocol-is-here)
    - [Worked end-to-end: ask-the-handbook (Claude Code)](#worked-end-to-end-ask-the-handbook-claude-code)
-5. [Optional — enabling `example_api` with a key](#optional--enabling-example_api-with-a-key)
-6. [Other agents](#other-agents)
-7. [This pattern is copyable to other client bundles](#this-pattern-is-copyable-to-other-client-bundles)
+5. [Part 4 — Skills](#part-4--skills)
+6. [Optional — enabling `example_api` with a key](#optional--enabling-example_api-with-a-key)
+7. [Other agents](#other-agents)
+8. [This pattern is copyable to other client bundles](#this-pattern-is-copyable-to-other-client-bundles)
 
 ---
 
@@ -419,6 +421,56 @@ names.
 
 ---
 
+## Part 4 — Skills
+
+A **skill** in [`skills/`](../skills/) is a packaged capability that follows the
+open [Agent Skills](https://github.com/anthropics/skills) standard `fleet`
+implements: a folder `skills/<name>/SKILL.md` plus optional reference `.md` files
+and a `scripts/` directory. Where a protocol is a single Markdown playbook, a
+skill can bundle deterministic code and lookup material beside its instructions.
+This bundle ships [`example-skill`](../skills/example-skill/SKILL.md) (the
+annotated template) and [`csv-profiler`](../skills/csv-profiler/SKILL.md) (a
+real, standard-library-only CSV profiler).
+
+In `fleet`, the loader reads every `SKILL.md` and puts each skill's
+`description` in the system-prompt roster (Level 1 of **progressive
+disclosure**); the body and reference files load only when the skill is used
+(Level 2); and the agent *runs* bundled scripts rather than reading them into
+context (Level 3). To reproduce that locally, hand the agent the skill's folder
+and let it follow `SKILL.md`. The bundled scripts are plain Python 3 standard
+library, so they run directly — no MCP server or credentials involved:
+
+```bash
+cd <bundle>
+
+# Level-3 demo from the template skill
+python3 skills/example-skill/scripts/greet.py "Aria"
+
+# The real one: profile a CSV with the standard library only
+python3 skills/csv-profiler/scripts/profile_csv.py path/to/data.csv
+python3 skills/csv-profiler/scripts/profile_csv.py path/to/data.csv --json
+```
+
+To exercise a skill *through* an agent (the way `fleet` invokes it), point the
+agent at the folder and give it a matching task — the `description` is what it
+matches against:
+
+```
+Read <bundle>/skills/csv-profiler/SKILL.md and follow it to profile the CSV I attached.
+```
+
+A faithful run reads `SKILL.md`, runs `scripts/profile_csv.py` on the file
+(rather than re-implementing the profiling in prose), and reports the shape,
+types, null counts, and basic stats — flagging anything that looks off instead of
+asserting the data is clean.
+
+> The `allowed-tools` frontmatter field is **advisory metadata only** — `fleet`
+> does not enforce it as an authorization gate. Govern consequential tools
+> through the manifest's `agent_policy` (`critical_tools`), not via a skill's
+> frontmatter.
+
+---
+
 ## Optional — enabling `example_api` with a key
 
 `example_api` is the credential-gated server. It registers but stays **dark**
@@ -509,6 +561,9 @@ your own bundle:
 3. **Protocols** — same three-ingredient recipe (persona + the MCP servers the
    protocol names + the protocol's own Usage line). Read the new `protocols/` to
    pick a worked example.
+4. **Skills** — unchanged. Point the agent at that bundle's `skills/<name>/SKILL.md`
+   and run any bundled `scripts/`; the format and progressive-disclosure model are
+   identical, only the names differ.
 
 So a new bundle's testing guide is mostly this file with the names swapped — copy
 it, retarget the file paths, and replace the
