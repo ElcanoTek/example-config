@@ -62,8 +62,9 @@ where you write them down **once**. A bundle gives you:
   empty-state cards, and the agent tool policy (`manifest.yaml`).
 - **Versioned, reviewable agent behavior** — personas and protocols are plain
   files in git; a prompt change is a pull request.
-- **A reproducible execution environment** — the sandbox image is a bundle
-  artifact (`sandbox/Containerfile`), pinned by digest.
+- **A controlled execution environment** — the sandbox image is a bundle
+  artifact (`sandbox/Containerfile`); its base tracks `fedora-minimal:latest` for
+  current patches, and you can pin a digest if you want reproducible builds.
 - **Portability** — point a dev box and a production box at the same checkout and
   they behave identically.
 
@@ -222,9 +223,10 @@ This bundle ships two:
 `run_python` execute inside — a Fedora + Python data-analysis stack
 (pandas/numpy/scipy/matplotlib/scikit-learn, plus document and image tooling). It
 runs `--read-only`, `--cap-drop=ALL`, `--network=none`, as a non-root user, and
-the base is pinned by **digest** for reproducible builds. The "Analyze a dataset"
-card relies on this stack. The image is a per-bundle artifact: add the packages
-*your* agents need and pin your own digest.
+its base tracks **`fedora-minimal:latest`** so rebuilds pick up current patches
+(pin a digest if you want reproducible builds). The "Analyze a dataset" card
+relies on this stack. The image is a per-bundle artifact: add the packages *your*
+agents need.
 
 ## Make it yours
 
@@ -246,8 +248,9 @@ card relies on this stack. The image is a per-bundle artifact: add the packages
    and `protocols/*.md` and adapt the voice, remit, and steps to your team. For a
    capability that ships code or reference files, copy the `skills/example-skill/`
    folder (the annotated template) and replace its body and `scripts/`.
-6. **Tune the sandbox.** Add packages your agents need to `sandbox/Containerfile`
-   and refresh the pinned base digest on your own cadence.
+6. **Tune the sandbox.** Add packages your agents need to `sandbox/Containerfile`.
+   The base tracks `fedora-minimal:latest`; pin a digest there if you want
+   reproducible builds.
 
 ## Where to go next
 
