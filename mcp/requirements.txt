@@ -1,0 +1,12 @@
+# Python dependencies for the example MCP servers (and their test suite).
+
+# MCP runtime (pulls in the `mcp` SDK that exposes mcp.server.fastmcp.FastMCP)
+fastmcp
+# HTTP client used by the gated example_api connector
+httpx
+
+# Development / test dependencies
+pytest
+pytest-asyncio
+respx
+ruff

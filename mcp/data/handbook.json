@@ -1,0 +1,102 @@
+{
+  "articles": [
+    {
+      "id": "company-overview",
+      "title": "Welcome to Northwind",
+      "category": "People",
+      "tags": ["onboarding", "culture", "mission", "welcome"],
+      "body": "Northwind is a fictional company used in this example bundle to show how a team's own knowledge can be made searchable by an AI agent. Everything in this handbook is made up and safe to share. Replace it with your own content to make the demo real for your team.\n\nOur stated mission here is simple: help every teammate find the answer they need without waiting on someone else. The knowledge base exists so that policies, processes, and how-we-do-things are written down once and stay easy to find.\n\nIf you are reading this through an agent, try asking a follow-up question. The agent searches these articles and answers from them, citing the article it used."
+    },
+    {
+      "id": "requesting-time-off",
+      "title": "Requesting Time Off",
+      "category": "People",
+      "tags": ["pto", "vacation", "time off", "leave", "holidays"],
+      "body": "Time off is requested through your manager and the HR portal. Submit requests at least two weeks in advance when you can, so the team can plan coverage. Shorter notice is fine for illness or emergencies.\n\nThere is no fixed cap on paid time off, but we ask that you take time deliberately and coordinate with your team before long absences. Public holidays follow your local office calendar.\n\nFor extended leave such as parental or medical leave, contact the People team directly so we can walk you through the options and any paperwork."
+    },
+    {
+      "id": "expense-reimbursement",
+      "title": "Expenses and Reimbursement",
+      "category": "People",
+      "tags": ["expenses", "reimbursement", "travel", "finance", "receipts"],
+      "body": "Work-related expenses are reimbursed once a month. Submit receipts in the expense tool within thirty days of the purchase, with a short note explaining the business purpose.\n\nCommon reimbursable items include travel, conference tickets, and approved software subscriptions. When in doubt about whether something qualifies, ask before you buy rather than after.\n\nReimbursements are paid out with the next payroll cycle. If a receipt is missing or unclear it may be sent back for clarification, which delays payment."
+    },
+    {
+      "id": "code-review-guidelines",
+      "title": "Code Review Guidelines",
+      "category": "Engineering",
+      "tags": ["code review", "pull request", "engineering", "quality", "git"],
+      "body": "Every change to the main branch goes through review. Open a pull request, keep it small and focused, and write a description that explains what changed and why. A reviewer should be able to understand the intent without reading every line.\n\nReviewers look for correctness, clarity, and tests. Approve when the change is safe to ship, request changes when something must be fixed first, and leave comments for everything in between. Be kind and specific.\n\nAuthors are responsible for getting their pull request merged. Ping a reviewer if it has been sitting for a day, and rebase or resolve conflicts promptly so the change does not go stale."
+    },
+    {
+      "id": "deployment-process",
+      "title": "How We Deploy",
+      "category": "Engineering",
+      "tags": ["deploy", "release", "ci", "rollback", "engineering"],
+      "body": "Deploys are automated through the continuous integration pipeline. Merging to the main branch builds the artifact, runs the full test suite, and promotes it to staging. Production deploys are triggered from there once staging looks healthy.\n\nWe deploy in small increments and prefer many small releases over a few large ones. Every release is tagged so it can be traced and, if needed, rolled back to the previous known-good version.\n\nIf a deploy goes wrong, roll back first and investigate second. Restoring service is always the priority; the post-mortem comes after things are stable."
+    },
+    {
+      "id": "incident-response",
+      "title": "Incident Response",
+      "category": "Engineering",
+      "tags": ["incident", "outage", "on-call", "postmortem", "reliability"],
+      "body": "When something is broken in production, declare an incident early. It is better to open one and stand it down than to debug a major outage alone in silence. The on-call engineer owns coordination until a clear incident lead takes over.\n\nDuring an incident, keep a running timeline of what you observed and what you tried. Communicate status to the team on a regular cadence even when there is nothing new to report.\n\nAfter the incident is resolved we write a blameless post-mortem. The goal is to understand what happened and what we can change so it is less likely or less painful next time, not to assign fault."
+    },
+    {
+      "id": "password-and-mfa",
+      "title": "Passwords and Multi-Factor Authentication",
+      "category": "Security",
+      "tags": ["security", "password", "mfa", "2fa", "accounts", "login"],
+      "body": "Use the company password manager for every work account and let it generate long, unique passwords. Reusing a password across services is the single most common way accounts get compromised.\n\nMulti-factor authentication is required on all accounts that support it. Prefer an authenticator app or a hardware key over text-message codes, which are easier to intercept.\n\nIf you think a credential has been exposed, rotate it immediately and tell the Security team. There is never any penalty for reporting a possible mistake quickly."
+    },
+    {
+      "id": "reporting-a-security-issue",
+      "title": "Reporting a Security Issue",
+      "category": "Security",
+      "tags": ["security", "phishing", "report", "vulnerability", "incident"],
+      "body": "If you receive a suspicious email, see something that looks like a vulnerability, or worry that data may have leaked, report it to the Security team right away. Speed matters far more than certainty.\n\nDo not click links or open attachments you are unsure about, and do not try to investigate a suspected phishing message by replying to it. Forward it to Security and then delete it.\n\nSecurity will confirm whether there is a real problem and handle the response. You will not be blamed for a false alarm; we would much rather look into ten harmless reports than miss one real attack."
+    },
+    {
+      "id": "data-handling-basics",
+      "title": "Handling Customer Data",
+      "category": "Security",
+      "tags": ["data", "privacy", "pii", "security", "compliance"],
+      "body": "Treat customer data as something you are borrowing, not something you own. Only access what you need for the task in front of you, and never copy it to a personal device or an unapproved tool.\n\nPersonal information should stay inside approved systems. When you need to share an example externally, scrub or fake the identifying details first.\n\nIf you are unsure whether a particular use of data is allowed, ask before acting. The Security and Legal teams would rather answer a question early than untangle a problem later."
+    },
+    {
+      "id": "supporting-customers",
+      "title": "Supporting Customers",
+      "category": "Support",
+      "tags": ["support", "customers", "tickets", "tone", "service"],
+      "body": "Every support conversation starts with understanding the problem before proposing a fix. Restate what the customer is experiencing in your own words so they know they were heard, then work toward a solution.\n\nBe honest about what you know and do not know. If you need to escalate or check with another team, say so and give a realistic time frame rather than going quiet.\n\nClose the loop. When a ticket is resolved, summarize what was done so the customer and the next teammate who reads it both understand the outcome."
+    },
+    {
+      "id": "escalation-paths",
+      "title": "When and How to Escalate",
+      "category": "Support",
+      "tags": ["support", "escalation", "priority", "process"],
+      "body": "Escalate when an issue is beyond what you can resolve, when it affects many customers at once, or when a customer is blocked and time-sensitive. Escalating is a normal part of the job, not a failure.\n\nA good escalation includes what the customer reported, what you have already tried, and what specifically you need from the next team. The more context you hand off, the faster it gets solved.\n\nUrgent, widespread problems should also trigger an engineering incident. When in doubt, escalate and let the receiving team decide how to prioritize."
+    },
+    {
+      "id": "analytics-data-sources",
+      "title": "Where Our Data Lives",
+      "category": "Data",
+      "tags": ["data", "analytics", "warehouse", "reporting", "metrics"],
+      "body": "Most reporting draws from the central data warehouse, which is refreshed nightly. Treat the warehouse as the source of truth for historical analysis; live operational dashboards may differ slightly because they are closer to real time.\n\nEach core table is owned by a team that documents its columns and known caveats. Read the documentation before building on a table so you understand what each field actually means.\n\nIf a number looks surprising, check the refresh time and the table's documented caveats before raising an alarm. Most surprises turn out to be a definition or a timing difference rather than a real change."
+    },
+    {
+      "id": "defining-a-metric",
+      "title": "How We Define a Metric",
+      "category": "Data",
+      "tags": ["data", "metrics", "definitions", "analytics", "kpi"],
+      "body": "A metric is only useful if everyone calculating it agrees on what it means. Before a number becomes an official metric we write down its exact definition: the source table, the filters applied, and the time window.\n\nWhen two reports disagree, the difference is almost always in the definition rather than the data. Start by comparing how each one is calculated.\n\nChanges to a metric definition are announced before they take effect, because a silent redefinition can make a chart look like the business changed when only the math did."
+    },
+    {
+      "id": "communication-norms",
+      "title": "How We Communicate",
+      "category": "People",
+      "tags": ["communication", "meetings", "async", "remote", "culture"],
+      "body": "We default to writing things down. A short written summary outlasts a conversation and lets people in other time zones catch up without a meeting. Reserve live meetings for discussions that genuinely need back-and-forth.\n\nBe clear about whether a message needs a response and by when. Not everything is urgent, and treating everything as urgent makes the truly urgent things harder to spot.\n\nAssume good intent when reading messages and add context when writing them. Tone is hard to read in text, so a little extra warmth goes a long way."
+    }
+  ]
+}
