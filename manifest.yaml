@@ -26,6 +26,36 @@ branding:
   login_tagline: "Sign in to your workspace and pick up where you left off."
   share_title: "Northwind — your team's AI workspace"
   share_description: "Persistent, multi-turn conversations with real tool use across your files, data, and the tools your team already uses."
+  # UI theme — a deliberately generic, unbranded monochrome palette (neutral
+  # zinc + a restrained near-mono accent). Swap in your own brand colors; the
+  # themable tokens are documented in fleet's config/default/manifest.yaml.
+  # Served as a render-blocking stylesheet so the shell (incl. login) paints
+  # with no flash.
+  colors:
+    dark:
+      primary: "#A1A1AA"
+      primary_hover: "#D4D4D8"
+      secondary: "#71717A"
+      accent: "#E4E4E7"
+      background: "#0B0B0D"
+      surface_1: "#161618"
+      surface_2: "#1F1F23"
+      text_primary: "#FAFAFA"
+      text_secondary: "#C8C8CC"
+      text_muted: "#8A8A90"
+      border: "rgba(255, 255, 255, 0.14)"
+    light:
+      primary: "#3F3F46"
+      primary_hover: "#18181B"
+      secondary: "#52525B"
+      accent: "#27272A"
+      background: "#FAFAFA"
+      surface_1: "#FFFFFF"
+      surface_2: "#F1F1F3"
+      text_primary: "#18181B"
+      text_secondary: "#3F3F46"
+      text_muted: "#71717A"
+      border: "rgba(0, 0, 0, 0.12)"
 
 # ── Model defaults ──────────────────────────────────────────────────────────
 # Advisory default tiers. fleet routes models OpenRouter-style, so you pick the
