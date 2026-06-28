@@ -11,7 +11,7 @@
 # analytics) can see the shape and swap in their own.
 #
 # The full schema for every field below — ServerDef, Branding, Models,
-# EmptyState, Sandbox, Runtime, AgentPolicy — and the enable-gate / ${VAR}
+# EmptyState, Sandbox, AgentPolicy — and the enable-gate / ${VAR}
 # interpolation semantics live in:
 #   /root/fleet/internal/clientconfig/clientconfig.go
 # A bundle is just this manifest plus the system_prompts/, personas/,
@@ -74,47 +74,6 @@ sandbox:
   containerfile: sandbox/Containerfile
   tag: localhost/fleet-sandbox-example:latest
   image: "${FLEET_SANDBOX_IMAGE:-}"
-
-# ── Runtime flavors ─────────────────────────────────────────────────────────
-# fleet is an ACP client: it can run its own native agent loop OR drive other
-# coding agents (Claude Code, Goose, …) as sandboxed, selectable "flavors" you
-# pick per chat or per scheduled task. Native flavors are fully governed by
-# fleet; external (type: acp) flavors self-execute inside a locked,
-# model-only-egress sandbox (the "containment" tier). MCP credentials are NEVER
-# shipped into any agent container regardless of flavor. The external images
-# below are placeholders — a real deployment pins its own digest-pinned images
-# and supplies the provider's model key. See /root/fleet/docs/USING-AGENTS.md.
-runtimes:
-  native-inprocess:
-    type: native-inprocess
-    display_name: "Native (in-process)"
-    description: "Fast in-process loop. Dev/test/trusted-local; the parity oracle."
-    default: true
-  native-acp:
-    type: native-acp
-    image: "${FLEET_NATIVE_AGENT_IMAGE:-localhost/fleet-native-agent:latest}"
-    network: restricted
-    display_name: "Native (sandboxed)"
-    description: "Native loop wrapped as a sandboxed ACP agent. Fully governed."
-  claude-code:
-    type: acp
-    image: "${FLEET_CLAUDE_CODE_IMAGE:-localhost/fleet-claude-code:latest}"
-    network: model_only
-    delegated_policy: true
-    model_env: ["ANTHROPIC_API_KEY"]
-    display_name: "Claude Code (external)"
-    description: "Anthropic Claude Code via the ACP bridge. Self-executing; containment tier."
-    beta: true
-  goose:
-    type: acp
-    image: "${FLEET_GOOSE_IMAGE:-localhost/fleet-goose:latest}"
-    network: model_only
-    delegated_policy: true
-    model_env: ["OPENROUTER_API_KEY"]
-    args: ["acp"]
-    display_name: "Goose (external)"
-    description: "Block's Goose via native ACP. Self-executing; containment tier."
-    beta: true
 
 # ── MCP server catalog ──────────────────────────────────────────────────────
 # This is how you connect agents to your data and tools. Each entry declares a
@@ -225,4 +184,3 @@ agent_policy:
   critical_tools:
     - submit_record
   critical_tool_substitutes: {}
-  allow_ungoverned_scheduled_agents: false
