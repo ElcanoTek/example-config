@@ -25,15 +25,11 @@ fleet runs AI agents — both interactive real-time **chat** and recurring
 unified agent runtime, an execution sandbox, a scheduler, and a worker pool. The
 design principles that matter when you author a bundle:
 
-- **Any agent, any model.** fleet is an **ACP** client: alongside its own native
-  agent loop it can drive other coding agents (Claude Code, Goose, …) as
-  selectable, sandboxed "flavors" you pick per chat or per task. Models route
+- **Any model.** fleet runs its own native agent loop, and models route
   OpenRouter-style, so you choose the right model per task instead of hard-wiring
   one vendor.
 - **Sandboxed by default.** Every tool call — bash, Python, file I/O, MCP —
   executes inside a rootless-Podman container over a per-conversation workspace.
-  Even the native agent runs in the sandbox; there is no trusted fast path that
-  skips it.
 - **Cost-controlled.** Each turn runs against configurable per-task cost and
   token **ceilings**. A model that won't stop calling tools is bounded by the
   ceiling, the per-turn timeout, and an iteration cap — not by your invoice.
@@ -45,9 +41,9 @@ design principles that matter when you author a bundle:
 - **Reusable personas and protocols.** Standardize your team's agent recipes —
   the prompts, the connected tools, the guardrails — once, in a bundle, and point
   any deployment at it.
-- **Standards-based, MIT-licensed, observable.** ACP + MCP are both shipped and
-  tested. The runtime emits structured events for every turn — tool calls,
-  results, usage, cost — so you can see exactly what an agent did and what it cost.
+- **Standards-based, MIT-licensed, observable.** MCP is shipped and tested. The
+  runtime emits structured events for every turn — tool calls, results, usage,
+  cost — so you can see exactly what an agent did and what it cost.
 
 See the [fleet README](https://github.com/ElcanoTek/fleet) for the full
 architecture and deploy story.
@@ -93,7 +89,7 @@ A bundle is this annotated tree. Everything below ships in **this** repo:
 
 ```
 example-config/
-  manifest.yaml          # branding, model tiers, runtimes, MCP catalog, cards, agent policy
+  manifest.yaml          # branding, model tiers, MCP catalog, cards, agent policy
   system_prompts/
     default.md           # base prompt for SCHEDULED agents
     chat.md              # base prompt for INTERACTIVE chat
@@ -118,9 +114,9 @@ example-config/
   install.sh             # register these MCP servers into your own coding agent (see INSTALL.md)
 ```
 
-The manifest's full schema — `Branding`, `Models`, `Sandbox`, the `runtimes`
-flavors, the MCP `ServerDef` with its enable gate and `${VAR}` semantics, the
-empty-state `cards`, and the `agent_policy` — is documented field-by-field in
+The manifest's full schema — `Branding`, `Models`, `Sandbox`, the MCP
+`ServerDef` with its enable gate and `${VAR}` semantics, the empty-state
+`cards`, and the `agent_policy` — is documented field-by-field in
 [`clientconfig.go`](https://github.com/ElcanoTek/fleet/blob/main/internal/clientconfig/clientconfig.go).
 Read `manifest.yaml` itself too — it is heavily commented.
 
