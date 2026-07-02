@@ -13,7 +13,8 @@
 # The full schema for every field below — ServerDef, Branding, Models,
 # EmptyState, Sandbox, AgentPolicy — and the enable-gate / ${VAR}
 # interpolation semantics live in:
-#   /root/fleet/internal/clientconfig/clientconfig.go
+#   internal/clientconfig/clientconfig.go in the fleet repo
+#   (https://github.com/ElcanoTek/fleet)
 # A bundle is just this manifest plus the system_prompts/, personas/,
 # protocols/, skills/, mcp/, and sandbox/ directories alongside it.
 
