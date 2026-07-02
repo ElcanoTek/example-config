@@ -1,0 +1,30 @@
+# Publish this bundle's sandbox image to GHCR (fleet issue #195).
+#
+# Calls fleet's reusable publish workflow: builds sandbox/Containerfile with
+# the canonical scripts/build-sandbox-image.sh, pushes an immutable {git-sha}
+# tag plus :latest, and opens a PR here pinning manifest sandbox.image to the
+# sha tag — after which fleet deployments `podman pull` the prebuilt image
+# instead of rebuilding ~1.3 GB on-box. Merge that PR to adopt each publish.
+#
+# The package is PRIVATE by default; make it public in the repo's package
+# settings if you want anonymous pulls, or leave it private and let the box
+# authenticate to GHCR.
+name: Publish sandbox image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sandbox/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write        # manifest-update PR branch
+  packages: write        # GHCR push
+  pull-requests: write   # open the manifest-update PR
+
+jobs:
+  publish:
+    uses: ElcanoTek/fleet/.github/workflows/publish-sandbox-image.yml@main
+    with:
+      image_name: ghcr.io/elcanotek/fleet-sandbox-example
