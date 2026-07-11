@@ -17,13 +17,22 @@ Configuration (read from the environment, never logged):
   EXAMPLE_API_KEY              required; sent as "Authorization: Bearer <key>".
   EXAMPLE_API_BASE_URL         optional; defaults to https://api.example.com/v1.
   EXAMPLE_API_TIMEOUT_SECONDS  optional; request timeout, defaults to 30.
+  EXAMPLE_API_OUTPUT_DIR       optional; when set to a writable directory, each
+                               successful api_submit_record writes a JSON
+                               receipt there. The manifest maps this to the
+                               reserved ${FLEET_WORKSPACE} runtime token, which
+                               fleet substitutes at subprocess launch and DROPS
+                               when a spawn has no workspace to offer — so the
+                               server must (and does) treat it as optional.
 
 Runs over stdio inside the fleet sandbox.
 """
 
+import json
 import logging
 import os
 import sys
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -62,6 +71,50 @@ def _timeout() -> float:
             "EXAMPLE_API_TIMEOUT_SECONDS is not a number (%r); using default.", raw
         )
         return DEFAULT_TIMEOUT
+
+
+def _output_dir() -> str | None:
+    """Return the submit-receipt directory, or None when receipts are off.
+
+    EXAMPLE_API_OUTPUT_DIR is mapped in manifest.yaml to the reserved
+    ``${FLEET_WORKSPACE}`` token: fleet substitutes a writable workspace
+    directory at subprocess launch and drops the variable entirely on spawn
+    paths with no workspace to offer. Degrade gracefully on every "not really
+    configured" shape: unset, empty, or a value still carrying an unexpanded
+    ``${...}`` token (e.g. a local coding agent that registered the manifest
+    value verbatim) all mean "receipts disabled".
+    """
+    raw = os.environ.get("EXAMPLE_API_OUTPUT_DIR", "").strip()
+    if not raw or "${" in raw:
+        return None
+    return raw
+
+
+def _write_receipt(resource: str, payload: dict, result: dict[str, Any]) -> None:
+    """Write a JSON receipt of a successful submit into the output directory.
+
+    Best-effort evidence of the write the agent performed (what was posted,
+    where, and what came back) — a miniature of the run-ledger pattern real
+    connectors use ``${FLEET_WORKSPACE}`` for. Never raises: a receipt failure
+    must not turn a successful API call into a tool error.
+    """
+    out_dir = _output_dir()
+    if out_dir is None:
+        return
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        path = os.path.join(out_dir, f"submit-{stamp}.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(
+                {"resource": resource, "payload": payload, "result": result},
+                fh,
+                indent=2,
+                default=str,
+            )
+        logger.info("Wrote submit receipt %s", path)
+    except OSError as exc:
+        logger.warning("Could not write submit receipt to %s: %s", out_dir, exc)
 
 
 def _headers() -> dict[str, str]:
@@ -166,6 +219,11 @@ def api_submit_record(resource: str, payload: dict) -> dict[str, Any]:
     a WRITE: the fleet manifest marks tools whose name ends in "submit_record"
     as critical, so this call is held for an audit confirmation before it runs.
 
+    When EXAMPLE_API_OUTPUT_DIR is set (fleet maps it to the reserved
+    ${FLEET_WORKSPACE} runtime token), a JSON receipt of the submit is written
+    there as local evidence of the action; without it the tool behaves
+    identically, minus the receipt.
+
     Args:
         resource: The collection path segment to create under, e.g. "tickets".
         payload: A JSON-serializable object describing the new record.
@@ -173,7 +231,10 @@ def api_submit_record(resource: str, payload: dict) -> dict[str, Any]:
     Returns {"success": True, "data": <parsed JSON>} on success, or
     {"success": False, "error": ...} on any failure (including a missing key).
     """
-    return _request("POST", resource, json=payload)
+    result = _request("POST", resource, json=payload)
+    if result.get("success"):
+        _write_receipt(resource, payload, result)
+    return result
 
 
 if __name__ == "__main__":

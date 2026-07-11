@@ -11,12 +11,15 @@
 # analytics) can see the shape and swap in their own.
 #
 # The full schema for every field below — ServerDef, Branding, Models,
-# EmptyState, Sandbox, AgentPolicy — and the enable-gate / ${VAR}
+# EmptyState, Sandbox, AgentPolicy, TaskTemplate, PersonaDef, HTTPToolDef,
+# WebhookTriggerDef, ProviderDef, PricingConfig — and the enable-gate / ${VAR}
 # interpolation semantics live in:
 #   internal/clientconfig/clientconfig.go in the fleet repo
 #   (https://github.com/ElcanoTek/fleet)
 # A bundle is just this manifest plus the system_prompts/, personas/,
-# protocols/, skills/, mcp/, and sandbox/ directories alongside it.
+# protocols/, skills/, mcp/, evals/, and sandbox/ directories alongside it.
+# fleet's manifest decoder is STRICT: an unknown or duplicate key fails the
+# load at boot, so a typo'd key can never silently drop a policy.
 
 # ── Branding (white-label) ──────────────────────────────────────────────────
 # These strings are surfaced in the web UI and on the login screen. This is the
@@ -75,6 +78,18 @@ sandbox:
   containerfile: sandbox/Containerfile
   tag: localhost/fleet-sandbox-example:latest
   image: "${FLEET_SANDBOX_IMAGE:-}"
+  # OCI runtime for `podman run --runtime=<value>`. Empty = podman's default
+  # (rootless container, shared host kernel — no extra host setup). Set "kata"
+  # or "libkrun" for hypervisor-level isolation (a dedicated microVM per tool
+  # call; requires /dev/kvm). An explicit FLEET_SANDBOX_RUNTIME env var wins.
+  runtime: "${FLEET_SANDBOX_RUNTIME:-}"
+  # Default egress allowlist for NETWORKED sandboxes — consulted only when
+  # FLEET_DEFAULT_NETWORK_MODE=allowlisted. Entries are exact domains or
+  # "*."-prefixed wildcards; empty in allowlisted mode means deny all egress.
+  # network_allowlist:
+  #   - "pypi.org"
+  #   - "files.pythonhosted.org"
+  #   - "*.github.com"
 
 # ── MCP server catalog ──────────────────────────────────────────────────────
 # This is how you connect agents to your data and tools. Each entry declares a
@@ -83,12 +98,15 @@ sandbox:
 # Credential VALUES never live here, only the variable NAMES: fleet brokers the
 # real secret host-side and injects it only when it runs a delegated MCP call, so
 # it never enters the sandbox or the model's context.
-# Scheduled connector entries may also map fleet-owned runtime tokens into the
-# server's ordinary env contract: `${FLEET_WORKSPACE}/inputs` is where logical
-# task input names are materialized, and `${FLEET_TASK_ID}` is the current task
-# UUID. These are resolved at spawn time, never from the operator environment.
+# Connector entries may also map fleet-owned runtime tokens into the server's
+# ordinary env contract: `${FLEET_WORKSPACE}` is a fleet-provided writable
+# directory (`${FLEET_WORKSPACE}/inputs` is where a scheduled task's logical
+# input names are materialized), and `${FLEET_TASK_ID}` is the current task
+# UUID. These are resolved at spawn time, never from the operator environment —
+# `example_api` below carries a live `${FLEET_WORKSPACE}` mapping.
 #
-# This bundle ships two example servers so you can see both shapes:
+# This bundle ships two working servers (plus one commented example) so you can
+# see the shapes:
 mcp_servers:
   # 1) An ALWAYS-ON server with no credentials — runs the moment fleet boots.
   #    A tiny "team knowledge base" over a bundled JSON handbook: the canonical
@@ -118,8 +136,164 @@ mcp_servers:
       EXAMPLE_API_KEY: "${EXAMPLE_API_KEY}"
       EXAMPLE_API_BASE_URL: "${EXAMPLE_API_BASE_URL:-https://api.example.com/v1}"
       EXAMPLE_API_TIMEOUT_SECONDS: "${EXAMPLE_API_TIMEOUT_SECONDS}"
+      # ${FLEET_WORKSPACE} is a RESERVED runtime token, not an operator env var:
+      # fleet substitutes a writable workspace directory at subprocess launch
+      # (a fresh per-run dir for a scheduled task's dedicated client, a stable
+      # per-deployment dir for shared spawns) and DROPS the key entirely on a
+      # spawn path with no workspace to offer. The server therefore treats the
+      # var as optional and degrades gracefully when it is unset — the same
+      # posture as the optional_env keys below. Here the connector uses it to
+      # write a local JSON receipt of each submitted record. See fleet
+      # docs/MCP-BUNDLE-ENV.md for the full contract.
+      EXAMPLE_API_OUTPUT_DIR: "${FLEET_WORKSPACE}/outputs"
+      # Uncomment together with identity_env below (see its warning first):
+      # EXAMPLE_API_OWNER_ID: "${EXAMPLE_API_OWNER_ID}"
     optional_env:
+      # Keys listed here are dropped from the spawned env when their resolved
+      # value is EMPTY, so the server sees a clean "unset" instead of "" —
+      # the degrade-gracefully pattern for optional configuration.
       - EXAMPLE_API_TIMEOUT_SECONDS
+    # identity_env names the env keys that route IDENTITY or MONEY (owner /
+    # member / marketplace-account ids, seat-routing tokens). fleet refuses a
+    # named-account variant spawn when a listed key still holds its default-seat
+    # value — suffixing the API key but not the owner id would otherwise
+    # transact in the default client's seat under the named account's label.
+    # DO NOT UNCOMMENT YET: no fleet release ships identity_env — a released
+    # fleet's strict manifest decoder would fail boot on the unknown key. Keep
+    # it commented until you run a fleet release whose docs list identity_env,
+    # then uncomment it together with the EXAMPLE_API_OWNER_ID env line above
+    # (each entry must name a key of this server's env map).
+    # identity_env: ["EXAMPLE_API_OWNER_ID"]
+
+  # 3) An OPTIONAL, opt-in server — chat's per-conversation Optional-server
+  #    semantics. `optional: true` keeps a connector out of conversations until
+  #    a user switches it on (Settings → Connections); `enabled_by_default`
+  #    picks the initial toggle state and `beta: true` badges it in the
+  #    catalog. This one is also an HTTP MCP server rather than a stdio
+  #    subprocess: fleet connects to `url`, and header ${VAR} secrets resolve
+  #    HOST-SIDE — they never enter the sandbox or the model context. The
+  #    `tools:` allowlist scopes the server to the named tools (absent = every
+  #    advertised tool). Copy-paste ready: uncomment the block, point `url` at
+  #    a real MCP endpoint, and set TICKETING_API_TOKEN.
+  # - name: ticketing
+  #   type: http
+  #   url: "https://mcp.ticketing.example.com/mcp"
+  #   headers:
+  #     Authorization: "Bearer ${TICKETING_API_TOKEN}"
+  #   enabled_env: ["TICKETING_API_TOKEN"]
+  #   # Any-of gate alternative — enable when EITHER a token OR user+pass is set:
+  #   # enabled_groups: [["TICKETING_API_TOKEN"], ["TICKETING_USER", "TICKETING_PASS"]]
+  #   optional: true
+  #   enabled_by_default: false
+  #   beta: true
+  #   display_name: "Ticketing (beta)"
+  #   description: "Search and update tickets in the team tracker. Opt in per conversation."
+  #   tools: ["ticket_search", "ticket_get", "ticket_update"]
+  #   # Optional TLS hardening for an https server (CA pin / mTLS / SPKI pin):
+  #   # tls:
+  #   #   ca_cert: "/etc/fleet/ticketing-ca.pem"
+  #   #   pinned_sha256: "<hex sha-256 of the server's SPKI>"
+
+# ── Inline HTTP tools ───────────────────────────────────────────────────────
+# A lightweight alternative to a full MCP server for simple "call this REST
+# endpoint" tools: declare name + method + URL + an input JSON Schema inline —
+# no subprocess required. The agent sees each entry as a native tool
+# (mcp__http_<name>). Same credential boundary as mcp_servers: header ${VAR}
+# secrets resolve HOST-SIDE at call time and never enter the sandbox or the
+# model context. {param} tokens in `url` (percent-encoded) and `body_template`
+# (JSON-escaped for JSON bodies) are filled from the model's input;
+# `response_jq` (syntax-checked at load) filters a JSON response before the
+# model sees it; `critical: true` opts the tool into the same audit/approval
+# gate as agent_policy.critical_tools — use it for anything that writes.
+#
+# This bundle ships none. Copy-paste-ready examples (uncomment and adapt):
+#
+# http_tools:
+#   - name: "get_ticket"
+#     description: "Look up a ticket by ID and return its title, status, and description"
+#     method: GET
+#     url: "https://tracker.example.com/api/tickets/{ticket_id}"
+#     headers:
+#       Authorization: "Bearer ${TRACKER_API_TOKEN}"
+#       Accept: "application/json"
+#     input_schema:
+#       type: object
+#       properties:
+#         ticket_id:
+#           type: string
+#           description: "Ticket ID (e.g. TCK-123)"
+#       required: ["ticket_id"]
+#     response_jq: "{title, status, description}"
+#
+#   - name: "post_announcement"
+#     description: "Post an announcement message to the team feed"
+#     method: POST
+#     url: "https://chat.example.com/api/messages"
+#     headers:
+#       Authorization: "Bearer ${TEAM_CHAT_TOKEN}"
+#       Content-Type: "application/json"
+#     body_template: '{"channel": "{channel}", "text": "{message}"}'
+#     critical: true   # a WRITE — held for audit/approval before it runs
+#     input_schema:
+#       type: object
+#       properties:
+#         channel: { type: string }
+#         message: { type: string }
+#       required: ["channel", "message"]
+
+# ── Inbound webhook triggers ────────────────────────────────────────────────
+# An external system (GitHub, Slack, CI) that presents a valid signature to
+# POST /webhooks/{slug} starts a fresh conversation under notify_user, seeded
+# from prompt_template rendered against the request payload. The turn runs
+# through the SAME governed core as any chat turn. The trigger DEFINITION is
+# bundle-author-trusted; the inbound PAYLOAD is untrusted input — it reaches
+# the template only as data ({{.payload…}}). Set exactly ONE of
+# hmac_secret_env (GitHub-style HMAC-SHA256) or token_secret_env (Slack v0
+# signing secret); the env var names the secret, whose VALUE is read host-side
+# and never enters the sandbox, the model, or the logs.
+#
+# This bundle ships none, so the endpoint rejects every call by default.
+# Copy-paste-ready example (uncomment, set notify_user to a real user):
+#
+# webhook_triggers:
+#   - slug: "github-pr-review"
+#     description: "Review each pull request opened against our repos"
+#     hmac_secret_env: GITHUB_WEBHOOK_SECRET   # value comes from .env, auto-allowlisted
+#     hmac_header: "X-Hub-Signature-256"       # optional; this is the default
+#     persona: "assistant"
+#     model: "anthropic/claude-sonnet-4.5"     # optional; falls back to the server default
+#     prompt_template: |
+#       A pull request was opened: {{.payload.pull_request.title}}
+#       URL: {{.payload.pull_request.html_url}}
+#       Review it for correctness, security issues, and code quality.
+#     notify_user: "you@example.com"           # required: whose conversation this creates
+
+# ── LLM provider routing ────────────────────────────────────────────────────
+# By default fleet routes EVERY model through OpenRouter (set OPENROUTER_API_KEY
+# and you're done — no providers: block needed). Declare providers: to route
+# specific model slugs natively to Anthropic / OpenAI / a self-hosted Ollama —
+# for failover, data residency, or to avoid the OpenRouter markup. api_key_env
+# names an env var; its VALUE is read host-side at boot and never enters the
+# manifest, the sandbox, or the model context. Precedence per slug: explicit
+# "<provider>/<model>" > first provider listing the slug > first catch-all.
+# fallback_providers is an ordered cross-provider retry chain — provider names
+# declared above — tried when the primary provider errors.
+#
+# This bundle ships none (single-OpenRouter default). Copy-paste-ready example:
+#
+# providers:
+#   - name: openrouter          # catch-all: any slug not matched below
+#     type: openrouter
+#     api_key_env: OPENROUTER_API_KEY
+#   - name: anthropic-direct    # route these slugs straight to Anthropic
+#     type: anthropic
+#     api_key_env: ANTHROPIC_API_KEY
+#     models: ["claude-opus-4-8", "claude-sonnet-4-6"]
+#   - name: local               # self-hosted Ollama (no key needed)
+#     type: ollama
+#     base_url: "http://localhost:11434/v1"
+#     models: ["llama3.2", "qwen2.5-coder"]
+# fallback_providers: ["anthropic-direct", "openrouter"]
 
 # ── Chat empty-state catalog ────────────────────────────────────────────────
 # The quick-start cards on the chat home screen. The Go side passes each card to
@@ -172,6 +346,61 @@ empty_state:
       promptTemplate: "Draft the following for me, and ask me anything you need first."
   protocol_pills: []
 
+# ── Task templates ──────────────────────────────────────────────────────────
+# Pre-filled scheduled-task configurations the Operations Center's task-create
+# form offers as a starting point ("new task from a template"). Each `task`
+# block mirrors the EDITABLE subset of the POST /tasks request: prompt, model,
+# fallback_model, max_iterations, max_retries, recurrence, timezone, priority,
+# allow_network, allow_delegation, instruction_self_improve, persona,
+# description, tags, and the SLA hint (expected_duration_minutes +
+# sla_warn_multiplier / sla_fail_multiplier). Omitted keys leave the form field
+# at its own default. Security-/routing-sensitive knobs (mcp_selection,
+# credential_allowlist, loop_config, worktree_config, trigger_type,
+# allow_task_creation) are deliberately NOT templatable, so a shipped template
+# can never silently widen a task's authority. A prompt may contain {variable}
+# placeholders — the UI prompts for values before applying the template.
+task_templates:
+  - name: "Weekly Status Report"
+    description: "Run the weekly-status protocol: gather inputs, compute honest metrics, write the report artifact."
+    icon: "📊"
+    task:
+      prompt: |
+        Run the "weekly-status" protocol: gather this week's inputs from the
+        workspace, compute the metrics honestly in Python, and write the status
+        report artifact. Flag anything that needs a human decision.
+      model: "anthropic/claude-sonnet-4.5"
+      persona: "analyst"
+      recurrence: "0 16 * * 5"
+      timezone: "America/New_York"
+      max_iterations: 25
+      tags: ["weekly", "report"]
+      # SLA hint: surface a warning at 1.5x and a breach at 2x of this estimate
+      # (the default multipliers; set sla_warn_multiplier / sla_fail_multiplier
+      # to change them).
+      expected_duration_minutes: 20
+  - name: "Handbook Freshness Check"
+    description: "Scan the team knowledge base for stale or contradictory articles."
+    icon: "📖"
+    task:
+      prompt: >-
+        Search the team knowledge base for articles that look stale, reference
+        tools or processes we no longer use, or contradict each other. List
+        each finding with the article title and what needs updating.
+      model: "google/gemini-3.5-flash"
+      fallback_model: "anthropic/claude-sonnet-4.5"
+      max_iterations: 15
+      tags: ["handbook", "hygiene"]
+  - name: "Research Brief"
+    description: "Web research on a topic, distilled into a cited brief (see protocols/research-report.md)."
+    icon: "🔎"
+    task:
+      prompt: 'Run the "research-report" protocol on this topic and write the cited brief to the workspace: {topic}'
+      model: "anthropic/claude-sonnet-4.5"
+      persona: "analyst"
+      allow_network: true
+      max_iterations: 30
+      tags: ["research"]
+
 # ── Agent tool-behavior policy ──────────────────────────────────────────────
 # How fleet governs the tools above. Read-only tools can be dispatched in
 # parallel within one turn; "critical" tools (by bare name suffix) require an
@@ -189,6 +418,50 @@ agent_policy:
   critical_tools:
     - submit_record
   critical_tool_substitutes: {}
+  # Optional per-tool approval windows in SECONDS, keyed by the same bare
+  # tool-name suffix as critical_tools. Highest-priority layer of the
+  # approval-timeout chain (per-tool > per-conversation >
+  # FLEET_APPROVAL_TIMEOUT_SECONDS > 300s default); an approval that times out
+  # is DENIED. Omit the map to use the global default for every tool.
+  critical_tool_timeouts:
+    submit_record: 600   # give the reviewer time to read the record it will post
+
+# ── Per-persona tool permissions (least-privilege by role) ──────────────────
+# An optional NARROWING gate over which tools each persona may even see. It can
+# only SUBTRACT from what the server/credential gates already permit, never
+# add. `allow` non-empty = default-deny (only listed tools are offered); only
+# `deny` = default-allow with exceptions; deny wins when both match. Patterns
+# match the runtime tool name: `bash` (exact native tool), `mcp:server/tool`,
+# `mcp:server/*`, `prefix/*`, `*`. The `name` matches the basename of a
+# personas/<name>.yaml file; personas with no entry here (Aria the assistant,
+# Atlas the analyst) keep the default and see every permitted tool.
+personas:
+  # Sage answers from the handbook — the onboarding guide never needs the REST
+  # connector, so it never sees it. Deny-only keeps everything else (bash,
+  # run_python, the kb_* tools) available.
+  - name: onboarding-guide
+    tool_permissions:
+      deny:
+        - "mcp:example_api/*"
+
+# ── Custom model pricing ────────────────────────────────────────────────────
+# Cost accounting normally trusts the USD figure OpenRouter returns per step.
+# On negotiated/enterprise rates (or a private endpoint) declare per-model
+# rates — per MILLION tokens — and fleet prices matching steps locally from the
+# token counts instead, which also makes the cost ceiling reflect real spend.
+# fallback: what to do for models NOT listed — "openrouter" (default: trust the
+# returned cost) or "zero" (suppress cost; fully-private deployments).
+#
+# This bundle ships none. Copy-paste-ready example:
+#
+# pricing:
+#   fallback: openrouter
+#   overrides:
+#     - model: "anthropic/claude-sonnet-4.5"
+#       input_cost_per_million_tokens: 3.00
+#       output_cost_per_million_tokens: 15.00
+#       cache_read_cost_per_million_tokens: 0.30
+#       cache_write_cost_per_million_tokens: 3.75
 
 # ── Hosted MCP server directory (fleet #538 + built-in directory) ───────────
 # Fleet embeds a large curated directory of hosted MCP servers in the binary
@@ -210,3 +483,16 @@ agent_policy:
 # badges them and requires an operator-named consent step before connecting.
 remote_mcp_catalog_community: true
 remote_mcp_catalog: []
+
+# ── Agent Skills knobs ──────────────────────────────────────────────────────
+# fleet embeds a built-in Agent Skills pack that every bundle inherits
+# alongside its own skills/ dir (a bundle skill with the same name wins — see
+# fleet docs/SKILLS.md). Opt out or trim:
+#   skills_builtin: false     # bundle skills only
+#   skills_hidden: [name, …]  # drop individual built-in skills
+
+# ── Evals ───────────────────────────────────────────────────────────────────
+# Not a manifest key — golden regression sets live in this bundle's evals/
+# directory (one YAML file per set; see evals/example.yaml). Replay + gate them
+# with `fleet eval run <set>`, and grow them from real runs with
+# `fleet eval capture`. See fleet docs/EVALS.md.

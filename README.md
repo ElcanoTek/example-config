@@ -89,7 +89,10 @@ A bundle is this annotated tree. Everything below ships in **this** repo:
 
 ```
 example-config/
-  manifest.yaml          # branding, model tiers, MCP catalog, cards, agent policy
+  manifest.yaml          # branding, model tiers, MCP catalog, cards, agent policy,
+                         #   task templates, per-persona tool permissions — plus
+                         #   copy-paste-ready commented examples of http_tools,
+                         #   webhook_triggers, providers, and pricing
   system_prompts/
     default.md           # base prompt for SCHEDULED agents
     chat.md              # base prompt for INTERACTIVE chat
@@ -111,12 +114,16 @@ example-config/
     data/handbook.json   #   the demo company handbook (swap for your content)
   sandbox/
     Containerfile        # the execution-sandbox image for agent tool calls
+  evals/                 # golden regression sets replayed by `fleet eval run`
+    example.yaml         #   template set: the case format + every scorer kind
   install.sh             # register these MCP servers into your own coding agent (see INSTALL.md)
 ```
 
 The manifest's full schema — `Branding`, `Models`, `Sandbox`, the MCP
 `ServerDef` with its enable gate and `${VAR}` semantics, the empty-state
-`cards`, and the `agent_policy` — is documented field-by-field in
+`cards`, the `agent_policy`, `task_templates`, the per-persona
+`tool_permissions`, and the `http_tools` / `webhook_triggers` / `providers` /
+`pricing` sections — is documented field-by-field in
 [`clientconfig.go`](https://github.com/ElcanoTek/fleet/blob/main/internal/clientconfig/clientconfig.go).
 Read `manifest.yaml` itself too — it is heavily commented.
 
@@ -150,11 +157,20 @@ everything else.
   (`account_vars: [EXAMPLE_API_KEY]`), fleet holds the secret host-side, and it
   injects the value only when it runs a delegated MCP call — never into the
   sandbox or the model. Point `EXAMPLE_API_BASE_URL` at any JSON API to make it
-  real.
+  real. Its entry also carries a **live `${FLEET_WORKSPACE}` mapping**
+  (`EXAMPLE_API_OUTPUT_DIR: "${FLEET_WORKSPACE}/outputs"`): fleet substitutes a
+  writable workspace directory at subprocess launch — and drops the key on
+  spawns with no workspace — so the server writes a JSON receipt of each
+  submitted record when it can, and degrades gracefully when it can't.
+
+The manifest also carries a commented, copy-paste-ready third entry showing an
+**HTTP (remote) MCP server** with `optional: true` — the opt-in-per-conversation
+pattern, with `enabled_by_default`, `beta`, and a `tools:` allowlist.
 
 Its write tool, `api_submit_record`, is listed under the manifest's
 `critical_tools` — so fleet makes the agent stop and get an **audit confirmation**
-before that consequential action runs. The read tools (`api_get_record`,
+before that consequential action runs (with a per-tool approval window from
+`critical_tool_timeouts`). The read tools (`api_get_record`,
 `api_list_records`, and the `kb_*` tools) are listed under `parallel_safe_tools`,
 so fleet may dispatch them concurrently within a single turn.
 
@@ -170,12 +186,29 @@ in the UI.
 | `analyst.yaml` | **Atlas** | Data & research analyst — computes on real data, shows the work. |
 | `onboarding-guide.yaml` | **Sage** | Internal-knowledge guide — answers "how do we do X here?", always cited from the handbook. |
 
+The manifest's `personas:` block adds **per-persona tool permissions** — a
+least-privilege gate that can only *narrow* what a persona sees, never widen
+it. This bundle uses the deny-form on Sage (`deny: ["mcp:example_api/*"]`): the
+onboarding guide never needs the REST connector, so it never sees it. Aria and
+Atlas have no entry and keep every permitted tool.
+
 ### Quick-start cards (empty state)
 
 The chat home screen shows the cards declared under `empty_state.cards`. This
 bundle ships four that span team types: **Summarize a document**, **Analyze a
 dataset** (runs Python in the sandbox on an attached CSV), **Ask the handbook**
 (grounded in `knowledge_base`), and **Draft something**.
+
+### Task templates — pre-filled scheduled tasks
+
+`task_templates:` seeds the Operations Center's "new task from a template"
+picker. This bundle ships three that exercise its own content: **Weekly Status
+Report** (runs `protocols/weekly-status.md` on a Friday cron, as Atlas, with an
+SLA hint), **Handbook Freshness Check** (audits the knowledge base, with a
+fallback model), and **Research Brief** (a `{topic}` placeholder the UI prompts
+for, with network enabled). Templates pre-fill only form-editable fields — the
+security-sensitive knobs (credentials, MCP selection, triggers) are deliberately
+not templatable, so a template can never widen a task's authority.
 
 ### Protocols — reusable playbooks
 
@@ -224,6 +257,26 @@ its base tracks **`fedora-minimal:latest`** so rebuilds pick up current patches
 relies on this stack. The image is a per-bundle artifact: add the packages *your*
 agents need.
 
+### Evals — regression-gate your bundle
+
+`evals/` holds **golden regression sets**: known-good prompts replayed through
+fleet's governed run loop at a pinned model and scored against expectations
+(`contains` / `regex` / `equals` / an `llm_judge` rubric). This is how you gate
+a model swap, a persona edit, or any manifest change on *"did my known-good
+tasks get worse?"* before it reaches production:
+
+```sh
+fleet eval run example --bundle-path "$PWD"   # exit 0 = pass, 1 = fail — CI-ready
+```
+
+The shipped [`evals/example.yaml`](evals/example.yaml) is a template set showing
+the case format and every scorer kind. Grow real sets from real runs with
+`fleet eval capture --task <uuid>` (or `--conversation <id>`), which appends the
+captured case to `evals/<set>.yaml`. Each `fleet eval run` replays against live
+models (real spend, no cache); wire it into your bundle repo's CI to make the
+gate automatic. See fleet's
+[docs/EVALS.md](https://github.com/ElcanoTek/fleet/blob/main/docs/EVALS.md).
+
 ## Make it yours
 
 1. **Rebrand.** Edit the five `branding:` lines in `manifest.yaml`. Rename the
@@ -250,6 +303,10 @@ agents need.
 6. **Tune the sandbox.** Add packages your agents need to `sandbox/Containerfile`.
    The base tracks `fedora-minimal:latest`; pin a digest there if you want
    reproducible builds.
+7. **Capture goldens and gate regressions.** Once a scheduled task or a
+   conversation does something well, `fleet eval capture` it into an
+   `evals/<set>.yaml` and run `fleet eval run <set>` in CI — so the next model
+   swap or prompt edit has to prove it didn't make your known-good work worse.
 
 ## Where to go next
 
