@@ -44,6 +44,12 @@ Configuration (read from the environment, never logged):
 - `EXAMPLE_API_KEY` — required; sent as `Authorization: Bearer <key>`.
 - `EXAMPLE_API_BASE_URL` — optional; defaults to `https://api.example.com/v1`.
 - `EXAMPLE_API_TIMEOUT_SECONDS` — optional; request timeout, defaults to 30.
+- `EXAMPLE_API_OUTPUT_DIR` — optional; a writable directory where each
+  successful `api_submit_record` drops a JSON receipt. The manifest maps it to
+  the reserved `${FLEET_WORKSPACE}` runtime token — fleet substitutes a
+  workspace directory at subprocess launch and **drops the key** on spawns
+  with no workspace to offer, so the server treats it as optional (unset,
+  empty, or an unexpanded `${...}` value all disable receipts).
 
 Tools:
 
@@ -52,7 +58,8 @@ Tools:
 - `api_submit_record(resource, payload)` -> `POST {base_url}/{resource}`. This
   is a **write**: the manifest marks any tool whose name ends in
   `submit_record` as `critical`, so fleet holds it for an audit confirmation
-  before it runs.
+  before it runs. On success it also writes a local JSON receipt when
+  `EXAMPLE_API_OUTPUT_DIR` is configured (see above).
 
 Each tool returns `{"success": True, "data": <parsed JSON>}` or a structured
 `{"success": False, "error": ...}` — it never raises.
