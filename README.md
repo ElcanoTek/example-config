@@ -237,6 +237,9 @@ agents need.
    credential-gated connector), and name its credential *variables* (never
    values) — fleet brokers the secret host-side. See
    [`mcp/README.md`](mcp/README.md) for the server-authoring guide and tests.
+   For scheduled inputs, map your connector's input-directory variable to
+   `${FLEET_WORKSPACE}/inputs`; map an attribution variable to
+   `${FLEET_TASK_ID}` when the remote system records the originating task.
 4. **Govern new tools.** List read-only tools in `agent_policy.parallel_safe_tools`
    and writes / consequential actions in `critical_tools` so they require an
    audit gate before running.

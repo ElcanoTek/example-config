@@ -83,6 +83,10 @@ sandbox:
 # Credential VALUES never live here, only the variable NAMES: fleet brokers the
 # real secret host-side and injects it only when it runs a delegated MCP call, so
 # it never enters the sandbox or the model's context.
+# Scheduled connector entries may also map fleet-owned runtime tokens into the
+# server's ordinary env contract: `${FLEET_WORKSPACE}/inputs` is where logical
+# task input names are materialized, and `${FLEET_TASK_ID}` is the current task
+# UUID. These are resolved at spawn time, never from the operator environment.
 #
 # This bundle ships two example servers so you can see both shapes:
 mcp_servers:
