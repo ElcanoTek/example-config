@@ -76,7 +76,8 @@ export PERSONA_DEFAULT=assistant        # selects "Aria" (personas/assistant.yam
 
 At boot fleet parses `manifest.yaml`, resolves each MCP server's **enable gate**
 and `${VAR}` env interpolation against the process environment, and reads the
-`system_prompts/`, `personas/`, `protocols/`, and `skills/` directories.
+`system_prompts/`, `personas/`, `protocols/`, `prompts/`, and `skills/`
+directories.
 `PERSONA_DEFAULT`
 matches a persona's `name:` field and picks the default; users can still switch
 persona per-conversation in the UI. The loader and the full manifest schema live
@@ -105,6 +106,8 @@ example-config/
     ask-the-handbook.md  #   grounded Q&A over the knowledge base, with citations
     research-report.md   #   web + attached-source research into a cited brief
     weekly-status.md     #   a SCHEDULED playbook: gather inputs → compute → write an artifact
+  prompts/               # Git-backed library shown in Chat + Operations Center
+    weekly-project-brief.yaml # exact prompt content with browse-friendly metadata
   skills/                # <name>/SKILL.md folders — Agent Skills: instructions + bundled code/refs
     example-skill/       #   annotated template: skill format + progressive disclosure (+ demo script)
     csv-profiler/        #   profile a CSV with the stdlib only (types, nulls, basic stats)
@@ -219,6 +222,16 @@ agent — chat or scheduled — runs it the same way. Start with `example.md`
 (a **scheduled** playbook that gathers inputs, computes honest metrics in Python,
 and writes a status artifact to the workspace).
 
+### Prompts — the hybrid prompt library
+
+Files under `prompts/` appear in Fleet's prompt picker in both Chat and the
+Operations Center. They are read-only in the UI and remain versioned and
+reviewable in this repository. Fleet preserves the exact YAML, Markdown, or text
+body when inserting it into a draft. The same picker also holds private or
+workspace-shared prompts created by non-Git users and can export the visible
+library as a JSON backup. Start with `weekly-project-brief.yaml` and the authoring
+notes in `prompts/README.md`.
+
 ### Skills — packaged capabilities (instructions + code)
 
 Skills under `skills/` follow the open
@@ -296,8 +309,10 @@ gate automatic. See fleet's
 4. **Govern new tools.** List read-only tools in `agent_policy.parallel_safe_tools`
    and writes / consequential actions in `critical_tools` so they require an
    audit gate before running.
-5. **Write personas, protocols, and skills.** Copy an existing `personas/*.yaml`
-   and `protocols/*.md` and adapt the voice, remit, and steps to your team. For a
+5. **Write personas, prompts, protocols, and skills.** Copy an existing
+   `personas/*.yaml`, `prompts/*.yaml`, or `protocols/*.md` and adapt it to your
+   team. Git-backed prompt files appear directly in the shared Prompt Library;
+   UI-authored prompts cover teammates who do not use Git. For a
    capability that ships code or reference files, copy the `skills/example-skill/`
    folder (the annotated template) and replace its body and `scripts/`.
 6. **Tune the sandbox.** Add packages your agents need to `sandbox/Containerfile`.
