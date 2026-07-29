@@ -134,9 +134,32 @@ Read `manifest.yaml` itself too — it is heavily commented.
 
 ### Branding (white-label)
 
-Five lines in `manifest.yaml` under `branding:` are the **whole** white-label
-surface — app name, login title/tagline, and social-share strings. This bundle
-sets them to **Northwind**. Change those lines and the app is yours.
+`branding:` in `manifest.yaml` is the whole white-label surface, and it covers
+three things:
+
+| | Field | Notes |
+| --- | --- | --- |
+| Strings | `app_name`, `login_title`, `login_tagline`, `share_title`, `share_description` | Rendered in-app and in social-share cards. |
+| Mark | `logo` | Bundle-relative image path, served straight from this bundle — no web rebuild, nothing copied into fleet. Omit it and the rail shows fleet's own mark. |
+| Palette | `colors.light` / `colors.dark` | 18 tokens, applied as a render-blocking stylesheet so even the login page paints in your colors. |
+
+This bundle sets all three to **Northwind**, with a placeholder mark at
+`assets/northwind-mark.svg` and a neutral zinc palette. Change them and the app
+is yours; a sparse block is fine, since every field falls back to fleet's
+generic value.
+
+Two things worth knowing before you tune the palette. Fleet's defaults for the
+structure, scrim, and rail tokens are hand-tinted from **fleet's** primary hue
+rather than derived from yours, so overriding `primary` alone leaves
+fleet-tinted emphasis borders and rail rows next to your brand — set the whole
+block, as `manifest.yaml` does. And the semantic status colors
+(success / danger / warning) are deliberately **not** themable: they encode
+meaning, so a failed tool call reads as failure in every deployment.
+
+Full reference: fleet's
+[docs/BRANDING.md](https://github.com/ElcanoTek/fleet/blob/main/docs/BRANDING.md).
+Note that the browser **tab title** and PWA name are a separate, build-time
+knob (`NEXT_PUBLIC_APP_NAME` in the web env file), not part of this block.
 
 ### MCP servers — connect agents to your data
 
@@ -292,9 +315,12 @@ gate automatic. See fleet's
 
 ## Make it yours
 
-1. **Rebrand.** Edit the five `branding:` lines in `manifest.yaml`. Rename the
-   persona files and their `name:` fields, and set `PERSONA_DEFAULT` to your
-   default.
+1. **Rebrand.** Edit `branding:` in `manifest.yaml` — the strings, the `colors`
+   block, and `logo` (replace `assets/northwind-mark.svg` with your own file).
+   Rename the persona files and their `name:` fields, and set `PERSONA_DEFAULT`
+   to your default. Set `NEXT_PUBLIC_APP_NAME` in the web env file too, or the
+   browser tab keeps saying "Fleet". Run `fleet validate-config` to catch a bad
+   `logo` path before you restart into it.
 2. **Point the knowledge base at your docs.** Replace `mcp/data/handbook.json`
    with your own content — or edit `mcp/knowledge_base.py` to read your wiki,
    database, or vector store.
