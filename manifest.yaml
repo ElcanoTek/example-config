@@ -30,24 +30,60 @@ branding:
   login_tagline: "Sign in to your workspace and pick up where you left off."
   share_title: "Northwind — your team's AI workspace"
   share_description: "Persistent, multi-turn conversations with real tool use across your files, data, and the tools your team already uses."
+  # The mark the navigation rail renders on every page. A bundle-relative path
+  # to an .svg/.png/.webp/.jpg/.jpeg/.ico file, served straight from this bundle
+  # (as /api/brand/logo), so changing it is a bundle change plus a restart — no
+  # web rebuild, and nothing to copy into fleet. Drop the field and the rail
+  # falls back to fleet's own mark. The path must stay inside the bundle and the
+  # file must exist: fleet fails at startup on a bad value rather than rendering
+  # a broken image on every page, so `fleet validate-config` catches a typo
+  # before you restart into it.
+  logo: "assets/northwind-mark.svg"
   # UI theme — a deliberately generic, unbranded monochrome palette (neutral
-  # zinc + a restrained near-mono accent). Swap in your own brand colors; the
-  # themable tokens are documented in fleet's config/default/manifest.yaml.
+  # zinc + a restrained near-mono accent). Swap in your own brand colors.
   # Served as a render-blocking stylesheet so the shell (incl. login) paints
   # with no flash.
+  #
+  # Every token fleet themes is set below, on purpose: the defaults for the
+  # structure/scrim/rail tokens are hand-tinted from fleet's OWN primary hue
+  # rather than derived from yours, so a bundle that overrides only `primary`
+  # keeps fleet-tinted emphasis borders and rail rows beside its palette. Start
+  # from this complete block and the whole shell stays consistent.
+  #
+  # Semantic status colors (success / danger / warning) are intentionally not
+  # themable — they encode meaning, not brand, so a failed tool call reads as
+  # failure in every deployment.
+  #
+  # Values may be hex or rgb()/rgba()/hsl()/hsla(). Anything else, and any token
+  # name fleet doesn't theme, is dropped at render time and that ONE token falls
+  # back — a typo can't break the stylesheet. Light and dark are independent.
   colors:
     dark:
+      # Core
       primary: "#A1A1AA"
       primary_hover: "#D4D4D8"
       secondary: "#71717A"
       accent: "#E4E4E7"
+      # Surfaces
       background: "#0B0B0D"
       surface_1: "#161618"
       surface_2: "#1F1F23"
+      # Text
       text_primary: "#FAFAFA"
       text_secondary: "#C8C8CC"
       text_muted: "#8A8A90"
+      text_disabled: "rgba(200, 200, 204, 0.45)"
+      # Structure — border_strong is the emphasis edge (focus, active cards),
+      # border_subtle the hairline between rows.
       border: "rgba(255, 255, 255, 0.14)"
+      border_strong: "rgba(255, 255, 255, 0.28)"
+      border_subtle: "rgba(255, 255, 255, 0.08)"
+      # Scrims behind modals and overlays
+      overlay_soft: "rgba(0, 0, 0, 0.20)"
+      overlay_strong: "rgba(0, 0, 0, 0.40)"
+      # Navigation-rail row states (a light wash on the rail surface)
+      rail_hover: "rgba(255, 255, 255, 0.07)"
+      rail_active: "rgba(255, 255, 255, 0.10)"
     light:
       primary: "#3F3F46"
       primary_hover: "#18181B"
@@ -59,7 +95,14 @@ branding:
       text_primary: "#18181B"
       text_secondary: "#3F3F46"
       text_muted: "#71717A"
+      text_disabled: "rgba(63, 63, 70, 0.45)"
       border: "rgba(0, 0, 0, 0.12)"
+      border_strong: "rgba(0, 0, 0, 0.24)"
+      border_subtle: "rgba(0, 0, 0, 0.07)"
+      overlay_soft: "rgba(0, 0, 0, 0.12)"
+      overlay_strong: "rgba(0, 0, 0, 0.32)"
+      rail_hover: "rgba(0, 0, 0, 0.05)"
+      rail_active: "rgba(0, 0, 0, 0.08)"
 
 # ── Model defaults ──────────────────────────────────────────────────────────
 # Advisory default tiers. fleet routes models OpenRouter-style, so you pick the

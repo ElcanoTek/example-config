@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Placeholder mark for the template: a neutral geometric glyph, no real
+     brand. Replace this file with your own logo (any of .svg/.png/.webp/.jpg/
+     .jpeg/.ico) and keep branding.logo pointing at it. currentColor is NOT
+     honored — the rail renders this in an <img>, so the fill must be literal. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="Northwind">
+  <circle cx="16" cy="16" r="15" fill="none" stroke="#A1A1AA" stroke-width="2"/>
+  <path d="M16 5 L16 27 M16 5 L24 13 M16 5 L8 13" fill="none" stroke="#E4E4E7" stroke-width="2" stroke-linecap="round"/>
+</svg>
