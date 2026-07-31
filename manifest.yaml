@@ -62,6 +62,11 @@ branding:
       # Core
       primary: "#A1A1AA"
       primary_hover: "#D4D4D8"
+      # on_primary is the readable foreground ON a primary fill (buttons,
+      # active segments, the user avatar). Fleet defaults it to white, so any
+      # bundle with a LIGHT primary — like this gray — must declare a dark one
+      # or primary buttons render white-on-light-gray (~1.8:1 contrast).
+      on_primary: "#18181B"
       secondary: "#71717A"
       accent: "#E4E4E7"
       # Surfaces
@@ -87,6 +92,9 @@ branding:
     light:
       primary: "#3F3F46"
       primary_hover: "#18181B"
+      # Dark primary → white foreground reads fine; declared explicitly so the
+      # example shows the token in both modes.
+      on_primary: "#FFFFFF"
       secondary: "#52525B"
       accent: "#27272A"
       background: "#FAFAFA"
