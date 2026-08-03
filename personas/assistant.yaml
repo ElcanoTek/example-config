@@ -1,8 +1,10 @@
 # Default workspace persona for the Northwind example bundle.
 #
 # Personas live in personas/*.yaml. fleet selects the default by the
-# PERSONA_DEFAULT environment variable, matched against the `name:` field below.
-# This bundle ships PERSONA_DEFAULT=assistant, which selects "Aria" (this file).
+# PERSONA_DEFAULT environment variable, matched against the FILE BASENAME —
+# fleet reads personas/<PERSONA_DEFAULT>.yaml; the `name:` field below is
+# display/prompt content, not the selector. This bundle documents
+# PERSONA_DEFAULT=assistant, which selects this file ("Aria").
 # To switch, set PERSONA_DEFAULT to another persona name — e.g.
 #   PERSONA_DEFAULT=analyst        # selects "Atlas" (personas/analyst.yaml)
 #   PERSONA_DEFAULT=onboarding-guide   # selects "Sage" (personas/onboarding-guide.yaml)

@@ -71,17 +71,18 @@ own generic `config/default`). Point it at a checkout of this repo:
 
 ```sh
 export FLEET_CLIENT_CONFIG_DIR=/path/to/example-config
-export PERSONA_DEFAULT=assistant        # selects "Aria" (personas/assistant.yaml)
+export PERSONA_DEFAULT=assistant        # personas/assistant.yaml — the persona named "Aria"
 ```
 
 At boot fleet parses `manifest.yaml`, resolves each MCP server's **enable gate**
 and `${VAR}` env interpolation against the process environment, and reads the
 `system_prompts/`, `personas/`, `protocols/`, `prompts/`, and `skills/`
 directories.
-`PERSONA_DEFAULT`
-matches a persona's `name:` field and picks the default; users can still switch
-persona per-conversation in the UI. The loader and the full manifest schema live
-in
+`PERSONA_DEFAULT` selects the default persona by **file basename**: fleet reads
+`personas/<value>.yaml` (so `assistant`, not `Aria` — the `name:` field inside
+the file is display and prompt content, never the selector). Users can still
+switch persona per-conversation in the UI. The loader and the full manifest
+schema live in
 [`internal/clientconfig/clientconfig.go`](https://github.com/ElcanoTek/fleet/blob/main/internal/clientconfig/clientconfig.go).
 
 ## The bundle contract
@@ -93,11 +94,12 @@ example-config/
   manifest.yaml          # branding, model tiers, MCP catalog, cards, agent policy,
                          #   task templates, per-persona tool permissions — plus
                          #   copy-paste-ready commented examples of http_tools,
-                         #   webhook_triggers, providers, and pricing
+                         #   webhook_triggers, providers, pricing, hooks, and a
+                         #   remote_mcp_catalog directory entry
   system_prompts/
     default.md           # base prompt for SCHEDULED agents
     chat.md              # base prompt for INTERACTIVE chat
-  personas/              # *.yaml — one per persona; PERSONA_DEFAULT picks the default
+  personas/              # *.yaml — one per persona; PERSONA_DEFAULT picks one by file basename
     assistant.yaml       #   Aria  — general-purpose workspace assistant (the default)
     analyst.yaml         #   Atlas — data & research analyst
     onboarding-guide.yaml#   Sage  — internal-knowledge / onboarding guide
@@ -119,6 +121,8 @@ example-config/
     Containerfile        # the execution-sandbox image for agent tool calls
   evals/                 # golden regression sets replayed by `fleet eval run`
     example.yaml         #   template set: the case format + every scorer kind
+  assets/                # brand assets referenced from manifest.yaml
+    northwind-mark.svg   #   the placeholder mark the (commented) branding.logo points at
   install.sh             # register these MCP servers into your own coding agent (see INSTALL.md)
 ```
 
@@ -135,18 +139,20 @@ Read `manifest.yaml` itself too — it is heavily commented.
 ### Branding (white-label)
 
 `branding:` in `manifest.yaml` is the whole white-label surface, and it covers
-three things:
+four things:
 
 | | Field | Notes |
 | --- | --- | --- |
-| Strings | `app_name`, `login_title`, `login_tagline`, `share_title`, `share_description` | Rendered in-app and in social-share cards. |
-| Mark | `logo` | Bundle-relative image path, served straight from this bundle — no web rebuild, nothing copied into fleet. Omit it and the rail shows fleet's own mark. |
-| Palette | `colors.light` / `colors.dark` | 18 tokens, applied as a render-blocking stylesheet so even the login page paints in your colors. |
+| Strings | `app_name`, `login_title`, `login_tagline`, `share_title`, `share_description` | Rendered in-app, in the browser tab, and in social-share cards. |
+| Mark | `logo` | Bundle-relative image path, served straight from this bundle — no web rebuild, nothing copied into fleet. Omit it and the rail shows fleet's own mark. Ships **commented** here: the field needs a fleet at/past #886 (2026-07-29) — see the dated note in `manifest.yaml`. |
+| Unfurl card | `share_image` | The `og:image`/`twitter:image` scrapers show when a deployment link is pasted into Slack/Teams/Discord. PNG/WebP/JPEG, served from the bundle. Also ships **commented**: needs a fleet at/past #900. |
+| Palette | `colors.light` / `colors.dark` | 19 tokens, applied as a render-blocking stylesheet so even the login page paints in your colors. |
 
-This bundle sets all three to **Northwind**, with a placeholder mark at
-`assets/northwind-mark.svg` and a neutral zinc palette. Change them and the app
-is yours; a sparse block is fine, since every field falls back to fleet's
-generic value.
+This bundle brands the strings and the neutral zinc palette as **Northwind**
+and ships a placeholder mark at `assets/northwind-mark.svg` behind the
+commented `logo:` line (uncomment it once your fleet understands the field).
+Change them and the app is yours; a sparse block is fine, since every field
+falls back to fleet's generic value.
 
 Two things worth knowing before you tune the palette. Fleet's defaults for the
 structure, scrim, and rail tokens are hand-tinted from **fleet's** primary hue
@@ -158,8 +164,11 @@ meaning, so a failed tool call reads as failure in every deployment.
 
 Full reference: fleet's
 [docs/BRANDING.md](https://github.com/ElcanoTek/fleet/blob/main/docs/BRANDING.md).
-Note that the browser **tab title** and PWA name are a separate, build-time
-knob (`NEXT_PUBLIC_APP_NAME` in the web env file), not part of this block.
+The browser **tab title** and PWA name follow `branding.app_name` too: fleet's
+web layer resolves it server-side per request (via the token-gated
+`/brand/meta`), so no web rebuild is needed. The build-time
+`NEXT_PUBLIC_APP_NAME` env survives only as the fallback shown when the
+backend is unreachable.
 
 ### MCP servers — connect agents to your data
 
@@ -189,6 +198,12 @@ everything else.
   spawns with no workspace — so the server writes a JSON receipt of each
   submitted record when it can, and degrades gracefully when it can't.
 
+`knowledge_base` also declares a **`probe:`** — the bundle-vetted, read-only
+canary call that `fleet mcp test --deep` executes to prove the server works
+end-to-end (here: that the handbook actually loaded), one rung past the
+tools/list handshake. The probe runner only ever calls what a manifest
+declares, so the author vets the call for side effects once, in the manifest.
+
 The manifest also carries a commented, copy-paste-ready third entry showing an
 **HTTP (remote) MCP server** with `optional: true` — the opt-in-per-conversation
 pattern, with `enabled_by_default`, `beta`, and a `tools:` allowlist.
@@ -202,9 +217,9 @@ so fleet may dispatch them concurrently within a single turn.
 
 ### Personas — the same engine, different voice and remit
 
-Personas live in `personas/*.yaml`. `PERSONA_DEFAULT` (matched against a
-persona's `name:`) selects the default; users pick any persona per conversation
-in the UI.
+Personas live in `personas/*.yaml`. `PERSONA_DEFAULT` (the **file basename** —
+`assistant` for `personas/assistant.yaml`, not the display name `Aria`) selects
+the default; users pick any persona per conversation in the UI.
 
 | File | Name | Remit |
 | --- | --- | --- |
@@ -316,11 +331,13 @@ gate automatic. See fleet's
 ## Make it yours
 
 1. **Rebrand.** Edit `branding:` in `manifest.yaml` — the strings, the `colors`
-   block, and `logo` (replace `assets/northwind-mark.svg` with your own file).
+   block, and (on a fleet new enough for the fields — see the dated notes in
+   the manifest) uncomment `logo` / `share_image`, replacing
+   `assets/northwind-mark.svg` with your own files. The app name, tab title,
+   and share cards all follow the bundle at request time — no web rebuild.
    Rename the persona files and their `name:` fields, and set `PERSONA_DEFAULT`
-   to your default. Set `NEXT_PUBLIC_APP_NAME` in the web env file too, or the
-   browser tab keeps saying "Fleet". Run `fleet validate-config` to catch a bad
-   `logo` path before you restart into it.
+   to your default persona's **file basename**. Run `fleet validate-config` to
+   catch a bad `logo` path before you restart into it.
 2. **Point the knowledge base at your docs.** Replace `mcp/data/handbook.json`
    with your own content — or edit `mcp/knowledge_base.py` to read your wiki,
    database, or vector store.
@@ -348,6 +365,22 @@ gate automatic. See fleet's
    conversation does something well, `fleet eval capture` it into an
    `evals/<set>.yaml` and run `fleet eval run <set>` in CI — so the next model
    swap or prompt edit has to prove it didn't make your known-good work worse.
+
+### Deployment-level knobs (host env, not bundle)
+
+Two web **build-time** env vars deliberately stay outside the bundle, because
+they are properties of the host, not of the client whose branding it wears
+(one bundle can be deployed at more than one origin):
+
+- **`NEXT_PUBLIC_PUBLIC_ORIGIN`** — the deployment's public origin, e.g.
+  `https://chat.yourco.com`. fleet's web layer resolves relative unfurl URLs
+  (the OG/share image, icons) against it via `metadataBase`. Left unset it
+  falls back to the placeholder `https://chat.example.com`, so links pasted
+  into Slack/Teams unfurl with image URLs pointing at a host that isn't yours
+  — **silently**, since nothing errors. fleet's `bootstrap.sh` / `update.sh`
+  set it at web build time; set it yourself on any hand-rolled deploy.
+- **`NEXT_PUBLIC_APP_NAME`** — only the fallback name shown when the backend
+  is unreachable; `branding.app_name` wins whenever fleet can be reached.
 
 ## Where to go next
 
