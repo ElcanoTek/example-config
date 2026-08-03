@@ -1,9 +1,21 @@
 # Python dependencies for the example MCP servers (and their test suite).
+# install.sh installs exactly this file into the bundle venv, and its manifest
+# parser does `import yaml` — so pyyaml is a hard dependency here, not a nicety.
 
-# MCP runtime (pulls in the `mcp` SDK that exposes mcp.server.fastmcp.FastMCP)
-fastmcp
+# MCP server framework: provides mcp.server.fastmcp.FastMCP, imported by both
+# servers. This is the official Model Context Protocol SDK — NOT the standalone
+# "fastmcp" project (which this code never imports; it was previously pinned
+# here and only worked because it transitively pulls in mcp).
+# The <2 ceiling is load-bearing: the mcp 2.0.0 wheel ships mcp/server/ but no
+# mcp/server/fastmcp module (verified against the published wheel), so an
+# unbounded pin resolves to a release on which both servers fail to START with
+# ModuleNotFoundError. Lift it only together with migrating the servers off
+# that import path; the 1.x line stays free to float.
+mcp>=1.28.1,<2
 # HTTP client used by the gated example_api connector
 httpx
+# YAML reader for install.sh's manifest parser
+pyyaml
 
 # Development / test dependencies
 pytest

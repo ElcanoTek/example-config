@@ -31,6 +31,7 @@ Runs over stdio inside the fleet sandbox.
 import json
 import logging
 import os
+import re
 import sys
 from datetime import UTC, datetime
 from typing import Any
@@ -60,17 +61,30 @@ def _base_url() -> str:
 
 
 def _timeout() -> float:
-    """Return the configured request timeout in seconds, falling back safely."""
+    """Return the configured request timeout in seconds, falling back safely.
+
+    Non-numeric AND non-positive values fall back to the default: a zero or
+    negative timeout would make every request fail instantly (httpx treats it
+    as an immediate deadline), which is never what a misconfigured env var
+    means.
+    """
     raw = os.environ.get("EXAMPLE_API_TIMEOUT_SECONDS")
     if not raw:
         return DEFAULT_TIMEOUT
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError:
         logger.warning(
             "EXAMPLE_API_TIMEOUT_SECONDS is not a number (%r); using default.", raw
         )
         return DEFAULT_TIMEOUT
+    if not value > 0:  # also catches NaN, which fails every comparison
+        logger.warning(
+            "EXAMPLE_API_TIMEOUT_SECONDS must be positive (got %r); using default.",
+            raw,
+        )
+        return DEFAULT_TIMEOUT
+    return value
 
 
 def _output_dir() -> str | None:
@@ -140,18 +154,54 @@ def _error(message: str, **extra: Any) -> dict[str, Any]:
     return result
 
 
+# One safe URL path segment: a dot-/dash-/underscore-y word that cannot start
+# with a dot (so "." and ".." are out). Matched with fullmatch, not "$" — in
+# Python "$" also matches just before a trailing newline, which is exactly the
+# kind of value this exists to reject.
+_PATH_SEGMENT_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._~-]*")
+
+
+def _invalid_path(path: str) -> str | None:
+    """Return an error message when path is not safe to splice into the URL.
+
+    The resource/record ids the model supplies are interpolated straight into
+    the request path, so they must not be able to rewrite it: "../admin" walks
+    out of the collection, "tickets?admin=1" injects a query string, and
+    whitespace or "#" mangle the request line. Nested collections
+    ("projects/7/tickets") stay allowed - each "/"-separated segment just has
+    to be an ordinary token. Returns None when the path is fine.
+    """
+    if not path or not path.strip("/"):
+        return "The resource path must not be empty."
+    for segment in path.strip("/").split("/"):
+        if not _PATH_SEGMENT_RE.fullmatch(segment):
+            return (
+                f"Invalid resource path segment {segment!r}: only letters, "
+                "digits, and ._~- are allowed (no '..', query strings, or "
+                "whitespace)."
+            )
+    return None
+
+
 def _request(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
     """Make one httpx request and return parsed JSON or a structured error.
 
-    Centralizes URL building, headers, timeout, and the error handling that all
-    three tools share. Never raises - every failure mode is returned as a
-    {"success": False, "error": ...} object.
+    Centralizes URL building, path validation, headers, timeout, and the error
+    handling that all three tools share. Never raises - every failure mode is
+    returned as a {"success": False, "error": ...} object.
     """
     if not os.environ.get("EXAMPLE_API_KEY"):
         return _error(
             "EXAMPLE_API_KEY is not set. This connector is gated off until a key "
             "is brokered in by fleet."
         )
+
+    # The path is assembled from model-supplied values (resource, record_id):
+    # validate it before it is spliced into the URL, so a hostile or confused
+    # value cannot redirect the request (see _invalid_path).
+    path_error = _invalid_path(path)
+    if path_error is not None:
+        return _error(path_error)
 
     url = f"{_base_url()}/{path.lstrip('/')}"
     try:

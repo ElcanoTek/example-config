@@ -35,7 +35,11 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP("knowledge_base")
 
 # Path to the bundled handbook. Override with HANDBOOK_PATH to point at your own
-# JSON file without editing this server.
+# JSON file without editing this server. Under fleet the override only arrives
+# because manifest.yaml passes it through: fleet spawns stdio servers with a
+# minimal environment (PATH/HOME/locale plus the manifest's env map — see
+# fleet's internal/mcp/client.go), so the manifest maps HANDBOOK_PATH and lists
+# it in optional_env, dropping the key when unset so this default stands.
 DEFAULT_HANDBOOK_PATH = Path(__file__).resolve().parent / "data" / "handbook.json"
 HANDBOOK_PATH = Path(os.environ.get("HANDBOOK_PATH", DEFAULT_HANDBOOK_PATH))
 

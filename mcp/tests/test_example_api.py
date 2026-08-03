@@ -154,6 +154,52 @@ def test_receipt_failure_never_breaks_the_tool(monkeypatch, tmp_path):
 
 
 @respx.mock
+def test_path_traversal_is_rejected_without_a_request():
+    """Model-supplied path parts that could rewrite the URL never reach httpx.
+
+    respx has no routes mocked here, so any escaped request would error loudly
+    - the structured validation error proves the request was never built.
+    """
+    for bad in ("../admin", "..", "tickets/../users", "/", "   "):
+        result = api.api_list_records(bad)
+        assert result["success"] is False, bad
+        assert "resource path" in result["error"].lower()
+    assert not respx.calls
+
+
+@respx.mock
+def test_query_and_fragment_injection_are_rejected():
+    for bad in ("tickets?admin=1", "tickets#frag", "tick ets", "tickets\n"):
+        result = api.api_list_records(bad)
+        assert result["success"] is False, bad
+    # record_id goes through the same validation seam
+    result = api.api_get_record("tickets", "42?admin=1")
+    assert result["success"] is False
+    assert not respx.calls
+
+
+@respx.mock
+def test_nested_resource_paths_stay_allowed():
+    """Multi-segment collections are legitimate REST shapes and still work."""
+    route = respx.get(f"{BASE_URL}/projects/7/tickets").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    result = api.api_list_records("projects/7/tickets")
+    assert result["success"] is True
+    assert route.called
+
+
+def test_nonpositive_timeout_falls_back_to_default(monkeypatch):
+    """Zero/negative/NaN timeouts would fail every request instantly; the
+    connector treats them like any other misconfiguration and uses the default."""
+    for bad in ("0", "-5", "nan"):
+        monkeypatch.setenv("EXAMPLE_API_TIMEOUT_SECONDS", bad)
+        assert api._timeout() == api.DEFAULT_TIMEOUT, bad
+    monkeypatch.setenv("EXAMPLE_API_TIMEOUT_SECONDS", "12.5")
+    assert api._timeout() == 12.5
+
+
+@respx.mock
 def test_custom_base_url(monkeypatch):
     monkeypatch.setenv("EXAMPLE_API_BASE_URL", "https://my.api.test/v2/")
     route = respx.get("https://my.api.test/v2/orders").mock(
