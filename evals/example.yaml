@@ -19,20 +19,20 @@ description: Template set demonstrating the golden-case format and every scorer 
 threshold: 1.0
 # Default model for llm_judge scorers (a scorer's own `model` wins; when both
 # are absent the judge runs on the case's pinned model).
-judge_model: "anthropic/claude-sonnet-4-6"
+judge_model: "anthropic/claude-sonnet-4.6"
 cases:
   - name: arithmetic-sanity
     prompt: "What is 17 * 23? Reply with just the number."
     # The pinned model this golden replays at. Change it (or run the set twice
     # with an edited pin) to compare candidates on identical goldens.
-    model: "anthropic/claude-sonnet-4-6"
+    model: "anthropic/claude-sonnet-4.6"
     scorers:
       - contains: "391"
   - name: summarize-judged
     prompt: >-
       Summarize in one sentence why running evaluations before swapping a
       production model matters.
-    model: "anthropic/claude-sonnet-4-6"
+    model: "anthropic/claude-sonnet-4.6"
     # Optional: pin the bundle persona the case replays under (basename of a
     # personas/*.yaml file); absent = the server's default persona.
     persona: "assistant"

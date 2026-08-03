@@ -164,11 +164,14 @@ meaning, so a failed tool call reads as failure in every deployment.
 
 Full reference: fleet's
 [docs/BRANDING.md](https://github.com/ElcanoTek/fleet/blob/main/docs/BRANDING.md).
-The browser **tab title** and PWA name follow `branding.app_name` too: fleet's
-web layer resolves it server-side per request (via the token-gated
-`/brand/meta`), so no web rebuild is needed. The build-time
-`NEXT_PUBLIC_APP_NAME` env survives only as the fallback shown when the
-backend is unreachable.
+The browser **tab title** and PWA name follow `branding.app_name` too, but only
+on a fleet at or past #899 (`f793c6e`, 2026-07-30): from there the web layer
+resolves the name server-side per request (via the token-gated `/brand/meta`),
+so no web rebuild is needed, and the build-time `NEXT_PUBLIC_APP_NAME` env
+survives only as the fallback shown when the backend is unreachable. On an
+older fleet the tab title is *only* `NEXT_PUBLIC_APP_NAME`, baked at web build
+time and defaulting to "Fleet" — keep setting it there until the deployment
+catches up.
 
 ### MCP servers — connect agents to your data
 
@@ -379,8 +382,11 @@ they are properties of the host, not of the client whose branding it wears
   into Slack/Teams unfurl with image URLs pointing at a host that isn't yours
   — **silently**, since nothing errors. fleet's `bootstrap.sh` / `update.sh`
   set it at web build time; set it yourself on any hand-rolled deploy.
-- **`NEXT_PUBLIC_APP_NAME`** — only the fallback name shown when the backend
-  is unreachable; `branding.app_name` wins whenever fleet can be reached.
+- **`NEXT_PUBLIC_APP_NAME`** — on a fleet at or past #899 (`f793c6e`), only the
+  fallback name shown when the backend is unreachable; `branding.app_name` wins
+  whenever fleet can be reached. On an older fleet it is the *only* source of
+  the browser tab title and PWA name, so set it to match `branding.app_name`
+  or the tab keeps saying "Fleet".
 
 ## Where to go next
 
