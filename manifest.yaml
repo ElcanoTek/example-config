@@ -17,7 +17,9 @@
 #   internal/clientconfig/clientconfig.go in the fleet repo
 #   (https://github.com/ElcanoTek/fleet)
 # A bundle is just this manifest plus the system_prompts/, personas/,
-# protocols/, skills/, mcp/, evals/, and sandbox/ directories alongside it.
+# protocols/, prompts/, skills/, mcp/, evals/, and sandbox/ directories
+# alongside it (fleet resolves each of those under the bundle root at load —
+# see the Bundle struct's *Dir fields in clientconfig.go).
 # fleet's manifest decoder is STRICT: an unknown or duplicate key fails the
 # load at boot, so a typo'd key can never silently drop a policy.
 
@@ -38,7 +40,29 @@ branding:
   # file must exist: fleet fails at startup on a bad value rather than rendering
   # a broken image on every page, so `fleet validate-config` catches a typo
   # before you restart into it.
-  logo: "assets/northwind-mark.svg"
+  #
+  # SHIPPED COMMENTED on purpose (2026-08-03). `logo` was added to the manifest
+  # schema in fleet commit 2ac6ac1 (PR #886, merged 2026-07-29), and the
+  # decoder is STRICT — on any fleet built before that commit an uncommented
+  # `logo` is an unknown key that fails the whole bundle load at boot. fleet
+  # has not cut a tagged release yet (`fleet version` reads the repo VERSION
+  # file, still 0.0.0), so check the binary you actually run before
+  # uncommenting: `git -C <fleet checkout> merge-base --is-ancestor 2ac6ac1
+  # HEAD`, or grep its internal/clientconfig/clientconfig.go for `yaml:"logo"`
+  # (the CHANGELOG "brand mark" entry and docs/BRANDING.md also mark the
+  # feature). On a fleet at or past #886, uncomment:
+  # logo: "assets/northwind-mark.svg"
+  #
+  # The OG unfurl card (og:image / twitter:image) that link scrapers render
+  # when a deployment URL is pasted into Slack / iMessage / Discord / Teams. A
+  # bundle-relative PNG/WebP/JPEG (1280x640 is conventional; SVG and ICO are
+  # rejected at load because no unfurl scraper renders them). Validated at
+  # startup exactly like `logo` and served from the bundle as
+  # /api/brand/share-image; omit it and fleet's neutral generic card stands.
+  # Same strict-decoder gate as `logo`, only newer: added in fleet commit
+  # 1daf415 (PR #900) — uncomment only on a fleet at or past it (same
+  # ancestor/grep check as above, against `yaml:"share_image"`).
+  # share_image: "assets/northwind-share.png"
   # UI theme — a deliberately generic, unbranded monochrome palette (neutral
   # zinc + a restrained near-mono accent). Swap in your own brand colors.
   # Served as a render-blocking stylesheet so the shell (incl. login) paints
@@ -112,10 +136,21 @@ branding:
       rail_hover: "rgba(0, 0, 0, 0.05)"
       rail_active: "rgba(0, 0, 0, 0.08)"
 
-# ── Model defaults ──────────────────────────────────────────────────────────
-# Advisory default tiers. fleet routes models OpenRouter-style, so you pick the
-# right model per task instead of hard-wiring one vendor. `core` is the everyday
-# workhorse; `max` is the heavier model for hard turns.
+# ── Model defaults (advisory self-description ONLY) ────────────────────────
+# HONESTY NOTE: fleet parses this block but does NOT consume it. Per the Models
+# doc in internal/clientconfig/clientconfig.go, the field is retained only so
+# the strict decoder still loads bundles that declare it — it is not a live
+# model-selection knob and is never exposed to the web UI. The knobs that
+# actually pick models:
+#   - Scheduled tasks: the task's own `model` field, else the CUTLASS_TASK_MODEL
+#     env var — a task with neither fails to dispatch
+#     (internal/scheduledrun/scheduledrun.go). CUTLASS_TASK_FALLBACK_MODEL is
+#     the retry tier.
+#   - Chat: the picker default is compiled into the web app
+#     (web/src/app/lib/modelAliases.ts DEFAULT_MODEL); the engine-side tiers
+#     are the agentcore.DefaultCoreModel / DefaultMaxModel constants.
+# Keep the values below in sync with what your deployment actually runs — as
+# reviewer-readable documentation — or delete the block; both are safe.
 models:
   default_core: "google/gemini-3.5-flash"
   default_max: "anthropic/claude-sonnet-4.5"
@@ -170,6 +205,29 @@ mcp_servers:
     always: true
     display_name: "Team Knowledge Base"
     description: "Search and read a bundled company handbook. No credentials required."
+    env:
+      # Optional override for where the handbook JSON lives (documented in
+      # mcp/knowledge_base.py). It must be mapped HERE to work at all: fleet
+      # spawns stdio servers with a MINIMAL environment — PATH/HOME/locale plus
+      # exactly this map (internal/mcp/client.go, NewStdioTransportInDir) — so
+      # an operator `export HANDBOOK_PATH=…` never reaches the server on its
+      # own. Unset resolves to "" and optional_env below drops the key, so the
+      # server's built-in mcp/data/handbook.json default stands.
+      HANDBOOK_PATH: "${HANDBOOK_PATH:-}"
+    optional_env:
+      - HANDBOOK_PATH
+    # The declared canary for `fleet mcp test --deep` (fleet #854): ONE
+    # read-only tool call that proves the server works end-to-end — here, that
+    # the handbook actually loaded, one rung past the tools/list handshake.
+    # The bundle author vets the call for side effects ONCE, right here; the
+    # probe runner only ever executes what a manifest declares. Assertions are
+    # deliberately minimal (`contains` on the first text block) because
+    # asserting on live content makes probes flaky — prefer a shape-ish marker.
+    # kb_list_categories takes no arguments and reads bundled JSON: the ideal
+    # zero-side-effect canary.
+    probe:
+      tool: kb_list_categories
+      contains: "category"
 
   # 2) A CREDENTIAL-GATED server — the host-side broker pattern. It registers but
   #    stays DARK until EXAMPLE_API_KEY is set in the environment, so a fresh
@@ -197,7 +255,7 @@ mcp_servers:
       # write a local JSON receipt of each submitted record. See fleet
       # docs/MCP-BUNDLE-ENV.md for the full contract.
       EXAMPLE_API_OUTPUT_DIR: "${FLEET_WORKSPACE}/outputs"
-      # Uncomment together with identity_env below (see its warning first):
+      # Uncomment together with identity_env below (see its note first):
       # EXAMPLE_API_OWNER_ID: "${EXAMPLE_API_OWNER_ID}"
     optional_env:
       # Keys listed here are dropped from the spawned env when their resolved
@@ -206,14 +264,19 @@ mcp_servers:
       - EXAMPLE_API_TIMEOUT_SECONDS
     # identity_env names the env keys that route IDENTITY or MONEY (owner /
     # member / marketplace-account ids, seat-routing tokens). fleet refuses a
-    # named-account variant spawn when a listed key still holds its default-seat
-    # value — suffixing the API key but not the owner id would otherwise
+    # named-account variant spawn when a listed key still holds its non-empty
+    # default-seat value that the account's <VAR>_<ACCOUNT> overlay did not
+    # override — suffixing the API key but not the owner id would otherwise
     # transact in the default client's seat under the named account's label.
-    # DO NOT UNCOMMENT YET: no fleet release ships identity_env — a released
-    # fleet's strict manifest decoder would fail boot on the unknown key. Keep
-    # it commented until you run a fleet release whose docs list identity_env,
-    # then uncomment it together with the EXAMPLE_API_OWNER_ID env line above
-    # (each entry must name a key of this server's env map).
+    # The field is SAFE on any current fleet: it landed in commit e47544d
+    # (2026-07-11) and the loader validates it at startup (stdio servers only;
+    # every entry must name a key of this server's env map — a typo fails the
+    # boot loudly instead of silently guarding nothing). It ships commented
+    # here for one reason only: this placeholder connector never reads
+    # EXAMPLE_API_OWNER_ID, and this template keeps env keys its servers do
+    # not read out of the live map. When your real connector routes an
+    # owner/account id, uncomment it together with the EXAMPLE_API_OWNER_ID
+    # env line above.
     # identity_env: ["EXAMPLE_API_OWNER_ID"]
 
   # 3) An OPTIONAL, opt-in server — chat's per-conversation Optional-server
@@ -344,6 +407,11 @@ mcp_servers:
 #     type: ollama
 #     base_url: "http://localhost:11434/v1"
 #     models: ["llama3.2", "qwen2.5-coder"]
+#     # Provider-local context window (tokens) for budget accounting — must be
+#     # positive when set. Worth declaring on self-hosted endpoints, whose
+#     # limits fleet cannot discover; OpenRouter-routed slugs use OpenRouter's
+#     # authoritative per-model metadata instead.
+#     context_window_tokens: 32768
 # fallback_providers: ["anthropic-direct", "openrouter"]
 
 # ── Chat empty-state catalog ────────────────────────────────────────────────
@@ -477,6 +545,43 @@ agent_policy:
   critical_tool_timeouts:
     submit_record: 600   # give the reviewer time to read the record it will post
 
+# ── Governed lifecycle hooks (fleet #788) ───────────────────────────────────
+# Bundle-declared commands that run INSIDE the per-turn sandbox at fixed
+# lifecycle points: user_prompt_submit, pre_tool_use, post_tool_use, turn_end.
+# Each hook gets a bounded, secret-redacted JSON payload on stdin and prints a
+# JSON decision on stdout ({"decision":"continue"|"block", "reason":...,
+# "additional_context":...}). Hooks can only observe or NARROW a turn, never
+# widen it — they run with no credentials and fleet's policy/approval/budget
+# gates still evaluate afterwards on the same unmodified input (fleet
+# docs/HOOKS.md + ADR-0038). Only pre_tool_use and user_prompt_submit can
+# block. `enforce: true` makes a hook failure (nonzero exit / timeout /
+# malformed output) BLOCK the operation; the default is advisory — a failure
+# is audited and the operation proceeds. `matcher` (tool events only): "" or
+# "*" = every tool, a trailing "*" is a prefix glob, anything else an exact
+# tool name. `timeout_seconds` defaults to 30, clamped to [1,120].
+# `version: 1` is required whenever entries exist, and ids must be unique.
+# Hooks install at startup — changing them requires a restart.
+#
+# This bundle ships none (like fleet's own default bundle). Copy-paste-ready
+# example (uncomment and adapt):
+#
+# hooks:
+#   version: 1
+#   entries:
+#     - id: "block-secrets-in-bash"
+#       event: pre_tool_use
+#       matcher: "bash"
+#       # stdin carries {"tool_input": "...", ...}; jq -e exits nonzero when
+#       # the filter is false, which an enforced hook turns into a block.
+#       command: "jq -e '.tool_input | test(\"AWS_SECRET\") | not'"
+#       timeout_seconds: 15
+#       enforce: true     # fail-closed: a match (or a hook crash) blocks the call
+#     - id: "note-record-submits"
+#       event: post_tool_use
+#       matcher: "mcp_example_api_*"    # prefix glob over runtime tool names
+#       command: "python3 -c 'import json,sys; p=json.load(sys.stdin); print(json.dumps({\"decision\":\"continue\",\"additional_context\":\"record submitted via \"+p.get(\"tool_name\",\"?\")}))'"
+#       enforce: false    # advisory: a failure is audited, the turn proceeds
+
 # ── Per-persona tool permissions (least-privilege by role) ──────────────────
 # An optional NARROWING gate over which tools each persona may even see. It can
 # only SUBTRACT from what the server/credential gates already permit, never
@@ -533,6 +638,46 @@ personas:
 # the service's vendor) are additionally opted IN for this bundle — the UI
 # badges them and requires an operator-named consent step before connecting.
 remote_mcp_catalog_community: true
+# A bundle-authored entry is a DIRECTORY LISTING, not a connection: fleet never
+# contacts the URL until a user adds the server from Settings → Connections.
+# Same-name entries override built-ins. This bundle authors none; copy-paste
+# ready example of the full entry shape (uncomment into the list below):
+#
+# remote_mcp_catalog:
+#   - name: "acme-tracker"                # stable id, unique in the manifest
+#     display_name: "Acme Tracker"
+#     description: "Search and update Acme work items from chat."
+#     url: "https://mcp.acme-tracker.example.com/mcp"   # https required
+#     vendor: "Acme Software, Inc."       # who OPERATES the hosted endpoint
+#     docs_url: "https://acme-tracker.example.com/docs/mcp"
+#     repo_url: "https://github.com/acme/tracker-mcp"   # so users can vet it
+#     category: "development"             # free-form kebab-case directory group
+#     tags: ["tickets", "issues", "tracker"]
+#     # provenance is the trust tier of the HOSTING OPERATOR: "official" (the
+#     # service's own vendor hosts it), "third_party" (an identifiable company
+#     # hosts access to OTHER vendors' services), or "community" (an
+#     # identifiable maintainer who is neither). Absent defaults to official;
+#     # the UI badges the tiers and gates non-official adds behind an
+#     # operator-named consent step.
+#     provenance: "official"
+#     # auth is the UI hint for what connecting takes: "oauth" (sign in with
+#     # the vendor), "api_key" (bring a key), "open" (no credentials), or
+#     # "tenant" (the url carries a {placeholder} the user fills in).
+#     auth: "api_key"
+#     # api_key auth only: the HTTP header NAME the vendor expects the key
+#     # under; empty means the default "Authorization: Bearer <key>" shape.
+#     # (Newer fleets — commit 5d47c0b / #901 — also accept api_key_query for
+#     # vendors that take the key as a URL query parameter.)
+#     api_key_header: "X-Api-Key"
+#     # oauth auth only: set client_registration: "manual" when the vendor's
+#     # authorization server lacks RFC 7591 dynamic client registration — the
+#     # add form then collects a client ID (+ optional secret) up front.
+#     # setup_hint renders VISIBLY on the directory card — where the key or
+#     # URL comes from, what must exist first. setup_url links the vendor page
+#     # that walks through it (the UI falls back to docs_url when absent).
+#     setup_hint: "Create an API key under Acme Tracker → Settings → API."
+#     setup_url: "https://acme-tracker.example.com/docs/api-keys"
+#     featured: true    # surfaces it on the directory's short Featured shelf
 remote_mcp_catalog: []
 
 # ── Agent Skills knobs ──────────────────────────────────────────────────────
