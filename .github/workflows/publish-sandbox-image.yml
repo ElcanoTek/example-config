@@ -16,6 +16,14 @@
 # in this org — so it was removed on 2026-08-20 along with the repo-write
 # permissions it needed. See the header of fleet's reusable workflow.
 #
+# No image_name is passed. fleet derives the destination from this bundle's own
+# manifest — basename of sandbox.tag under this repo's owner, lowercased — which
+# is byte-identical to the string that used to be hand-written here. That string
+# is how omnicom-config ended up publishing to fleet-sandbox-example, and an
+# un-normalized ghcr.io/${{ github.repository_owner }}/... is additionally an
+# invalid OCI reference for an owner with capitals. Neither is expressible now.
+# Pass image_name only to target a non-GHCR registry (e.g. ECR).
+#
 # The package is PRIVATE by default; make it public in the repo's package
 # settings if you want anonymous pulls, or leave it private and let the box
 # authenticate to GHCR. The FIRST publish of a new image name also needs the
@@ -46,5 +54,3 @@ permissions:
 jobs:
   publish:
     uses: ElcanoTek/fleet/.github/workflows/publish-sandbox-image.yml@main
-    with:
-      image_name: ghcr.io/${{ github.repository_owner }}/fleet-sandbox-example
