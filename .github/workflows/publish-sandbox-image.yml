@@ -24,10 +24,22 @@
 # invalid OCI reference for an owner with capitals. Neither is expressible now.
 # Pass image_name only to target a non-GHCR registry (e.g. ECR).
 #
-# The package is PRIVATE by default; make it public in the repo's package
-# settings if you want anonymous pulls, or leave it private and let the box
-# authenticate to GHCR. The FIRST publish of a new image name also needs the
-# resulting package linked to this repo once, by hand, or the push is denied.
+# PACKAGE VISIBILITY follows the publishing repo here — measured, because
+# GitHub's docs say something else (private by default, permissions but "not the
+# visibility" inherited). Four packages in this org all took their repo's
+# visibility, including a brand-new one pushed under observation.
+#
+# This repo is PUBLIC, so its package is publicly pullable — verified by a
+# first-ever push on 2026-08-20 that needed no settings change. Nothing
+# sensitive is in the image (no COPY/ADD in the Containerfile; it is Fedora plus
+# RPMs) and the name discloses nothing, since this template is public anyway.
+#
+# A first publish of a NEW image name needs no manual package setup: the pushing
+# repo creates and links it. An earlier version of this comment said otherwise —
+# it was generalising from fleet's June 2026 failures, which were a different
+# case (a pre-existing org package, ghcr.io/elcanotek/sandbox, not linked to the
+# repo, hence permission_denied: write_package). Verify a new package's
+# visibility after its first publish rather than assuming either way.
 name: Publish sandbox image
 
 on:
