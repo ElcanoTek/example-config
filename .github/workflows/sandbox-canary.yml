@@ -1,0 +1,42 @@
+# Sandbox build canary — does this bundle's sandbox/Containerfile still build?
+#
+# Nothing is pushed. This is not the publisher (publish-sandbox-image.yml); it
+# builds the image with the canonical scripts/build-sandbox-image.sh and throws
+# it away. Two questions it answers:
+#
+#  1. On a schedule: has `fedora-minimal:latest` drifted out from under us? The
+#     Containerfile's base is unpinned and the file has no COPY/ADD, so the image
+#     content changes with TIME, not with commits. A package renamed or dropped
+#     in Fedora breaks the build — and the build is the DEFAULT deploy path:
+#     `fleet bootstrap` / `fleet update` runs this same script on the box,
+#     because this bundle ships `image: "${FLEET_SANDBOX_IMAGE:-}"` (unpinned).
+#     Without this, that breakage first shows up on a live box at deploy time.
+#
+#  2. On a PR touching sandbox/**: does the edit build? The publisher only fires
+#     on push to main, so before this a Containerfile change was never built
+#     until after it had merged.
+#
+# Why build-only: nothing pins `sandbox.image`, so nothing pulls, so a weekly
+# ~1.3 GB push to GHCR would have no consumer. Scheduled publishing is worth
+# adding when this bundle gains a real puller — a Kubernetes deployment, or a box
+# setting FLEET_SANDBOX_IMAGE — since a stale digest is only an exposure once
+# something is actually consuming it.
+name: Sandbox build canary
+
+on:
+  schedule:
+    # Monday, after fleet's 09:00 UTC Grype scan; staggered across the client
+    # bundles so five ~1.3 GB builds don't contend for org runners at once.
+    - cron: "15 10 * * 1"
+  pull_request:
+    paths:
+      - "sandbox/**"
+  workflow_dispatch:
+
+# Checkout only — nothing is pushed, so no packages: write and no repo writes.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ElcanoTek/fleet/.github/workflows/build-sandbox-image.yml@main
