@@ -95,3 +95,6 @@ manifest never provides means the subprocess never receives it.
   [`docs/TESTING-LOCALLY.md`](docs/TESTING-LOCALLY.md)
 - **Registering these servers in your own agent:** [`INSTALL.md`](INSTALL.md)
 - **Authoring and testing the Python MCP servers:** [`mcp/README.md`](mcp/README.md)
+- **Adding a bundle-managed SES/S3 email-report pipeline:** use the external
+  canonical [new-client email-report runbook](https://github.com/ElcanoTek/ses-s3-setup/blob/main/docs/NEW-CLIENT-EMAIL-SETUP.md),
+  then keep real deployment details only in the forked client bundle.

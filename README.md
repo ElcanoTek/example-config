@@ -352,6 +352,12 @@ gate automatic. See fleet's
    For scheduled inputs, map your connector's input-directory variable to
    `${FLEET_WORKSPACE}/inputs`; map an attribution variable to
    `${FLEET_TASK_ID}` when the remote system records the originating task.
+   If the connector is an inbound SES/S3 email-report archive, follow the
+   external canonical
+   [new-client email-report runbook](https://github.com/ElcanoTek/ses-s3-setup/blob/main/docs/NEW-CLIENT-EMAIL-SETUP.md)
+   and create a deployment-specific `docs/EMAIL-DEPLOYMENT.md` in the real
+   client bundle. Do not put real domains, account IDs, bucket names, or
+   credentials into this template.
 4. **Govern new tools.** List read-only tools in `agent_policy.parallel_safe_tools`
    and writes / consequential actions in `critical_tools` so they require an
    audit gate before running.
