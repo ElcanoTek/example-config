@@ -6,8 +6,9 @@ target-version = "py311"
 # Line length
 line-length = 120
 
-# Include all Python files
-include = ["mcp/**/*.py"]
+# Include all Python files: the bundle's MCP servers and any Agent Plugin's
+# bundled servers/scripts under plugins/.
+include = ["mcp/**/*.py", "plugins/**/*.py"]
 
 [lint]
 # Enable recommended rules
