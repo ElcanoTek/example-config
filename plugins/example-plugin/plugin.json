@@ -10,5 +10,28 @@
   "homepage": "https://github.com/ElcanoTek/example-config/tree/main/plugins/example-plugin",
   "repository": "https://github.com/ElcanoTek/example-config",
   "license": "MIT",
-  "keywords": ["example", "template", "fleet"]
+  "keywords": [
+    "example",
+    "template",
+    "fleet"
+  ],
+  "extensions": {
+    "com.elcanotek.fleet": {
+      "mcp_servers": {
+        "plugin_notes": {
+          "tools": [
+            "plugin_info",
+            "note_add",
+            "note_list",
+            "note_clear"
+          ],
+          "probe": {
+            "tool": "plugin_info",
+            "contains": "plugin_root"
+          },
+          "description": "Scratch notes that persist in PLUGIN_DATA across restarts and plugin updates. Shared by every conversation on this deployment."
+        }
+      }
+    }
+  }
 }

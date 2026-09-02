@@ -340,6 +340,7 @@ The example plugin ships:
 | --- | --- |
 | `plugin-quickstart` skill | How the plugin is laid out, how to use its server, and how to author or port a plugin. |
 | `plugin_notes` server | A stdio MCP server started as `python3 ${PLUGIN_ROOT}/server/plugin_notes.py` that keeps a scratch-notes file under `${PLUGIN_DATA}` — the persistent, update-surviving data dir every conformant client provides. Tools: `plugin_info`, `note_add`, `note_list`, `note_clear`. |
+| `com.elcanotek.fleet` extension | The spec's reverse-domain namespace for client-specific data, here carrying fleet's per-server `tools` allowlist and `fleet mcp test --deep` `probe` for `plugin_notes`. Other clients ignore it; nothing credential-shaped can go there. |
 
 ### Sandbox
 
