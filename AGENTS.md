@@ -28,7 +28,9 @@ special-case a customer in fleet, and not to special-case Northwind either.
 **Edit `mcp/` here. It is the source of truth. There is no upstream.**
 
 This template was never a cutlass SSP mirror. The two servers
-(`knowledge_base.py`, `example_api.py`) were written here. Keep it that way.
+(`knowledge_base.py`, `example_api.py`) were written here, and so was the
+example Agent Plugin's server (`plugins/example-plugin/server/plugin_notes.py`).
+Keep it that way.
 
 - **MUST** make MCP server changes here, as normal reviewed PRs with tests.
 - **MUST NOT** introduce an automated sync between this bundle and any other
@@ -49,11 +51,13 @@ This template was never a cutlass SSP mirror. The two servers
 python3 -m venv .venv
 .venv/bin/pip install -r mcp/requirements.txt pytest
 
-.venv/bin/python -m pytest mcp/ -m 'not expensive' -q   # test suite
-.venv/bin/python -m ruff check mcp/                     # lint
+.venv/bin/python -m pytest mcp/ -m 'not expensive' -q   # test suite (incl. the plugin's server)
+.venv/bin/python -m ruff check mcp/ plugins/            # lint
 ```
 
-`pytest.ini` sets `testpaths = mcp mcp/tests`. The `expensive` marker gates
+`pytest.ini` sets `testpaths = mcp mcp/tests`; `mcp/tests/test_plugin_notes.py`
+loads the plugin's server by path, since a plugin must stay self-contained under
+`plugins/`. The `expensive` marker gates
 tests that spend real API money — run those by hand with `-m expensive`, never
 in a batch.
 
