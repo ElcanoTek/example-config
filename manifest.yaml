@@ -17,7 +17,7 @@
 #   internal/clientconfig/clientconfig.go in the fleet repo
 #   (https://github.com/ElcanoTek/fleet)
 # A bundle is just this manifest plus the system_prompts/, personas/,
-# protocols/, prompts/, skills/, mcp/, evals/, and sandbox/ directories
+# protocols/, prompts/, skills/, plugins/, mcp/, evals/, and sandbox/ directories
 # alongside it (fleet resolves each of those under the bundle root at load —
 # see the Bundle struct's *Dir fields in clientconfig.go).
 # fleet's manifest decoder is STRICT: an unknown or duplicate key fails the

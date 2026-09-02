@@ -1,0 +1,14 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "example-plugin",
+  "version": "1.0.0",
+  "description": "Annotated example Agent Plugin: one skill plus one stdio MCP server, packaged in the portable agent-plugins.org format that fleet, Cursor, VS Code, Copilot, Codex and Kiro all load.",
+  "author": {
+    "name": "ElcanoTek",
+    "url": "https://github.com/ElcanoTek"
+  },
+  "homepage": "https://github.com/ElcanoTek/example-config/tree/main/plugins/example-plugin",
+  "repository": "https://github.com/ElcanoTek/example-config",
+  "license": "MIT",
+  "keywords": ["example", "template", "fleet"]
+}

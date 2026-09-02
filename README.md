@@ -113,6 +113,8 @@ example-config/
   skills/                # <name>/SKILL.md folders — Agent Skills: instructions + bundled code/refs
     example-skill/       #   annotated template: skill format + progressive disclosure (+ demo script)
     csv-profiler/        #   profile a CSV with the stdlib only (types, nulls, basic stats)
+  plugins/               # Agent Plugins (agent-plugins.org): portable skills + MCP packages
+    example-plugin/      #   plugin.json + one skill + mcp.json (a stdio server using PLUGIN_ROOT/PLUGIN_DATA)
   mcp/                   # the bundle's Python MCP servers (+ tests, requirements.txt)
     knowledge_base.py    #   always-on; searches mcp/data/handbook.json
     example_api.py       #   credential-gated generic REST connector
@@ -299,6 +301,45 @@ This bundle ships two:
 | --- | --- |
 | `example-skill` | The annotated **template** — frontmatter rules, the three disclosure levels, a `REFERENCE.md`, and a tiny stdlib demo script. Copy it to start your own. |
 | `csv-profiler` | A genuinely useful skill with a real **standard-library-only** script that profiles a CSV (row/col counts, per-column type inference, null counts, basic stats) — so it runs even without pandas. |
+
+### Agent Plugins — the portable package for skills + MCP servers
+
+`plugins/` holds **Agent Plugins**: the open, vendor-neutral
+[Agent Plugins standard](https://agent-plugins.org) (v1.0.0) that packages Agent
+Skills and MCP servers together in one directory with a `plugin.json` manifest.
+The same directory loads in fleet **and** in Cursor, VS Code, GitHub Copilot,
+ChatGPT/Codex, Kiro and the other compatible clients, so a plugin is written
+once and shared across tools — the reason to reach for it over a bare skill or a
+manifest `mcp_servers` entry is exactly that portability.
+
+```
+plugins/
+  example-plugin/
+    plugin.json                       # REQUIRED: "$schema" + "name" (+ metadata)
+    skills/plugin-quickstart/SKILL.md # an ordinary Agent Skill
+    mcp.json                          # one stdio server: python3 ${PLUGIN_ROOT}/server/plugin_notes.py
+    server/plugin_notes.py            # a scratch-notes server that persists in ${PLUGIN_DATA}
+```
+
+fleet (from the release that implements [ADR-0054](https://github.com/ElcanoTek/fleet/blob/main/docs/adr/0054-agent-plugins.md))
+merges a plugin's skills into the same roster as `skills/` — this bundle's own
+skill wins a name collision, a plugin's wins over fleet's built-in pack — and
+appends its `mcp.json` servers to the MCP catalog as always-on entries launched
+in the plugin root with `PLUGIN_ROOT` / `PLUGIN_DATA` set, subject to every gate a
+manifest server already has (host-side brokering, `agent_policy`, hot reload).
+Older fleet releases ignore the directory. An unknown `plugin.json` field is
+reported and ignored, a bad server entry skips only itself, and a plugin defect
+never blocks the bundle; `fleet validate-config` lists the problems as advisories.
+A plugin is bundle content with the bundle's trust class — review it like `mcp/`
+and `skills/`. Details: fleet's
+[`docs/AGENT-PLUGINS.md`](https://github.com/ElcanoTek/fleet/blob/main/docs/AGENT-PLUGINS.md).
+
+The example plugin ships:
+
+| Part | What it shows |
+| --- | --- |
+| `plugin-quickstart` skill | How the plugin is laid out, how to use its server, and how to author or port a plugin. |
+| `plugin_notes` server | A stdio MCP server started as `python3 ${PLUGIN_ROOT}/server/plugin_notes.py` that keeps a scratch-notes file under `${PLUGIN_DATA}` — the persistent, update-surviving data dir every conformant client provides. Tools: `plugin_info`, `note_add`, `note_list`, `note_clear`. |
 
 ### Sandbox
 
