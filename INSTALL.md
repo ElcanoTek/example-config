@@ -78,6 +78,13 @@ dark until you supply a key.
   `api_get_record`, `api_submit_record`. `EXAMPLE_API_BASE_URL` defaults to a
   placeholder host (`https://api.example.com/v1`); point it at any JSON API.
 
+The bundle also ships one **Agent Plugin** — `plugins/example-plugin/`, in the
+portable [agent-plugins.org](https://agent-plugins.org) format — whose `mcp.json`
+declares a third stdio server, `plugin_notes` (`server/plugin_notes.py`, always
+on, no credentials). `install.sh` registers only the manifest's servers; clients
+that implement Agent Plugins (Cursor, VS Code, Copilot, Codex, Kiro, fleet) load
+that directory directly, so point their plugin loader at it instead.
+
 This table is a snapshot — `manifest.yaml` is the source of truth. Run
 `./install.sh --list` for the live list (it prints each server's exact env-var
 names). "Enabled when" is `fleet`'s gate; for a *local agent* the servers still
