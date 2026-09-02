@@ -36,6 +36,17 @@ plugins/example-plugin/
   plugin updates). The `${PLUGIN_ROOT}` / `${PLUGIN_DATA}` placeholders are
   expanded in `args`, `env` values and `cwd` only — never in `command`.
 
+### Fleet-specific knobs live in fleet's extension namespace
+
+The portable format has no field for a client's governance settings, so the
+spec gives each client a reverse-domain namespace under `extensions` that other
+clients ignore. This plugin's `plugin.json` uses fleet's — `com.elcanotek.fleet`
+— to declare a `tools` allowlist and a `fleet mcp test --deep` `probe` for the
+`plugin_notes` server. Cursor, VS Code and the rest skip that block and load the
+plugin exactly the same. Anything credential-shaped is deliberately not
+expressible there: a server that needs a brokered secret belongs in the bundle's
+`manifest.yaml`, not in a plugin.
+
 ## Using the plugin_notes server
 
 The server keeps a small scratchpad in `PLUGIN_DATA`, so notes survive a
