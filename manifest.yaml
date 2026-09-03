@@ -199,12 +199,12 @@ mcp_servers:
   #    "point an agent at your own docs" pattern. Swap mcp/data/handbook.json
   #    for your content (or rewrite the server to read your wiki / vector store).
   - name: knowledge_base
+    display_name: "Team Knowledge Base"
+    description: "Search and read the bundled company handbook. No credentials required."
     type: stdio
     command: python3
     args: ["mcp/knowledge_base.py"]
     always: true
-    display_name: "Team Knowledge Base"
-    description: "Search and read a bundled company handbook. No credentials required."
     env:
       # Optional override for where the handbook JSON lives (documented in
       # mcp/knowledge_base.py). It must be mapped HERE to work at all: fleet
@@ -234,13 +234,13 @@ mcp_servers:
   #    checkout runs clean with no secrets. A generic REST connector: point
   #    EXAMPLE_API_BASE_URL at any JSON API and the key is brokered host-side.
   - name: example_api
+    display_name: "Example REST API"
+    description: "Call a generic REST API through a host-brokered credential, demonstrating the pattern. Appears once EXAMPLE_API_KEY is set."
     type: stdio
     command: python3
     args: ["mcp/example_api.py"]
     enabled_env: ["EXAMPLE_API_KEY"]
     account_vars: ["EXAMPLE_API_KEY"]
-    display_name: "Example REST Connector"
-    description: "A generic REST connector, gated on EXAMPLE_API_KEY. Demonstrates host-side credential brokering."
     env:
       EXAMPLE_API_KEY: "${EXAMPLE_API_KEY}"
       EXAMPLE_API_BASE_URL: "${EXAMPLE_API_BASE_URL:-https://api.example.com/v1}"
