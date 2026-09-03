@@ -216,3 +216,22 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Runtime output MCP servers write into this checkout.
+# fleet spawns each stdio MCP server with its cwd set to the bundle root, so a
+# relative output_dir — passed by an agent or defaulted by a server — writes
+# client report files straight into this git checkout, one `git add -A` from
+# being committed. The fix is fleet launching MCP subprocesses in a managed
+# workspace instead of the bundle root; this is only the safety net. Rooted, so
+# a legitimately tracked nested dir of the same name is unaffected.
+/downloads/
+/reports/
+/sources/
+/workspace/
+/inputs/
+/input/
+/email_attachments/
+/deal-sheets/
+/mcp-shared/
+/mcp-runs/
+plugins/*/.plugin-data/
