@@ -8,7 +8,7 @@ server takes:
 | Server | File | Shape | Credentials |
 | --- | --- | --- | --- |
 | Team Knowledge Base | `knowledge_base.py` | always-on | none |
-| Example REST Connector | `example_api.py` | credential-gated | `EXAMPLE_API_KEY` |
+| Example REST API | `example_api.py` | credential-gated | `EXAMPLE_API_KEY` |
 
 Both are stdio servers built on `mcp.server.fastmcp.FastMCP` and run unchanged
 inside the fleet sandbox.

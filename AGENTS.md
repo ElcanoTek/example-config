@@ -86,6 +86,16 @@ manifest never provides means the subprocess never receives it.
 - **Every write tool is audit-gated** through fleet's approval flow via
   `agent_policy.critical_tools`. Adding a write tool means adding it there in
   the same PR.
+- **Every connector carries catalog copy.** `display_name` and `description`
+  on each `mcp_servers` entry are the only text a user reads in chat's Tools
+  picker and on Settings -> Connections before switching a connector on, and
+  fleet renders nothing where a description is missing — a blank row reads as
+  a broken connector. Write them in fleet's house style (its
+  `docs/MCP-CATALOG.md`, "Connector copy"): a vendor-cased display name with
+  no plumbing words, then one imperative capability sentence and — only for a
+  gated connector — a clause naming the real `enabled_env`/`enabled_groups`
+  vars. fleet only WARNS on a gap, so `mcp/tests/test_connector_copy.py` is
+  the gate.
 - **Honest docs.** If you change behavior, change the README / `mcp/README.md`
   / `docs/` in the same PR.
 - **`PERSONA_DEFAULT` is a file basename**, not the `name:` field inside the
