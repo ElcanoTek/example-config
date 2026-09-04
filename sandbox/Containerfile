@@ -36,7 +36,11 @@ FROM registry.fedoraproject.org/fedora-minimal:latest
 # Python stack via Fedora RPMs rather than pip. Fedora rebuilds the native
 # packages against whatever python3 it ships, which sidesteps the "no wheel for
 # this Python" trap, and shared libs dedupe cleanly across the stack.
-RUN microdnf install -y \
+# `upgrade` refreshes the packages inherited from the moving fedora-minimal:latest
+# base before `install` resolves the data stack as one distro-tested transaction,
+# so a rebuild never ships a base-layer package older than Fedora's current fix.
+RUN microdnf upgrade -y \
+    && microdnf install -y \
         --setopt=install_weak_deps=0 \
         --setopt=tsflags=nodocs \
         ImageMagick \
@@ -75,7 +79,34 @@ RUN microdnf install -y \
         sed \
         shadow-utils \
     && microdnf clean all \
-    && rm -rf /var/cache/dnf /var/cache/yum /var/log/dnf* /var/log/yum* /usr/share/locale/* /usr/share/man
+    && rm -rf /var/cache/dnf /var/cache/yum /var/log/dnf* /var/log/yum* /usr/share/locale/* /usr/share/man \
+    && python3 -c "import pip, pypdf, tornado, idna, pygments, soupsieve"
+
+# Exception to the RPM-first rule: Fedora's builds of a few Python packages
+# lag upstream security releases (Tornado 6.5.7 vs patched 6.5.8 —
+# GHSA-mpf4-983q-p7j4 — pypdf 4.x vs upstream 6.x, soupsieve, pygments, and
+# pip itself), and every Grype scan flags that gap as open CVEs
+# (GHSA-2wc2-fm75-p42x, GHSA-g867-7843-wf8q, GHSA-wf93-45jw-7689, …). Overlay
+# the current PyPI releases into /usr/local and remove the vulnerable RPM
+# copies so neither the runtime nor the CVE scan sees them. These packages
+# work without native extensions (Tornado includes an optional accelerator),
+# unlike the native data stack kept on RPMs. None of these pull in further
+# dependencies. Unpinned on purpose, same policy as the base image: every
+# rebuild picks up the latest upstream fixes. `rpm -e --nodeps` leaves
+# dangling RPM-db requires (beautifulsoup4 → soupsieve, ipython → pygments,
+# ipykernel → tornado) — harmless, the /usr/local copies satisfy the actual
+# imports, and nothing runs dnf inside the built image.
+#
+# Hand-ported from fleet's config/default/sandbox/Containerfile; bundles are
+# peers, so a future fix there is ported here as its own PR, never synced.
+RUN python3 -m pip install --no-cache-dir --break-system-packages --upgrade \
+        pip pypdf soupsieve pygments "tornado>=6.5.8" \
+    && rpm -e --nodeps python3-pip python3-pypdf python3-soupsieve python3-pygments python3-tornado \
+    && rm -rf /root/.cache/pip \
+    && python3 -c "import sys, pip, pypdf, soupsieve, pygments, tornado; \
+stale = [m.__name__ for m in (pip, pypdf, soupsieve, pygments, tornado) \
+         if not m.__file__.startswith('/usr/local/')]; \
+sys.exit('RPM copy still shadows the pip overlay: %r' % stale if stale else 0)"
 
 # Pre-warm matplotlib's font cache so the first plot at runtime doesn't pay the
 # multi-second TTF scan.
