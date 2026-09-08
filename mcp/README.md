@@ -13,6 +13,13 @@ server takes:
 Both are stdio servers built on `mcp.server.fastmcp.FastMCP` and run unchanged
 inside the fleet sandbox.
 
+For a production inbound SES/S3 email-report connector, use the external
+canonical
+[new-client email-report runbook](https://github.com/ElcanoTek/ses-s3-setup/blob/main/docs/NEW-CLIENT-EMAIL-SETUP.md).
+It covers infrastructure, least-privilege runtime access, manifest wiring,
+historical migration, and validation. Record real identifiers in the forked
+client bundle's `docs/EMAIL-DEPLOYMENT.md`, not in this generic template.
+
 ## `knowledge_base.py` — always-on, no credentials
 
 A tiny "team knowledge base" over a bundled JSON handbook
