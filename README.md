@@ -436,6 +436,58 @@ they are properties of the host, not of the client whose branding it wears
   the browser tab title and PWA name, so set it to match `branding.app_name`
   or the tab keeps saying "Fleet".
 
+### Provisioning baseline (what the reference client deployments run)
+
+The *mechanics* of deploying — sizing rationale, bootstrap flags, the
+`--force-caddy` stock-Caddyfile stop, backup timers — live in fleet's
+[docs/DEPLOYMENT.md](https://github.com/ElcanoTek/fleet/blob/main/docs/DEPLOYMENT.md);
+this section only records the **defaults our client deployments actually run**
+(as of 2026-09), so the next deploy starts from a known-good point and deviates
+deliberately. Every line is a baseline, not a rule — adjust per client, and
+record what a client changed (and why) in *that client's* bundle repo. Client
+specifics — names, domains, IPs — stay out of this public template.
+
+- **Box**: Vultr **dedicated** Optimized Cloud Compute, General Purpose —
+  8 vCPU / 32 GB / 160 GB NVMe (`voc-g-8c-32gb-160s`, ~$240/mo), **Fedora**
+  (bootstrap assumes `dnf`), public IPv4 **+ IPv6**, hostname/label
+  `<client>-fleet`. **Automatic backups: enabled** (+20%) — whole-instance
+  restore on top of the on-box daily DB dump, which is same-host and covers
+  logical loss only. No VPC, no provider firewall group (on-box firewalld is
+  the firewall), no DDoS add-on, no startup script. Add the ops box's SSH key
+  at creation — the deploy is driven from it.
+- **DNS**: Cloudflare `A` + `AAAA` for `fleet.<domain>`, **DNS-only (grey
+  cloud, never proxied)** — Caddy does its own Let's Encrypt issuance, which a
+  proxy breaks. Verify against the zone's own nameservers before
+  bootstrapping; your resolver may cache the pre-record NXDOMAIN.
+- **Per-client credentials, never shared across clients** — separate spend,
+  separate blast radius, separate revocation:
+  - GitHub **fine-grained PAT** `<client>-fleet-bundle-read`: resource owner =
+    the org, access = only that client's bundle repo, **Contents: Read-only**,
+    ~1-year expiry, and the box's domain in the token description so an org
+    token audit knows what breaks on revocation. It lands in
+    `/root/.git-credentials` (0600) via a hidden `read -rs` prompt — secrets
+    never pass through a chat, a scrollback, or git.
+  - **OpenRouter key**: one fresh key per client with a **$2,000/month spend
+    limit** set at creation — the cap turns a runaway loop or leaked key into
+    a bounded incident; size it to the client's expected usage. Set on the box
+    with `fleet config set-openrouter-key` (fleet exits by design until it
+    exists, and `fleet-web` dependency-fails alongside — expected pre-key
+    state, not a broken deploy).
+- **First-boot env**: `PERSONA_DEFAULT=<persona file basename>` and
+  `FLEET_SANDBOX_MEMORY=2g` (pandas-sized jobs are OOM-killed at the 512 MiB
+  default) in `fleet.env`; `NEXT_PUBLIC_APP_NAME=<Client>` in `fleet-web.env`
+  (see the knob above).
+- **Verify before declaring it live**: `fleet doctor` at 0 advisories
+  (including the sandbox smoke test), `fleet mcp test --all`, a valid cert on
+  the domain, and `/api/brand/logo` + `/api/brand/share-image` **byte-identical**
+  to the bundle's asset files — that last check is what proves the box serves
+  *your* bundle rather than fleet's defaults. Trap: `fleet validate-config`
+  only vouches for the binary it was built from; validate with the rev the box
+  will boot.
+- **Harden**: remove Fedora's default-open `cockpit` from firewalld — end
+  state `ssh http https` only. If the bundle's share card carries a
+  placeholder hostname, stamp the real domain and regenerate it.
+
 ## Where to go next
 
 - **[INSTALL.md](INSTALL.md)** — register this bundle's MCP servers into your own
