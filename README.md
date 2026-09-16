@@ -177,6 +177,7 @@ the rest of the file and refuses to start on a bundle it cannot read, so run
 `auth-server -check-config` after a branding change. See auth's
 [docs/DEPLOY.md](https://github.com/ElcanoTek/auth/blob/main/docs/DEPLOY.md)
 ("Branding from the client bundle").
+
 The browser **tab title** and PWA name follow `branding.app_name` too, but only
 on a fleet at or past #899 (`f793c6e`, 2026-07-30): from there the web layer
 resolves the name server-side per request (via the token-gated `/brand/meta`),
