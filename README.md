@@ -166,6 +166,17 @@ meaning, so a failed tool call reads as failure in every deployment.
 
 Full reference: fleet's
 [docs/BRANDING.md](https://github.com/ElcanoTek/fleet/blob/main/docs/BRANDING.md).
+
+**The same block also brands the Auth service.** A client deployment that
+uses central sign-in (the `auth` repo in password mode) points Auth's
+`AUTH_CLIENT_CONFIG_DIR` at a checkout of this bundle, and Auth reads the
+`branding:` block above — `app_name`, `login_title`, `login_tagline`, `logo`
+and `colors` — for its sign-in, signed-in and admin pages. Nothing extra is
+needed in the bundle: one manifest, one palette, both services. Auth ignores
+the rest of the file and refuses to start on a bundle it cannot read, so run
+`auth-server -check-config` after a branding change. See auth's
+[docs/DEPLOY.md](https://github.com/ElcanoTek/auth/blob/main/docs/DEPLOY.md)
+("Branding from the client bundle").
 The browser **tab title** and PWA name follow `branding.app_name` too, but only
 on a fleet at or past #899 (`f793c6e`, 2026-07-30): from there the web layer
 resolves the name server-side per request (via the token-gated `/brand/meta`),
