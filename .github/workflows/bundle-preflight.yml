@@ -12,7 +12,8 @@
 # that had been shipped and deployed unnoticed. A bundle's manifest is the one
 # artifact this repo exists to ship; nothing was checking it.
 #
-# WHAT GATES: both `manifest` and `mcp_servers`. This bundle's manifest resolves without
+# WHAT GATES: `manifest`, plus `mcp_catalog` and `manifest_files` — the floor
+#   fleet's reusable workflow always gates, whatever is named here. This bundle's manifest resolves without
 #   any box-supplied environment, so it can be held to the stricter gate.
 #
 # WHY `mcp_catalog` AND NOT `mcp_servers`: `mcp_servers` inspects only the
