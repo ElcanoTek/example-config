@@ -245,6 +245,14 @@ mcp_servers:
   #    optional flag if it should be on by default) or remove it.
   - name: example_api
     optional: true
+    # enabled_by_default keeps the documented behaviour for deployments that DO
+    # set EXAMPLE_API_KEY: `optional: true` alone would make this connector a
+    # per-conversation opt-in (fleet's Optional-server semantics), contradicting
+    # the README's "set the key and it appears". With both flags, the key still
+    # gates it, it starts ON in new conversations when the key is present, and
+    # a user can switch it off per conversation. Only the preflight verdict for
+    # a keyless box was ever meant to change.
+    enabled_by_default: true
     display_name: "Example REST API"
     description: "Call a generic REST API through a host-brokered credential, demonstrating the pattern. Appears once EXAMPLE_API_KEY is set."
     type: stdio
