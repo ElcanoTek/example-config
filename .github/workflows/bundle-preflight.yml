@@ -1,0 +1,35 @@
+# Bundle preflight — does this bundle still load, and do its servers still start?
+#
+# Calls fleet's reusable validate-bundle.yml, which runs the same
+# `fleet validate-config` a box runs before `systemctl start fleet`, pointed at
+# this repo's manifest.
+#
+# WHY: no bundle repo validated its own manifest until 2026-09-20, when
+# `fleet validate-config` failed on a production box for a manifest problem
+# that had been shipped and deployed unnoticed. A bundle's manifest is the one
+# artifact this repo exists to ship; nothing was checking it.
+#
+# WHAT GATES: both `manifest` and `mcp_servers`. This bundle's manifest resolves without
+#   any box-supplied environment, so it can be held to the stricter gate.
+#
+# Every other check still RUNS and the full table lands in the job summary —
+# including `credentials`, which is expected to report absences here because
+# this runner holds no production secrets. Read it on a PR that adds or
+# re-gates a connector: a connector that can never enable shows up there.
+name: Bundle preflight
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Checkout and build only — nothing is pushed, and no secrets are needed.
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    uses: ElcanoTek/fleet/.github/workflows/validate-bundle.yml@main
+    with:
+      gate_checks: "manifest,mcp_servers"
