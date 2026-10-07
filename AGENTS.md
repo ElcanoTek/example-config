@@ -27,20 +27,20 @@ special-case a customer in fleet, and not to special-case Northwind either.
 
 **Edit `mcp/` here. It is the source of truth. There is no upstream.**
 
-This template was never a cutlass SSP mirror. The two servers
+This template was never a mirror of another repo's servers. The two servers
 (`knowledge_base.py`, `example_api.py`) were written here, and so was the
 example Agent Plugin's server (`plugins/example-plugin/server/plugin_notes.py`).
 Keep it that way.
 
 - **MUST** make MCP server changes here, as normal reviewed PRs with tests.
 - **MUST NOT** introduce an automated sync between this bundle and any other
-  repo — not cutlass, not a sibling client bundle, not a "generate the examples
-  from production" mirror. Those mirrors revert reviewed fixes. See
-  elcano-config #48 / #75: a sync silently undid an email fix and every
-  `send_email` on the box answered `202 duplicate_suppressed` for a day.
+  repo — not another server repo, not a sibling client bundle, not a "generate
+  the examples from production" mirror. Those mirrors revert reviewed fixes: a
+  sync once silently undid an email fix and every `send_email` on the box
+  answered `202 duplicate_suppressed` for a day.
 - **MUST NOT** stamp `Synced-From:` commits or tell a reader to "fix it
   upstream and re-sync."
-- Client bundles that forked this tree (`omnicom-config`, and others) are
+- Client bundles that forked this tree are
   **peers**, not downstreams. A fix that matters to them is hand-ported there,
   in its own PR, by someone who has looked at that bundle's tests. Do not
   assume their `mcp/` still matches this one.
