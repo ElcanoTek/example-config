@@ -19,7 +19,7 @@
 # No image_name is passed. fleet derives the destination from this bundle's own
 # manifest — basename of sandbox.tag under this repo's owner, lowercased — which
 # is byte-identical to the string that used to be hand-written here. That string
-# is how omnicom-config ended up publishing to fleet-sandbox-example, and an
+# is how a forked bundle once ended up publishing to fleet-sandbox-example, and an
 # un-normalized ghcr.io/${{ github.repository_owner }}/... is additionally an
 # invalid OCI reference for an owner with capitals. Neither is expressible now.
 # Pass image_name only to target a non-GHCR registry (e.g. ECR).
