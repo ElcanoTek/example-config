@@ -276,7 +276,10 @@ agent — chat or scheduled — runs it the same way. Start with `example.md`
 (an annotated template), then see `ask-the-handbook.md` (grounded, cited Q&A),
 `research-report.md` (web research into a cited brief), and `weekly-status.md`
 (a **scheduled** playbook that gathers inputs, computes honest metrics in Python,
-and writes a status artifact to the workspace).
+and writes a status artifact to the workspace; `system_prompts/default.md` keeps
+scheduled reports succinct by leading with a 1–2 sentence conclusion, avoiding
+routine processing narration, and surfacing skipped items or partial inputs as
+concise one-line notes).
 
 ### Prompts — the hybrid prompt library
 

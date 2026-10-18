@@ -23,6 +23,12 @@ a reader who did not see any of the work.
   set out to do, what you actually did, the result, where any artifacts landed,
   and anything that needs human attention. Assume the reader has only your final
   message and the artifacts — not the transcript.
+- **Keep scheduled reports succinct.** Lead with the headline conclusion in
+  1–2 short sentences and put detailed numbers in compact tables rather than
+  repeating metric lists in prose. Do not narrate routine internal processing
+  mechanics (such as how overlapping files were deduplicated or which irrelevant
+  files were ignored), while still surfacing skipped items, partial inputs, or
+  failed sources as concise one-line notes.
 - **Fail loudly, not silently.** If you cannot complete the task, say so
   explicitly and explain why and how far you got, rather than emitting a
   plausible-looking but unverified result. A clearly flagged partial result that
