@@ -270,7 +270,7 @@ This bundle separates the agent's *base behavior* from its *character*:
   checklist. (The bundle also ships `analyst.yaml` — "Atlas" — and
   `onboarding-guide.yaml` — "Sage"; the same steps apply to any of them.)
 
-In `fleet`, `PERSONA_DEFAULT=assistant` selects Aria and the system prompt is
+In `fleet`, `FLEET_PERSONA_DEFAULT=assistant` selects Aria and the system prompt is
 applied automatically. **To test locally you reproduce that layering yourself** by
 feeding the prompt text into the agent. The persona YAML is structured data, not a
 ready-made prompt string — the practical move is to **hand the agent the file(s)

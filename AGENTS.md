@@ -98,7 +98,7 @@ manifest never provides means the subprocess never receives it.
   the gate.
 - **Honest docs.** If you change behavior, change the README / `mcp/README.md`
   / `docs/` in the same PR.
-- **`PERSONA_DEFAULT` is a file basename**, not the `name:` field inside the
+- **`FLEET_PERSONA_DEFAULT` is a file basename**, not the `name:` field inside the
   YAML. The shipped default is `assistant` (display name Aria).
 
 ## Where to look
@@ -110,5 +110,5 @@ manifest never provides means the subprocess never receives it.
 - **Registering these servers in your own agent:** [`INSTALL.md`](INSTALL.md)
 - **Authoring and testing the Python MCP servers:** [`mcp/README.md`](mcp/README.md)
 - **Adding a bundle-managed SES/S3 email-report pipeline:** use the external
-  canonical [new-client email-report runbook](https://github.com/ElcanoTek/ses-s3-setup/blob/main/docs/NEW-CLIENT-EMAIL-SETUP.md),
+  canonical [new-client email-report runbook](https://github.com/ElcanoTek/production-support/blob/main/ses-s3/docs/NEW-CLIENT-EMAIL-SETUP.md),
   then keep real deployment details only in the forked client bundle.

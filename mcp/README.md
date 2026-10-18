@@ -15,7 +15,7 @@ inside the fleet sandbox.
 
 For a production inbound SES/S3 email-report connector, use the external
 canonical
-[new-client email-report runbook](https://github.com/ElcanoTek/ses-s3-setup/blob/main/docs/NEW-CLIENT-EMAIL-SETUP.md).
+[new-client email-report runbook](https://github.com/ElcanoTek/production-support/blob/main/ses-s3/docs/NEW-CLIENT-EMAIL-SETUP.md).
 It covers infrastructure, least-privilege runtime access, manifest wiring,
 historical migration, and validation. Record real identifiers in the forked
 client bundle's `docs/EMAIL-DEPLOYMENT.md`, not in this generic template.

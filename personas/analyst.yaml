@@ -1,11 +1,11 @@
 # Data & research analyst persona for the Northwind example bundle.
 #
 # Personas live in personas/*.yaml; fleet selects the default via the
-# PERSONA_DEFAULT environment variable, matched against the FILE BASENAME
-# (fleet reads personas/<PERSONA_DEFAULT>.yaml — `name:` is display content).
-# This bundle ships PERSONA_DEFAULT=assistant, which selects "Aria"
+# FLEET_PERSONA_DEFAULT environment variable, matched against the FILE BASENAME
+# (fleet reads personas/<FLEET_PERSONA_DEFAULT>.yaml — `name:` is display content).
+# This bundle ships FLEET_PERSONA_DEFAULT=assistant, which selects "Aria"
 # (personas/assistant.yaml). To make THIS persona the default instead, set
-#   PERSONA_DEFAULT=analyst        # selects "Atlas" (this file)
+#   FLEET_PERSONA_DEFAULT=analyst        # selects "Atlas" (this file)
 # Users can also pick any persona per-conversation in the UI regardless of default.
 
 name: Atlas
