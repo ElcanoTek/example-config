@@ -71,14 +71,15 @@ own generic `config/default`). Point it at a checkout of this repo:
 
 ```sh
 export FLEET_CLIENT_CONFIG_DIR=/path/to/example-config
-export PERSONA_DEFAULT=assistant        # personas/assistant.yaml — the persona named "Aria"
+export FLEET_PERSONA_DEFAULT=assistant        # personas/assistant.yaml — the persona named "Aria"
 ```
 
 At boot fleet parses `manifest.yaml`, resolves each MCP server's **enable gate**
 and `${VAR}` env interpolation against the process environment, and reads the
 `system_prompts/`, `personas/`, `protocols/`, `prompts/`, and `skills/`
 directories.
-`PERSONA_DEFAULT` selects the default persona by **file basename**: fleet reads
+`FLEET_PERSONA_DEFAULT` (fleet still accepts the legacy bare `PERSONA_DEFAULT`)
+selects the default persona by **file basename**: fleet reads
 `personas/<value>.yaml` (so `assistant`, not `Aria` — the `name:` field inside
 the file is display and prompt content, never the selector). Users can still
 switch persona per-conversation in the UI. The loader and the full manifest
@@ -99,7 +100,7 @@ example-config/
   system_prompts/
     default.md           # base prompt for SCHEDULED agents
     chat.md              # base prompt for INTERACTIVE chat
-  personas/              # *.yaml — one per persona; PERSONA_DEFAULT picks one by file basename
+  personas/              # *.yaml — one per persona; FLEET_PERSONA_DEFAULT picks one by file basename
     assistant.yaml       #   Aria  — general-purpose workspace assistant (the default)
     analyst.yaml         #   Atlas — data & research analyst
     onboarding-guide.yaml#   Sage  — internal-knowledge / onboarding guide
@@ -234,7 +235,7 @@ so fleet may dispatch them concurrently within a single turn.
 
 ### Personas — the same engine, different voice and remit
 
-Personas live in `personas/*.yaml`. `PERSONA_DEFAULT` (the **file basename** —
+Personas live in `personas/*.yaml`. `FLEET_PERSONA_DEFAULT` (the **file basename** —
 `assistant` for `personas/assistant.yaml`, not the display name `Aria`) selects
 the default; users pick any persona per conversation in the UI.
 
@@ -392,7 +393,7 @@ gate automatic. See fleet's
    the manifest) uncomment `logo` / `share_image`, replacing
    `assets/northwind-mark.svg` with your own files. The app name, tab title,
    and share cards all follow the bundle at request time — no web rebuild.
-   Rename the persona files and their `name:` fields, and set `PERSONA_DEFAULT`
+   Rename the persona files and their `name:` fields, and set `FLEET_PERSONA_DEFAULT`
    to your default persona's **file basename**. Run `fleet validate-config` to
    catch a bad `logo` path before you restart into it.
 2. **Point the knowledge base at your docs.** Replace `mcp/data/handbook.json`
@@ -408,7 +409,7 @@ gate automatic. See fleet's
    `${FLEET_TASK_ID}` when the remote system records the originating task.
    If the connector is an inbound SES/S3 email-report archive, follow the
    external canonical
-   [new-client email-report runbook](https://github.com/ElcanoTek/ses-s3-setup/blob/main/docs/NEW-CLIENT-EMAIL-SETUP.md)
+   [new-client email-report runbook](https://github.com/ElcanoTek/production-support/blob/main/ses-s3/docs/NEW-CLIENT-EMAIL-SETUP.md)
    and create a deployment-specific `docs/EMAIL-DEPLOYMENT.md` in the real
    client bundle. Do not put real domains, account IDs, bucket names, or
    credentials into this template.
@@ -461,12 +462,14 @@ specifics — names, domains, IPs — stay out of this public template.
 
 - **Box**: Vultr **dedicated** Optimized Cloud Compute, General Purpose —
   8 vCPU / 32 GB / 160 GB NVMe (`voc-g-8c-32gb-160s`, ~$240/mo), **Fedora**
-  (bootstrap assumes `dnf`), public IPv4 **+ IPv6**, hostname/label
-  `<client>-fleet`. **Automatic backups: enabled** (+20%) — whole-instance
+  (bootstrap assumes `dnf`), public IPv4 **+ IPv6**, hostname/label = the
+  box's FQDN (`fleet.<domain>`). **Automatic backups: enabled** (+20%) — whole-instance
   restore on top of the on-box daily DB dump, which is same-host and covers
   logical loss only. No VPC, no provider firewall group (on-box firewalld is
-  the firewall), no DDoS add-on, no startup script. Add the ops box's SSH key
-  at creation — the deploy is driven from it.
+  the firewall), no DDoS add-on. **Startup script: `elcano-key-only-ssh`**,
+  which turns SSH password login off at first boot (bootstrap repeats it as a
+  safety net). Select every team SSH key at creation, including the ops box's
+  — the deploy is driven from it.
 - **DNS**: Cloudflare `A` + `AAAA` for `fleet.<domain>`, **DNS-only (grey
   cloud, never proxied)** — Caddy does its own Let's Encrypt issuance, which a
   proxy breaks. Verify against the zone's own nameservers before
@@ -485,7 +488,7 @@ specifics — names, domains, IPs — stay out of this public template.
     with `fleet config set-openrouter-key` (fleet exits by design until it
     exists, and `fleet-web` dependency-fails alongside — expected pre-key
     state, not a broken deploy).
-- **First-boot env**: `PERSONA_DEFAULT=<persona file basename>` and
+- **First-boot env**: `FLEET_PERSONA_DEFAULT=<persona file basename>` and
   `FLEET_SANDBOX_MEMORY=2g` (pandas-sized jobs are OOM-killed at the 512 MiB
   default) in `fleet.env`; `NEXT_PUBLIC_APP_NAME=<Client>` in `fleet-web.env`
   (see the knob above).
