@@ -59,8 +59,8 @@ servers), and **skips agents you don't have installed**.
 ## What this bundle ships
 
 Two example servers, chosen to show the two shapes you'll build for real: an
-always-on server with no credentials, and a credential-gated server that stays
-dark until you supply a key.
+always-on server with no credentials, and a credential-gated server that is
+listed as "Needs setup" and does not launch until you supply a key.
 
 | Server | Transport | Script | Enabled when you set | Env vars it reads |
 |---|---|---|---|---|
@@ -73,8 +73,9 @@ dark until you supply a key.
   the canonical "point an agent at your own docs" pattern — swap the handbook for
   your content and the tools work unchanged.
 - **`example_api`** — a generic REST connector that demonstrates host-side
-  credential brokering. It registers but stays **dark** until `EXAMPLE_API_KEY`
-  is set, so a fresh checkout runs clean with no secrets. Tools: `api_list_records`,
+  credential brokering. It does not launch until `EXAMPLE_API_KEY` is set (the
+  Tools picker lists it as **Needs setup** meanwhile), so a fresh checkout runs
+  clean with no secrets. Tools: `api_list_records`,
   `api_get_record`, `api_submit_record`. `EXAMPLE_API_BASE_URL` defaults to a
   placeholder host (`https://api.example.com/v1`); point it at any JSON API.
 
@@ -101,7 +102,7 @@ shell you launch your agent from** — the agent inherits them, and the `${VAR}`
 secret is ever stored in a config file or this repo.
 
 ```bash
-# example_api stays dark until you set its key. Set only what you want to use:
+# example_api shows as "Needs setup" and does not launch until you set its key. Set only what you want to use:
 export EXAMPLE_API_KEY=...                          # required to enable the server
 export EXAMPLE_API_BASE_URL=https://api.example.com/v1   # optional; point at your API
 export EXAMPLE_API_TIMEOUT_SECONDS=30               # optional

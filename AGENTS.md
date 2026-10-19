@@ -77,7 +77,7 @@ manifest never provides means the subprocess never receives it.
   customer-agnostic; per-customer identity arrives only through manifest env.
 - **Credentials are never values in this repo.** Manifests name *variables*.
   fleet brokers the secrets host-side; they never enter a server's source, a
-  test fixture, or a log line. The example connector stays dark until
+  test fixture, or a log line. The example connector stays off (listed as "Needs setup" in the Tools picker) until
   `EXAMPLE_API_KEY` is set in the host environment.
 - **Keep Northwind generic.** Do not drop a real customer's name, seat, account
   id, or mailbox into fixtures, docs, handbook articles, or example prompts.

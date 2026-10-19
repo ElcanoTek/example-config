@@ -473,8 +473,9 @@ asserting the data is clean.
 
 ## Optional — enabling `example_api` with a key
 
-`example_api` is the credential-gated server. It registers but stays **dark**
-until `EXAMPLE_API_KEY` is set, so everything above runs without it. To exercise
+`example_api` is the credential-gated server. It does not launch until
+`EXAMPLE_API_KEY` is set (the Tools picker lists it as **Needs setup**
+meanwhile), so everything above runs without it. To exercise
 it, you need a key and (usually) a base URL pointing at a real JSON API.
 
 **Step 1 — register it** (the installer does this; manual CLI shown for clarity):
