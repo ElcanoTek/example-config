@@ -69,11 +69,29 @@ ENV_VAR_IN_PROSE = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_[A-Z0-9*]+\b")
 # split one group in two. fleet FAILS THE LOAD on an unknown one, so a typo
 # here would stop the deployment booting; this catches it first.
 CONNECTOR_CATEGORIES = {
-    "ssps", "deal-management", "data-storage",
-    "development", "cloud-infrastructure", "databases", "data-analytics", "web-search",
-    "productivity", "communication", "crm-sales", "customer-support", "commerce-payments",
-    "finance", "design-media", "observability", "security", "ai-ml", "automation",
-    "marketing-social", "knowledge-docs", "travel-local",
+    "house",
+    "ssps",
+    "deal-management",
+    "data-storage",
+    "development",
+    "cloud-infrastructure",
+    "databases",
+    "data-analytics",
+    "web-search",
+    "productivity",
+    "communication",
+    "crm-sales",
+    "customer-support",
+    "commerce-payments",
+    "finance",
+    "design-media",
+    "observability",
+    "security",
+    "ai-ml",
+    "automation",
+    "marketing-social",
+    "knowledge-docs",
+    "travel-local",
     "misc",
 }
 
@@ -151,7 +169,9 @@ def test_description_has_no_setup_text(entry):
     name = entry.get("name")
     desc = entry.get("description") or ""
     for phrase in SETUP_PHRASES:
-        assert phrase not in desc, f"{name}: description carries setup text {phrase!r}; the Needs setup status covers it"
+        assert phrase not in desc, (
+            f"{name}: description carries setup text {phrase!r}; the Needs setup status covers it"
+        )
     named = ENV_VAR_IN_PROSE.findall(desc)
     assert not named, f"{name}: description names env vars {named}; keep them in the bundle docs"
 
