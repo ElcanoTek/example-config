@@ -19,6 +19,7 @@ copy is *true* — that a human still has to read.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -62,7 +63,9 @@ SETUP_PHRASES = ("Appears once", "No credentials required")
 # An env var named in prose: at least two underscore-joined upper-case
 # segments, so real variables (OPENX_API_KEY, FEEDS_AWS_*) match while
 # domain acronyms (SSP, DSP, SQL, S3, IAM, SES) do not.
-ENV_VAR_IN_PROSE = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_[A-Z0-9*]+\b")
+# The end is a lookahead, not \b: a trailing family wildcard (FEEDS_AWS_*)
+# ends in a non-word character, where \b would not match.
+ENV_VAR_IN_PROSE = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9*]+)+(?![A-Za-z0-9_*])")
 
 # The Tools-picker groups, by ID: fleet's internal/clientconfig/
 # connector_categories.go. An ID, never free text, so "SSP" and "SSPs" cannot
@@ -101,7 +104,18 @@ def _servers():
     return manifest.get("mcp_servers") or []
 
 
+def _plugin_servers():
+    """Connectors an Agent Plugin declares through fleet's extension."""
+    out = []
+    for plugin_json in sorted((MANIFEST_PATH.parent / "plugins").glob("*/plugin.json")):
+        ext = (json.loads(plugin_json.read_text()).get("extensions") or {}).get("com.elcanotek.fleet") or {}
+        for name, entry in (ext.get("mcp_servers") or {}).items():
+            out.append({"name": name, **entry, "_source": str(plugin_json.relative_to(MANIFEST_PATH.parent))})
+    return out
+
+
 SERVERS = _servers()
+PLUGIN_SERVERS = _plugin_servers()
 IDS = [s.get("name", f"<unnamed #{i}>") for i, s in enumerate(SERVERS)]
 
 
@@ -186,3 +200,24 @@ def test_category(entry):
         f"{name}: unknown category {cat!r}; fleet refuses to load the bundle. "
         f"Pick one of {sorted(CONNECTOR_CATEGORIES)}"
     )
+
+
+@pytest.mark.parametrize("entry", PLUGIN_SERVERS, ids=[e["name"] for e in PLUGIN_SERVERS])
+def test_plugin_connector_category(entry):
+    """A plugin's connector sits under a known heading too (fleet reports an unknown one)."""
+    cat = entry.get("category")
+    assert cat, f"{entry['name']} ({entry['_source']}): no category in the fleet extension"
+    assert cat in CONNECTOR_CATEGORIES, f"{entry['name']} ({entry['_source']}): unknown category {cat!r}"
+
+
+@pytest.mark.parametrize(
+    "text,named",
+    [
+        ("Appears once OPENX_API_KEY is set.", ["OPENX_API_KEY"]),
+        ("Appears once the FEEDS_AWS_* credentials are set.", ["FEEDS_AWS_*"]),
+        ("Query openx_bids over Athena for SSP and DSP data in S3.", []),
+    ],
+)
+def test_env_var_pattern(text, named):
+    """The env-name gate catches plain and wildcard names, not acronyms or table names."""
+    assert ENV_VAR_IN_PROSE.findall(text) == named

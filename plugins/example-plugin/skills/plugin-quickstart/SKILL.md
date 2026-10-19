@@ -41,8 +41,9 @@ plugins/example-plugin/
 The portable format has no field for a client's governance settings, so the
 spec gives each client a reverse-domain namespace under `extensions` that other
 clients ignore. This plugin's `plugin.json` uses fleet's — `com.elcanotek.fleet`
-— to declare a `tools` allowlist and a `fleet mcp test --deep` `probe` for the
-`plugin_notes` server. Cursor, VS Code and the rest skip that block and load the
+— to declare a `tools` allowlist, a `fleet mcp test --deep` `probe` and the
+Tools-picker `category` (an ID from fleet's list, here `misc`; untagged lands
+in Misc Tools with a boot warning) for the `plugin_notes` server. Cursor, VS Code and the rest skip that block and load the
 plugin exactly the same. Anything credential-shaped is deliberately not
 expressible there: a server that needs a brokered secret belongs in the bundle's
 `manifest.yaml`, not in a plugin.

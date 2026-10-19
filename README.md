@@ -227,6 +227,12 @@ The manifest also carries a commented, copy-paste-ready third entry showing an
 **HTTP (remote) MCP server** with `optional: true` — the opt-in-per-conversation
 pattern, with `enabled_by_default`, `beta`, and a `tools:` allowlist.
 
+Every entry also carries a `category:`: the Tools-picker group it is listed
+under, an ID from fleet's list (`ssps`, `deal-management`, `data-storage`,
+`knowledge-docs`, `misc`, …, plus `house` for your own team's tools, which the
+picker lists first under `branding.house_tools_name`). An unknown ID fails
+fleet's load, so `mcp/tests/test_connector_copy.py` checks it.
+
 Its write tool, `api_submit_record`, is listed under the manifest's
 `critical_tools` — so fleet makes the agent stop and get an **audit confirmation**
 before that consequential action runs (with a per-tool approval window from
