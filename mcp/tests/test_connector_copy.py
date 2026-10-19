@@ -54,29 +54,33 @@ BANNED_OPENERS = (
     "integration ",
 )
 
-# The gating clause is a promise about WHEN the connector appears, so it has to
-# match the entry's real gate.
-GATING_CLAUSE = "Appears once"
+# Setup text does not belong in a description: fleet lists a connector whose
+# credentials are not set as "Needs setup" in the Tools picker and on Settings
+# -> Connections, with copy that depends on whether the reader is an admin.
+SETUP_PHRASES = ("Appears once", "No credentials required")
 
 # An env var named in prose: at least two underscore-joined upper-case
 # segments, so real variables (OPENX_API_KEY, FEEDS_AWS_*) match while
 # domain acronyms (SSP, DSP, SQL, S3, IAM, SES) do not.
 ENV_VAR_IN_PROSE = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_[A-Z0-9*]+\b")
 
+# The Tools-picker groups, by ID: fleet's internal/clientconfig/
+# connector_categories.go. An ID, never free text, so "SSP" and "SSPs" cannot
+# split one group in two. fleet FAILS THE LOAD on an unknown one, so a typo
+# here would stop the deployment booting; this catches it first.
+CONNECTOR_CATEGORIES = {
+    "ssps", "deal-management", "data-storage",
+    "development", "cloud-infrastructure", "databases", "data-analytics", "web-search",
+    "productivity", "communication", "crm-sales", "customer-support", "commerce-payments",
+    "finance", "design-media", "observability", "security", "ai-ml", "automation",
+    "marketing-social", "knowledge-docs", "travel-local",
+    "misc",
+}
+
 
 def _servers():
     manifest = yaml.safe_load(MANIFEST_PATH.read_text())
     return manifest.get("mcp_servers") or []
-
-
-def _gate_vars(entry):
-    """Every env var that can make this entry appear, or None when ungated."""
-    if entry.get("always"):
-        return None
-    gate = list(entry.get("enabled_env") or [])
-    for group in entry.get("enabled_groups") or []:
-        gate.extend(group)
-    return gate or None
 
 
 SERVERS = _servers()
@@ -119,9 +123,8 @@ def test_description_shape(entry):
     )
     assert desc.endswith("."), f"{name}: description should end with a period"
     # Plain text only — the picker renders the raw string, so markup shows up
-    # literally. Underscores and `*` are NOT banned: they spell env var names
-    # (OPENX_API_KEY) and the family wildcard (FEEDS_AWS_*) the gating clause
-    # is required to use.
+    # literally. Underscores are NOT banned: they spell feed and table names
+    # (openx_bids).
     assert not any(c in desc for c in "`#|"), f"{name}: description must be plain text, no markdown"
     assert "**" not in desc, f"{name}: description must be plain text, no markdown emphasis"
     assert "Try:" not in desc, f"{name}: example prompts belong in the bundle's docs, not in a two-line picker row"
@@ -138,39 +141,28 @@ def test_description_shape(entry):
 
 
 @pytest.mark.parametrize("entry", SERVERS, ids=IDS)
-def test_gating_clause_matches_the_real_gate(entry):
-    """A promise about when a connector appears has to match its gate.
+def test_description_has_no_setup_text(entry):
+    """The status says when a connector needs setup; the description says what it does.
 
-    Both directions are wrong in a user-visible way: a gating clause on an
-    ungated connector is a lie the picker contradicts on screen, and a gated
-    connector with no clause leaves a user staring at a connector list that is
-    missing an entry with nothing to explain why.
+    A gating clause ("Appears once OPENX_API_KEY is set") duplicated what the
+    Tools picker now shows as "Needs setup", and put env var names in front of
+    people who cannot set them.
     """
     name = entry.get("name")
     desc = entry.get("description") or ""
-    gate = _gate_vars(entry)
-    claims_gating = GATING_CLAUSE in desc
+    for phrase in SETUP_PHRASES:
+        assert phrase not in desc, f"{name}: description carries setup text {phrase!r}; the Needs setup status covers it"
+    named = ENV_VAR_IN_PROSE.findall(desc)
+    assert not named, f"{name}: description names env vars {named}; keep them in the bundle docs"
 
-    if gate is None:
-        assert not claims_gating, (
-            f"{name}: description claims a credential gate but the entry has "
-            f"no enabled_env/enabled_groups (or is always: true) — it appears regardless"
-        )
-        return
 
-    assert claims_gating, (
-        f"{name}: entry is gated on {sorted(set(gate))} but the description "
-        f"never says so; add a '{GATING_CLAUSE} ... is set.' clause"
+@pytest.mark.parametrize("entry", SERVERS, ids=IDS)
+def test_category(entry):
+    """Every connector sits under a Tools-picker heading fleet knows."""
+    name = entry.get("name")
+    cat = entry.get("category")
+    assert cat, f"{name}: no category; the Tools picker files it under Misc Tools and fleet warns at boot"
+    assert cat in CONNECTOR_CATEGORIES, (
+        f"{name}: unknown category {cat!r}; fleet refuses to load the bundle. "
+        f"Pick one of {sorted(CONNECTOR_CATEGORIES)}"
     )
-    # Any variable named in prose must be one this entry is actually gated on
-    # (a trailing * collapses a family: FEEDS_AWS_* covers FEEDS_AWS_*_KEY).
-    for named in ENV_VAR_IN_PROSE.findall(desc):
-        if named.endswith("*"):
-            prefix = named.rstrip("*")
-            assert any(v.startswith(prefix) for v in gate), (
-                f"{name}: description names {named!r}, which matches no gate var in {sorted(set(gate))}"
-            )
-        else:
-            assert named in gate, (
-                f"{name}: description names {named!r}, which is not one of this entry's gate vars {sorted(set(gate))}"
-            )
