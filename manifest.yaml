@@ -323,6 +323,7 @@ mcp_servers:
   #   beta: true
   #   display_name: "Ticketing (beta)"
   #   description: "Search and update tickets in the team tracker. Opt in per conversation."
+  #   category: customer-support
   #   tools: ["ticket_search", "ticket_get", "ticket_update"]
   #   # Optional TLS hardening for an https server (CA pin / mTLS / SPKI pin):
   #   # tls:
