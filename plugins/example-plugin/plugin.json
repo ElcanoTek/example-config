@@ -30,7 +30,7 @@
             "contains": "plugin_root"
           },
           "category": "misc",
-          "description": "Scratch notes that persist in PLUGIN_DATA across restarts and plugin updates. Shared by every conversation on this deployment."
+          "description": "Scratch notes that persist across restarts and plugin updates. Shared by every conversation on this deployment."
         }
       }
     }

@@ -172,13 +172,13 @@ def test_description_shape(entry):
     )
 
 
-@pytest.mark.parametrize("entry", SERVERS, ids=IDS)
+@pytest.mark.parametrize("entry", SERVERS + PLUGIN_SERVERS, ids=IDS + [e["name"] for e in PLUGIN_SERVERS])
 def test_description_has_no_setup_text(entry):
     """The status says when a connector needs setup; the description says what it does.
 
     A gating clause ("Appears once OPENX_API_KEY is set") duplicated what the
     Tools picker now shows as "Needs setup", and put env var names in front of
-    people who cannot set them.
+    people who cannot set them. Plugin connectors show in the same picker.
     """
     name = entry.get("name")
     desc = entry.get("description") or ""
