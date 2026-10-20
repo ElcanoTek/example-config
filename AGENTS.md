@@ -77,7 +77,7 @@ manifest never provides means the subprocess never receives it.
   customer-agnostic; per-customer identity arrives only through manifest env.
 - **Credentials are never values in this repo.** Manifests name *variables*.
   fleet brokers the secrets host-side; they never enter a server's source, a
-  test fixture, or a log line. The example connector stays dark until
+  test fixture, or a log line. The example connector stays off (listed as "Needs setup" in the Tools picker) until
   `EXAMPLE_API_KEY` is set in the host environment.
 - **Keep Northwind generic.** Do not drop a real customer's name, seat, account
   id, or mailbox into fixtures, docs, handbook articles, or example prompts.
@@ -92,10 +92,14 @@ manifest never provides means the subprocess never receives it.
   fleet renders nothing where a description is missing — a blank row reads as
   a broken connector. Write them in fleet's house style (its
   `docs/MCP-CATALOG.md`, "Connector copy"): a vendor-cased display name with
-  no plumbing words, then one imperative capability sentence and — only for a
-  gated connector — a clause naming the real `enabled_env`/`enabled_groups`
-  vars. fleet only WARNS on a gap, so `mcp/tests/test_connector_copy.py` is
-  the gate.
+  no plumbing words, then one imperative capability sentence and no setup
+  text: fleet lists a connector whose `enabled_env`/`enabled_groups` are unset
+  as "Needs setup", so no "Appears once ... is set" clause and no env var
+  names. Each entry also names its Tools-picker group with `category:`, an ID
+  from fleet's list (`house` for Elcano's own tools, shown first as "Elcano
+  Tools"; `ssps`, `deal-management`, `data-storage`, `misc`, …); fleet fails
+  the load on an unknown one. fleet only WARNS on a copy gap, so
+  `mcp/tests/test_connector_copy.py` is the gate.
 - **Honest docs.** If you change behavior, change the README / `mcp/README.md`
   / `docs/` in the same PR.
 - **`FLEET_PERSONA_DEFAULT` is a file basename**, not the `name:` field inside the

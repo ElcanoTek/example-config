@@ -473,8 +473,11 @@ asserting the data is clean.
 
 ## Optional — enabling `example_api` with a key
 
-`example_api` is the credential-gated server. It registers but stays **dark**
-until `EXAMPLE_API_KEY` is set, so everything above runs without it. To exercise
+`example_api` is the credential-gated server, and everything above runs
+without it. A local agent registers it whether or not `EXAMPLE_API_KEY` is set;
+without a key each tool call returns an "EXAMPLE_API_KEY is not set" error.
+(Under fleet the gate is real: the connector does not launch, and the Tools
+picker lists it as **Needs setup**.) To exercise
 it, you need a key and (usually) a base URL pointing at a real JSON API.
 
 **Step 1 — register it** (the installer does this; manual CLI shown for clarity):

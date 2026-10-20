@@ -196,7 +196,7 @@ everything else.
 | Server | Gate | Credentials | What it shows |
 | --- | --- | --- | --- |
 | `knowledge_base` | `always: true` | none | Point an agent at **your own docs.** Searches a bundled JSON handbook. |
-| `example_api` | `enabled_env: [EXAMPLE_API_KEY]` | brokered host-side | The **gated connector** pattern — stays dark until the key is set. |
+| `example_api` | `enabled_env: [EXAMPLE_API_KEY]` | brokered host-side | The **gated connector** pattern — listed as **Needs setup** and never launched until the key is set. |
 
 - **`knowledge_base`** is the canonical "answer from our docs" pattern. It serves
   a small company handbook (`mcp/data/handbook.json`, with People / Engineering /
@@ -204,8 +204,9 @@ everything else.
   categories, and read articles. It needs no credentials, so a fresh checkout
   runs clean. Swap the JSON for your content — or rewrite the server to read your
   wiki, your vector store, your ticketing system.
-- **`example_api`** is a generic REST connector that registers but stays **dark**
-  until `EXAMPLE_API_KEY` is present in the environment. This is the **host-side
+- **`example_api`** is a generic REST connector that does not launch until
+  `EXAMPLE_API_KEY` is present in the environment; until then the Tools picker
+  lists it as **Needs setup** (search finds it, with no switch). This is the **host-side
   credential broker** in miniature: the manifest names the variable
   (`account_vars: [EXAMPLE_API_KEY]`), fleet holds the secret host-side, and it
   injects the value only when it runs a delegated MCP call — never into the
@@ -225,6 +226,12 @@ declares, so the author vets the call for side effects once, in the manifest.
 The manifest also carries a commented, copy-paste-ready third entry showing an
 **HTTP (remote) MCP server** with `optional: true` — the opt-in-per-conversation
 pattern, with `enabled_by_default`, `beta`, and a `tools:` allowlist.
+
+Every entry also carries a `category:`: the Tools-picker group it is listed
+under, an ID from fleet's list (`ssps`, `deal-management`, `data-storage`,
+`knowledge-docs`, `misc`, …, plus `house` for your own team's tools, which the
+picker lists first under `branding.house_tools_name`). An unknown ID fails
+fleet's load, so `mcp/tests/test_connector_copy.py` checks it.
 
 Its write tool, `api_submit_record`, is listed under the manifest's
 `critical_tools` — so fleet makes the agent stop and get an **audit confirmation**

@@ -19,6 +19,7 @@
     "com.elcanotek.fleet": {
       "mcp_servers": {
         "plugin_notes": {
+          "display_name": "Plugin Notes",
           "tools": [
             "plugin_info",
             "note_add",
@@ -29,7 +30,8 @@
             "tool": "plugin_info",
             "contains": "plugin_root"
           },
-          "description": "Scratch notes that persist in PLUGIN_DATA across restarts and plugin updates. Shared by every conversation on this deployment."
+          "category": "misc",
+          "description": "Scratch notes that persist across restarts and plugin updates. Shared by every conversation on this deployment."
         }
       }
     }

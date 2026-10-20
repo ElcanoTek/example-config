@@ -40,8 +40,9 @@ tool returns a clear error so the model can recover.
 
 ## `example_api.py` — credential-gated REST connector
 
-A generic REST connector over `httpx`. It registers in the catalog but stays
-**dark** until `EXAMPLE_API_KEY` is set, so a fresh checkout runs clean with no
+A generic REST connector over `httpx`. It does not launch until
+`EXAMPLE_API_KEY` is set; meanwhile the Tools picker lists it as **Needs setup**
+(search finds it, with no switch), so a fresh checkout runs clean with no
 secrets. fleet brokers the real key host-side and injects it only for the
 duration of a delegated call — it never enters the model's context or the
 sandbox.
