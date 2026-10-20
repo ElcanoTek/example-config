@@ -19,6 +19,7 @@
     "com.elcanotek.fleet": {
       "mcp_servers": {
         "plugin_notes": {
+          "display_name": "Plugin Notes",
           "tools": [
             "plugin_info",
             "note_add",

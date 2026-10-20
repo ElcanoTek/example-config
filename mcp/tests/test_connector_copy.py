@@ -105,18 +105,32 @@ def _servers():
 
 
 def _plugin_servers():
-    """Connectors an Agent Plugin declares through fleet's extension."""
+    """Every connector an Agent Plugin ships, as fleet loads it.
+
+    fleet reads plugin.json and mcp.json at the plugin root. A server comes from
+    mcp.json; its picker copy and category come from the optional fleet
+    extension in plugin.json. Joining the two means a server with no extension
+    entry still gets checked (and fails for having no copy) instead of being
+    skipped.
+    """
     out = []
     for plugin_json in sorted((MANIFEST_PATH.parent / "plugins").glob("*/plugin.json")):
+        source = str(plugin_json.relative_to(MANIFEST_PATH.parent))
         ext = (json.loads(plugin_json.read_text()).get("extensions") or {}).get("com.elcanotek.fleet") or {}
-        for name, entry in (ext.get("mcp_servers") or {}).items():
-            out.append({"name": name, **entry, "_source": str(plugin_json.relative_to(MANIFEST_PATH.parent))})
+        overrides = ext.get("mcp_servers") or {}
+        mcp_json = plugin_json.parent / "mcp.json"
+        declared = json.loads(mcp_json.read_text()).get("mcpServers") or {} if mcp_json.exists() else {}
+        for name in sorted(set(declared) | set(overrides)):
+            out.append({"name": name, **(overrides.get(name) or {}), "_source": source})
     return out
 
 
 SERVERS = _servers()
 PLUGIN_SERVERS = _plugin_servers()
 IDS = [s.get("name", f"<unnamed #{i}>") for i, s in enumerate(SERVERS)]
+# Plugin connectors show in the same Tools picker, so the copy rules cover them too.
+ALL_SERVERS = SERVERS + PLUGIN_SERVERS
+ALL_IDS = IDS + [f"plugin:{e['name']}" for e in PLUGIN_SERVERS]
 
 
 def test_manifest_declares_servers():
@@ -124,7 +138,7 @@ def test_manifest_declares_servers():
     assert SERVERS, f"no mcp_servers entries found in {MANIFEST_PATH}"
 
 
-@pytest.mark.parametrize("entry", SERVERS, ids=IDS)
+@pytest.mark.parametrize("entry", ALL_SERVERS, ids=ALL_IDS)
 def test_display_name(entry):
     name = entry.get("name")
     display = entry.get("display_name")
@@ -140,7 +154,7 @@ def test_display_name(entry):
     assert not noise, f"{name}: display_name {display!r} carries plumbing words {sorted(noise)}"
 
 
-@pytest.mark.parametrize("entry", SERVERS, ids=IDS)
+@pytest.mark.parametrize("entry", ALL_SERVERS, ids=ALL_IDS)
 def test_description_shape(entry):
     name = entry.get("name")
     desc = entry.get("description")
@@ -172,18 +186,18 @@ def test_description_shape(entry):
     )
 
 
-@pytest.mark.parametrize("entry", SERVERS + PLUGIN_SERVERS, ids=IDS + [e["name"] for e in PLUGIN_SERVERS])
+@pytest.mark.parametrize("entry", ALL_SERVERS, ids=ALL_IDS)
 def test_description_has_no_setup_text(entry):
     """The status says when a connector needs setup; the description says what it does.
 
     A gating clause ("Appears once OPENX_API_KEY is set") duplicated what the
     Tools picker now shows as "Needs setup", and put env var names in front of
-    people who cannot set them. Plugin connectors show in the same picker.
+    people who cannot set them.
     """
     name = entry.get("name")
     desc = entry.get("description") or ""
     for phrase in SETUP_PHRASES:
-        assert phrase not in desc, (
+        assert phrase.lower() not in desc.lower(), (
             f"{name}: description carries setup text {phrase!r}; the Needs setup status covers it"
         )
     named = ENV_VAR_IN_PROSE.findall(desc)
@@ -202,7 +216,7 @@ def test_category(entry):
     )
 
 
-@pytest.mark.parametrize("entry", PLUGIN_SERVERS, ids=[e["name"] for e in PLUGIN_SERVERS])
+@pytest.mark.parametrize("entry", PLUGIN_SERVERS, ids=[f"plugin:{e['name']}" for e in PLUGIN_SERVERS])
 def test_plugin_connector_category(entry):
     """A plugin's connector sits under a known heading too (fleet reports an unknown one)."""
     cat = entry.get("category")
