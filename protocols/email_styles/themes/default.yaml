@@ -1,0 +1,4 @@
+theme_id: default
+description: Generic, unbranded email palette — the shipped default. No color
+  overrides; the canonical_template's neutral defaults apply.
+color_overrides: {}

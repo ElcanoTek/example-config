@@ -1,24 +1,29 @@
-# Example MCP servers
+# MCP servers
 
-This directory holds the two example MCP (Model Context Protocol) servers that
-ship with the example bundle. They are wired into the agent catalog in the
-bundle's `manifest.yaml`. Together they show the two shapes every fleet MCP
-server takes:
+This directory holds the bundle's MCP (Model Context Protocol) servers, wired
+into the agent catalog in `manifest.yaml`. Two are examples that show the two
+shapes every fleet MCP server takes; two are the standard client stack's email
+connectors, dark until their host env is set:
 
 | Server | File | Shape | Credentials |
 | --- | --- | --- | --- |
-| Team Knowledge Base | `knowledge_base.py` | always-on | none |
+| Demo Handbook | `knowledge_base.py` | always registered, off by default (demo content) | none |
 | Example REST API | `example_api.py` | credential-gated | `EXAMPLE_API_KEY` |
+| Email Reports (`email`) | `ses_s3_email.py` | credential-gated, read-only | `EMAIL_S3_BUCKET` (+ `EMAIL_AWS_*` keys or an instance role) |
+| Amazon SES Email (`ses_outbound`) | `ses_sender.py` (+ `email_render.py`, `email_lint.py`) | credential-gated, every send approval-gated | `SES_OUTBOUND_AWS_*`, `SES_OUTBOUND_FROM_EMAIL` |
 
-Both are stdio servers built on `mcp.server.fastmcp.FastMCP` and run unchanged
-inside the fleet sandbox.
+All are stdio servers built on `mcp.server.fastmcp.FastMCP`. fleet launches
+each as a host-side subprocess with only the environment its manifest entry
+maps (never the whole host env, and never inside the agent's command sandbox); `utils/` holds their shared run ledger, URL guard and
+filesystem helpers. Lens and Pages are remote (http) servers on the client's
+own boxes, so they have manifest entries but no code here.
 
-For a production inbound SES/S3 email-report connector, use the external
-canonical
+To stand up a client's SES/S3 email tenant (infrastructure, least-privilege
+runtime access, the fleet host variables, historical migration, validation),
+use the canonical
 [new-client email-report runbook](https://github.com/ElcanoTek/production-support/blob/main/ses-s3/docs/NEW-CLIENT-EMAIL-SETUP.md).
-It covers infrastructure, least-privilege runtime access, manifest wiring,
-historical migration, and validation. Record real identifiers in the forked
-client bundle's `docs/EMAIL-DEPLOYMENT.md`, not in this generic template.
+Record real identifiers in the forked client bundle's `docs/EMAIL-DEPLOYMENT.md`,
+not in this generic template.
 
 ## `knowledge_base.py` — always-on, no credentials
 

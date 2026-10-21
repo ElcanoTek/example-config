@@ -20,7 +20,7 @@ unchanged in any sibling `*-config` bundle you fork from this one.
 > **Going further than just the MCP servers?** Once they're registered, see
 > **[docs/TESTING-LOCALLY.md](docs/TESTING-LOCALLY.md)** for the hands-on guide to
 > *testing* the full bundle in a local agent — verifying a server live and calling
-> its tools, applying the Aria persona / a system prompt, and running a protocol
+> its tools, applying the Victoria persona / a system prompt, and running a protocol
 > end-to-end (Claude Code first, then a note for the other agents).
 
 ---
@@ -38,6 +38,10 @@ detects. Pick a different directory with `bash -s -- <dir>` or `BUNDLE_DIR=...`:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ElcanoTek/example-config/main/install.sh | bash -s -- ~/code/example-config
 ```
+
+A private client fork can't be fetched anonymously: clone it with your own
+GitHub access (`gh repo clone ElcanoTek/<client>-config`) and run
+`./install.sh` in the checkout. Never put a token in the clone URL.
 
 Already have the repo checked out? Just run it in place:
 
@@ -65,8 +69,10 @@ registers it and its tool calls fail).
 
 | Server | Transport | Script | Enabled when you set | Env vars it reads |
 |---|---|---|---|---|
-| `knowledge_base` | stdio | `mcp/knowledge_base.py` | always on | _(none)_ |
+| `knowledge_base` | stdio | `mcp/knowledge_base.py` | always on locally (off by default in fleet: demo content) | _(none)_ |
 | `example_api` | stdio | `mcp/example_api.py` | `EXAMPLE_API_KEY` | `EXAMPLE_API_KEY`, `EXAMPLE_API_BASE_URL`, `EXAMPLE_API_TIMEOUT_SECONDS` |
+| `lens` | http | _(remote: this deployment's Lens)_ | `LENS_MCP_URL` and `LENS_API_TOKEN` | `LENS_MCP_URL` (`https://<Lens host>/mcp`; export it before running `install.sh`, which writes the resolved URL), `LENS_API_TOKEN` (minted on that host with `lens token create`) |
+| `pages` | http | _(remote: this deployment's Pages)_ | `PAGES_MCP_URL` and `PAGES_API_TOKEN` | `PAGES_MCP_URL` (`https://<Pages host>/mcp`; export it before running `install.sh`), `PAGES_API_TOKEN` (minted on that host with `pages token add`) |
 
 - **`knowledge_base`** — a tiny "team knowledge base" over a bundled JSON handbook
   (`mcp/data/handbook.json`). No credentials, so it runs the moment it's
@@ -131,7 +137,7 @@ learn the mechanics on; set `EXAMPLE_API_KEY` and restart the agent to bring
 
 The installer auto-detects these. If you'd rather wire one up by hand, or the CLI
 path fails, use the snippet below. Replace `<bundle>` with the absolute path to
-your checkout (e.g. `/home/you/example-config`) — most config files don't expand
+your checkout (e.g. `/home/you/example-config`); most config files don't expand
 `~`. Each snippet shows both servers; drop the `example_api` block if you only
 want the always-on knowledge base, or just run the installer.
 
@@ -362,6 +368,27 @@ env vars aren't exported in the shell that launched the agent — set them
 failing usually just means `EXAMPLE_API_KEY` isn't set.
 
 ---
+
+### Remote (http) connectors: Lens and Pages
+
+- **Export the URL before installing.** `install.sh` writes each http
+  connector's resolved URL (`LENS_MCP_URL`, `PAGES_MCP_URL`) because agents
+  take `url` literally. A connector whose URL is unset is skipped with
+  `skipping lens: export LENS_MCP_URL and rerun`; export it and rerun.
+- **Installed before this?** The installer never overwrites an existing entry,
+  so an entry written earlier keeps its old URL. Remove it in that agent
+  (e.g. `claude mcp remove lens`, or delete its block from the agent's config
+  file), then rerun `install.sh`.
+- **Lens needs a Lens host that serves `/mcp`** (ElcanoTek/lens at `72a655a`
+  or later). Check before enabling: `curl -s -o /dev/null -w '%{http_code}\n'
+  -X POST https://<lens host>/mcp` prints `401` on a host that has it and `404`
+  on one that predates it (update it with `lens update`).
+- **Goose and Grok: authenticated http connectors (Lens, Pages) are not
+  supported yet.** The installer registers no bearer header for Goose and skips
+  http servers for Grok, and putting a token value into an agent config file
+  would break this bundle's rule that secrets live only in the environment.
+  Use one of the other agents for these connectors. fleet itself is
+  unaffected; it reads `manifest.yaml` directly and brokers the header.
 
 ## Troubleshooting
 

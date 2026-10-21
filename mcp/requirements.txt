@@ -12,8 +12,16 @@
 # ModuleNotFoundError. Lift it only together with migrating the servers off
 # that import path; the 1.x line stays free to float.
 mcp>=1.28.1,<2
-# HTTP client used by the gated example_api connector
+# HTTP client used by the gated example_api connector and the inbound email
+# archive's guarded link downloads
 httpx
+# Async file I/O used by the inbound email archive's attachment writes
+aiofiles
+# Async AWS client used by the SES/S3 inbound connector and the SES sender
+aioboto3
+# HTML5 parser used by email_lint's structural checks (ses_sender's
+# send_email validation pipeline)
+html5lib>=1.1
 # YAML reader for install.sh's manifest parser
 pyyaml
 
@@ -22,3 +30,5 @@ pytest
 pytest-asyncio
 respx
 ruff
+# Brand helpers (assets/make-share-card.py); not used by the servers.
+pillow

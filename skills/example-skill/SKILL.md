@@ -80,7 +80,7 @@ as needed:
    [`scripts/greet.py`](scripts/greet.py), a tiny standard-library demo:
 
    ```bash
-   python3 skills/example-skill/scripts/greet.py "Aria"
+   python3 skills/example-skill/scripts/greet.py "Victoria"
    ```
 
    It prints a deterministic greeting and exits — a stand-in for the real work a

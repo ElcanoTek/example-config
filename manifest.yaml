@@ -28,43 +28,36 @@
 # whole white-label surface — change five lines and the app is yours.
 branding:
   app_name: "Northwind"
+  # The Tools picker's first group: Elcano's own connectors (category: house).
+  house_tools_name: "Elcano Tools"
   login_title: "Welcome aboard."
   login_tagline: "Sign in to your workspace and pick up where you left off."
   share_title: "Northwind — your team's AI workspace"
   share_description: "Persistent, multi-turn conversations with real tool use across your files, data, and the tools your team already uses."
-  # The mark the navigation rail renders on every page. A bundle-relative path
-  # to an .svg/.png/.webp/.jpg/.jpeg/.ico file, served straight from this bundle
-  # (as /api/brand/logo), so changing it is a bundle change plus a restart — no
-  # web rebuild, and nothing to copy into fleet. Drop the field and the rail
-  # falls back to fleet's own mark. The path must stay inside the bundle and the
-  # file must exist: fleet fails at startup on a bad value rather than rendering
-  # a broken image on every page, so `fleet validate-config` catches a typo
-  # before you restart into it.
+  # The mark the navigation rail renders on every page, the browser tab icon,
+  # and the installed-PWA icon, served from the bundle at request time
+  # (/api/brand/logo). A bundle-relative .svg/.png/.webp/.jpg/.jpeg/.ico; fleet
+  # fails at startup on a bad path, so `fleet validate-config` catches a typo
+  # before you restart into it. Drop the field and the rail shows fleet's own
+  # mark. Needs a fleet at or past 2ac6ac1 (PR #886), which added the field.
+  # A client fork replaces it with the client's own mark (a square PNG of at
+  # least 256x256, or an SVG).
+  logo: "assets/northwind-mark.svg"
   #
-  # SHIPPED COMMENTED on purpose (2026-08-03). `logo` was added to the manifest
-  # schema in fleet commit 2ac6ac1 (PR #886, merged 2026-07-29), and the
-  # decoder is STRICT — on any fleet built before that commit an uncommented
-  # `logo` is an unknown key that fails the whole bundle load at boot. fleet
-  # has not cut a tagged release yet (`fleet version` reads the repo VERSION
-  # file, still 0.0.0), so check the binary you actually run before
-  # uncommenting: `git -C <fleet checkout> merge-base --is-ancestor 2ac6ac1
-  # HEAD`, or grep its internal/clientconfig/clientconfig.go for `yaml:"logo"`
-  # (the CHANGELOG "brand mark" entry and docs/BRANDING.md also mark the
-  # feature). On a fleet at or past #886, uncomment:
-  # logo: "assets/northwind-mark.svg"
+  # The card link-unfurl scrapers (Slack, Teams, iMessage, Discord) render when
+  # a deployment URL is pasted: a 1280x640 PNG/WebP/JPEG (SVG and ICO are
+  # rejected), served as /api/brand/share-image. Without it fleet serves its
+  # own generic card. Needs fleet #900 (1daf415). Regenerate with
+  # `python3 assets/make-share-card.py --host fleet.<client domain>` after
+  # changing the palette, the mark or the strings above: it reads them from
+  # this block.
+  share_image: "assets/northwind-share.png"
   #
-  # The OG unfurl card (og:image / twitter:image) that link scrapers render
-  # when a deployment URL is pasted into Slack / iMessage / Discord / Teams. A
-  # bundle-relative PNG/WebP/JPEG (1280x640 is conventional; SVG and ICO are
-  # rejected at load because no unfurl scraper renders them). Validated at
-  # startup exactly like `logo` and served from the bundle as
-  # /api/brand/share-image; omit it and fleet's neutral generic card stands.
-  # Same strict-decoder gate as `logo`, only newer: added in fleet commit
-  # 1daf415 (PR #900) — uncomment only on a fleet at or past it (same
-  # ancestor/grep check as above, against `yaml:"share_image"`).
-  # share_image: "assets/northwind-share.png"
   # UI theme — a deliberately generic, unbranded monochrome palette (neutral
-  # zinc + a restrained near-mono accent). Swap in your own brand colors.
+  # zinc + a restrained near-mono accent). A client fork replaces this whole
+  # block with `python3 assets/make-palette.py --slug <client> --primary <hex>
+  # ... --write`, which also writes the matching email theme and chart colors
+  # and checks every pair's contrast; `--check` re-verifies a hand-edited one.
   # Served as a render-blocking stylesheet so the shell (incl. login) paints
   # with no flash.
   #
@@ -126,7 +119,7 @@ branding:
       surface_2: "#F1F1F3"
       text_primary: "#18181B"
       text_secondary: "#3F3F46"
-      text_muted: "#71717A"
+      text_muted: "#6B6B73"  # 4.7:1 on surface_2 (zinc-500 #71717A was 4.3:1)
       text_disabled: "rgba(63, 63, 70, 0.45)"
       border: "rgba(0, 0, 0, 0.12)"
       border_strong: "rgba(0, 0, 0, 0.24)"
@@ -191,16 +184,26 @@ sandbox:
 # UUID. These are resolved at spawn time, never from the operator environment —
 # `example_api` below carries a live `${FLEET_WORKSPACE}` mapping.
 #
-# This bundle ships two working servers (plus one commented example) so you can
-# see the shapes:
+# This bundle ships two demo servers (1-2), the standard Elcano client stack's
+# own connectors (3-6: Pages, Lens, inbound and outbound email), each dark until
+# its credentials are in fleet's host env, and one commented example (7):
 mcp_servers:
-  # 1) An ALWAYS-ON server with no credentials — runs the moment fleet boots.
-  #    A tiny "team knowledge base" over a bundled JSON handbook: the canonical
-  #    "point an agent at your own docs" pattern. Swap mcp/data/handbook.json
-  #    for your content (or rewrite the server to read your wiki / vector store).
+  # 1) A server with no credentials over a bundled JSON handbook: the
+  #    "point an agent at your own docs" pattern.
+  #
+  #    TEMPLATE DEMO CONTENT, OFF BY DEFAULT. mcp/data/handbook.json is a
+  #    handbook for the FICTIONAL Northwind, with invented PTO, expense and
+  #    deploy policies. A client fork inherits this file, and Victoria must
+  #    never present it as the client's policy, so the connector is `optional`
+  #    with `enabled_by_default: false`: it registers (always: true is the
+  #    enable gate) but no chat or task gets it unless a user switches it on.
+  #    Replace the handbook with the client's real knowledge (and turn it back
+  #    on), or remove the connector, its agent_policy rows and probe.
   - name: knowledge_base
-    display_name: "Team Knowledge Base"
-    description: "Search and read the bundled company handbook."
+    optional: true
+    enabled_by_default: false
+    display_name: "Demo Handbook"
+    description: "Search and read the template's sample handbook for a fictional company, not this organisation's policies."
     category: knowledge-docs
     type: stdio
     command: python3
@@ -300,7 +303,244 @@ mcp_servers:
     # env line above.
     # identity_env: ["EXAMPLE_API_OWNER_ID"]
 
-  # 3) An OPTIONAL, opt-in server — chat's per-conversation Optional-server
+  # 3) pages: this deployment's own Pages instance (versioned, access-controlled
+  #    dashboards). HTTP MCP; dark until BOTH variables below are set in fleet's
+  #    env file. The default is `pages.invalid`, a reserved name that can never
+  #    resolve: fleet requires a non-empty url to load the bundle at all (a bare
+  #    or empty ${PAGES_MCP_URL} stops fleet booting while the variable is
+  #    unset), and an unset URL must never fall back to another organisation's
+  #    Pages. enabled_env keeps the connector dark until both are set, so the
+  #    placeholder is never contacted. PAGES_MCP_URL is
+  #    https://<this deployment's Pages dashboard host>/mcp and PAGES_API_TOKEN
+  #    is a deploy-scope token minted on that box (`pages token add`).
+  #    No account_vars: fleet cannot run a named account against an http base,
+  #    so the single credential travels in the header.
+  #    Tools: the Pages catalog (its docs/INTEGRATION.md allowlist) minus
+  #    create_upload_ticket, whose shell PUT cannot work from fleet's sandbox;
+  #    large documents go through start_page_upload / append_page_upload. A tool
+  #    missing here is invisible to the agent, so re-diff this list when Pages
+  #    adds one.
+  - name: pages
+    optional: true
+    enabled_by_default: true
+    display_name: "Pages"
+    description: "Build, publish and update versioned dashboards on this deployment's Pages."
+    category: house
+    type: http
+    url: "${PAGES_MCP_URL:-https://pages.invalid/mcp}"
+    enabled_env: ["PAGES_MCP_URL", "PAGES_API_TOKEN"]
+    headers:
+      Authorization: "Bearer ${PAGES_API_TOKEN}"
+    tools:
+      - list_pages
+      - get_page
+      - get_page_data
+      - get_page_refresh
+      - record_refresh_check
+      - prepare_dashboard_update
+      - find_in_version
+      - patch_page
+      - preflight_page
+      - get_version
+      - list_versions
+      - update_page_data_upload
+      - list_workspaces
+      - create_workspace
+      - rename_workspace
+      - set_page_workspace
+      - list_themes
+      - get_guide
+      - start_page_upload
+      - append_page_upload
+      - cancel_page_upload
+      - list_templates
+      - get_template
+      - list_template_revisions
+      - list_template_pages
+      - rerender_page_from_template
+      - register_template_upload
+      - validate_template
+      - template_urls
+      - delete_template
+      - create_template_from_page
+      - deploy_page_upload
+      - create_page_from_template
+      - get_page_config
+      - update_page_config
+      - deploy_page
+      - update_page
+      - update_page_data
+      - configure_page_refresh
+      - publish_page
+      - rollback_page
+      - set_password
+      - set_title
+      - delete_page
+      - page_urls
+
+  # 4) lens: this deployment's own Lens (ElcanoTek/lens docs/API.md), which
+  #   classifies websites, iOS/Android apps and CTV apps into ad-quality tiers
+  #   with IAB categories. HTTP MCP; dark until BOTH variables below are set in
+  #   fleet's env. The default is `lens.invalid`, a reserved name that never
+  #   resolves: fleet needs a non-empty url to load the bundle, and an unset URL
+  #   must never fall back to another organisation's Lens. LENS_MCP_URL is
+  #   https://<this deployment's Lens host>/mcp and LENS_API_TOKEN is a token
+  #   minted on that host with `lens token create --label fleet-<deployment>`
+  #   (scopes jobs:read + jobs:run; it can never delete runs or files, and
+  #   Lens stores only its hash). No account_vars: fleet cannot run a named
+  #   account against an http base. Files never pass through the model:
+  #   create_job's content_base64 is contentEncoding: base64, so the agent
+  #   sends a workspace file reference, and get_download_link returns a
+  #   15-minute single-file URL for download_url. Tools are the full Lens
+  #   catalog (lens_mcp.TOOLS); create_job and cancel_job are approval-gated
+  #   in agent_policy below.
+  - name: lens
+    optional: true
+    enabled_by_default: true
+    display_name: "Lens"
+    description: "Classify websites, apps and CTV apps into ad quality tiers with Lens, then read and download the results."
+    category: house
+    type: http
+    url: "${LENS_MCP_URL:-https://lens.invalid/mcp}"
+    enabled_env: ["LENS_MCP_URL", "LENS_API_TOKEN"]
+    headers:
+      Authorization: "Bearer ${LENS_API_TOKEN}"
+    tools:
+      - create_job
+      - get_job
+      - list_jobs
+      - get_job_results
+      - get_download_link
+      - cancel_job
+      - list_input_files
+      - get_options
+
+  # 5) email — inbound email reports that Amazon SES deposits in this
+  #    deployment's isolated S3 bucket (one SES/S3 email tenant per client).
+  #    Independent of outbound email: this connector lights up when
+  #    EMAIL_S3_BUCKET is set even when outbound SES is absent. AWS credentials
+  #    are optional here so an instance/task role can be used instead of static
+  #    keys. The keys belong to the tenant's read-only runtime IAM user, never
+  #    to the sender or the provisioner. The host variables are unprefixed
+  #    (EMAIL_*, SES_OUTBOUND_*): one fleet box serves one client. No
+  #    account_vars: fleet's named-account overlay suffixes the SUBPROCESS keys
+  #    below (AWS_*), which both email connectors share, so a named email
+  #    account would not isolate its credentials.
+  - name: email
+    optional: true
+    enabled_by_default: true
+    display_name: "Email Reports"
+    description: "Search and read inbound email reports stored by Amazon SES in this deployment's S3 archive."
+    category: data-storage
+    type: stdio
+    command: python3
+    args: ["mcp/ses_s3_email.py"]
+    enabled_env: ["EMAIL_S3_BUCKET"]
+    probe:
+      tool: get_inbox_stats
+      contains: '"status": "success"'
+    env:
+      EMAIL_S3_BUCKET: "${EMAIL_S3_BUCKET}"
+      EMAIL_S3_PREFIX: "${EMAIL_S3_PREFIX:-emails/}"
+      EMAIL_S3_DATE_PREFIX_FORMAT: "${EMAIL_S3_DATE_PREFIX_FORMAT:-emails/%Y/%m/%d/}"
+      EMAIL_S3_MAX_DATE_PREFIX_DAYS: "${EMAIL_S3_MAX_DATE_PREFIX_DAYS:-62}"
+      EMAIL_S3_ARCHIVE_PREFIX: "${EMAIL_S3_ARCHIVE_PREFIX:-emails/attachments/}"
+      AWS_ACCESS_KEY_ID: "${EMAIL_AWS_ACCESS_KEY_ID}"
+      AWS_SECRET_ACCESS_KEY: "${EMAIL_AWS_SECRET_ACCESS_KEY}"
+      AWS_SESSION_TOKEN: "${EMAIL_AWS_SESSION_TOKEN}"
+      AWS_REGION: "${EMAIL_AWS_REGION:-us-east-2}"
+      EMAIL_ATTACHMENT_DIR: "${FLEET_WORKSPACE}/email_attachments"
+      # Extra root a model-supplied output_dir may point into: the deployment
+      # workspace root (fleet's reserved token, as for ses_outbound below).
+      # The server also allows the attachment dir and its parent, the temp
+      # dir and a non-bundle cwd; it always refuses the bundle checkout.
+      EMAIL_ALLOWED_DIRS: "${FLEET_WORKSPACE_ROOT}"
+      EMAIL_LAST_CHECK_FILE: "${FLEET_WORKSPACE}/email_last_checked.txt"
+      EMAIL_HEADER_FETCH_BYTES: "${EMAIL_HEADER_FETCH_BYTES}"
+      EMAIL_SEARCH_HEADER_FETCH_CONCURRENCY: "${EMAIL_SEARCH_HEADER_FETCH_CONCURRENCY}"
+      EMAIL_SEARCH_PROGRESS_EVERY: "${EMAIL_SEARCH_PROGRESS_EVERY}"
+      EMAIL_SEARCH_KEY_LOG_EVERY: "${EMAIL_SEARCH_KEY_LOG_EVERY}"
+      EMAIL_DEBUG_LOG_FILE: "${EMAIL_DEBUG_LOG_FILE}"
+    optional_env:
+      - AWS_ACCESS_KEY_ID
+      - AWS_SECRET_ACCESS_KEY
+      - AWS_SESSION_TOKEN
+      - AWS_REGION
+      - EMAIL_ATTACHMENT_DIR
+      - EMAIL_ALLOWED_DIRS
+      - EMAIL_LAST_CHECK_FILE
+      - EMAIL_HEADER_FETCH_BYTES
+      - EMAIL_SEARCH_HEADER_FETCH_CONCURRENCY
+      - EMAIL_SEARCH_PROGRESS_EVERY
+      - EMAIL_SEARCH_KEY_LOG_EVERY
+      - EMAIL_DEBUG_LOG_FILE
+
+  # 6) ses_outbound — outbound only. Dark until the dedicated, send-only
+  #    sender IAM credentials and the From address are in fleet's host
+  #    environment. Its absence does not affect the inbound `email` connector
+  #    above. From is SES_OUTBOUND_FROM_EMAIL (IAM enforces it too; there is no
+  #    default, so an unset address keeps the connector dark), and every
+  #    send_email call needs a human approval (critical_tools below).
+  #    Unlisted recipients are refused unless the host sets
+  #    SES_OUTBOUND_ALLOW_UNLISTED_RECIPIENTS=true.
+  #    Once present it is ON by default, like the inbound `email` connector:
+  #    new chats start with it selected and new Operations tasks pre-select
+  #    it, so a report a chat produces (or a task scheduled from that chat)
+  #    can actually be delivered. Every send still passes the approval card /
+  #    critical-action gate; this flag only makes the tool available, it
+  #    authorizes nothing.
+  - name: ses_outbound
+    optional: true
+    enabled_by_default: true
+    display_name: "Amazon SES Email"
+    description: "Send audited outbound email through Amazon SES under a tenant-scoped IAM identity."
+    category: misc
+    type: stdio
+    command: python3
+    args: ["mcp/ses_sender.py"]
+    enabled_env: ["SES_OUTBOUND_AWS_ACCESS_KEY_ID", "SES_OUTBOUND_AWS_SECRET_ACCESS_KEY", "SES_OUTBOUND_FROM_EMAIL"]
+    env:
+      AWS_ACCESS_KEY_ID: "${SES_OUTBOUND_AWS_ACCESS_KEY_ID}"
+      AWS_SECRET_ACCESS_KEY: "${SES_OUTBOUND_AWS_SECRET_ACCESS_KEY}"
+      AWS_SESSION_TOKEN: "${SES_OUTBOUND_AWS_SESSION_TOKEN}"
+      SES_AWS_REGION: "${SES_OUTBOUND_AWS_REGION:-us-east-2}"
+      SES_FROM_EMAIL: "${SES_OUTBOUND_FROM_EMAIL}"
+      SES_REPLY_TO: "${SES_OUTBOUND_REPLY_TO}"
+      SES_CONFIGURATION_SET: "${SES_OUTBOUND_CONFIGURATION_SET}"
+      SES_ALLOWED_RECIPIENTS: "${SES_OUTBOUND_ALLOWED_RECIPIENTS}"
+      SES_ALLOWED_RECIPIENT_DOMAINS: "${SES_OUTBOUND_ALLOWED_RECIPIENT_DOMAINS}"
+      SES_ALLOW_UNLISTED_RECIPIENTS: "${SES_OUTBOUND_ALLOW_UNLISTED_RECIPIENTS:-false}"
+      # The client's display name: the default `client_name` in rendered
+      # report emails and the sender label in audit records. Keep it equal to
+      # branding.app_name (mcp/tests/test_email_render.py checks).
+      SES_TENANT_LABEL: "Northwind"
+      # content_file / attachments may only be read from allowlisted roots.
+      # ${FLEET_WORKSPACE} (the per-run ledger dir below) carries a random
+      # suffix the model cannot know, so the deployment workspace ROOT, where
+      # a scheduled run's sandbox writes its report, is admitted through
+      # fleet's reserved ${FLEET_WORKSPACE_ROOT} token (fleet
+      # docs/MCP-BUNDLE-ENV.md section 1a). An operator CUTLASS_ALLOWED_DIRS
+      # still composes in front; the server ignores empty segments.
+      CUTLASS_ALLOWED_DIRS: "${CUTLASS_ALLOWED_DIRS}:${FLEET_WORKSPACE_ROOT}"
+      CUTLASS_RUN_WORKDIR: "${FLEET_WORKSPACE}"
+      CUTLASS_MOC_TASK_ID: "${FLEET_TASK_ID}"
+    optional_env:
+      - AWS_SESSION_TOKEN
+      - SES_CONFIGURATION_SET
+      - SES_ALLOWED_RECIPIENTS
+      - SES_ALLOWED_RECIPIENT_DOMAINS
+      - SES_ALLOW_UNLISTED_RECIPIENTS
+      - SES_REPLY_TO
+      - CUTLASS_ALLOWED_DIRS
+      - CUTLASS_RUN_WORKDIR
+      - CUTLASS_MOC_TASK_ID
+    tools:
+      - render_email
+      - send_email
+      - validate_email_content
+      - validate_email_address
+
+  # 7) An OPTIONAL, opt-in server — chat's per-conversation Optional-server
   #    semantics. `optional: true` keeps a connector out of conversations until
   #    a user switches it on (Settings → Connections); `enabled_by_default`
   #    picks the initial toggle state and `beta: true` badges it in the
@@ -396,7 +636,7 @@ mcp_servers:
 #     description: "Review each pull request opened against our repos"
 #     hmac_secret_env: GITHUB_WEBHOOK_SECRET   # value comes from .env, auto-allowlisted
 #     hmac_header: "X-Hub-Signature-256"       # optional; this is the default
-#     persona: "assistant"
+#     persona: "victoria"
 #     model: "anthropic/claude-sonnet-4.5"     # optional; falls back to the server default
 #     prompt_template: |
 #       A pull request was opened: {{.payload.pull_request.title}}
@@ -463,14 +703,6 @@ empty_state:
       desc: "Attach a CSV and ask questions — I'll run Python in the sandbox to dig in."
       cta: "Start analysis"
       starterPrompt: "I'd like to analyze a dataset. Ask me what you need to know, then load it with Python and walk me through what stands out."
-    - id: "ask-handbook"
-      section: "Get started"
-      type: "conversation"
-      icon: "book-open"
-      title: "Ask the handbook"
-      desc: "Questions about policies, processes, or how we do things — answered from the knowledge base."
-      cta: "Ask a question"
-      starterPrompt: "Search the team knowledge base and answer my question, citing the article you used. My question: "
     - id: "draft"
       section: "Get started"
       type: "form"
@@ -510,7 +742,7 @@ task_templates:
         workspace, compute the metrics honestly in Python, and write the status
         report artifact. Flag anything that needs a human decision.
       model: "anthropic/claude-sonnet-4.5"
-      persona: "analyst"
+      persona: "victoria"
       recurrence: "0 16 * * 5"
       timezone: "America/New_York"
       max_iterations: 25
@@ -519,25 +751,13 @@ task_templates:
       # (the default multipliers; set sla_warn_multiplier / sla_fail_multiplier
       # to change them).
       expected_duration_minutes: 20
-  - name: "Handbook Freshness Check"
-    description: "Scan the team knowledge base for stale or contradictory articles."
-    icon: "📖"
-    task:
-      prompt: >-
-        Search the team knowledge base for articles that look stale, reference
-        tools or processes we no longer use, or contradict each other. List
-        each finding with the article title and what needs updating.
-      model: "google/gemini-3.5-flash"
-      fallback_model: "anthropic/claude-sonnet-4.5"
-      max_iterations: 15
-      tags: ["handbook", "hygiene"]
   - name: "Research Brief"
     description: "Web research on a topic, distilled into a cited brief (see protocols/research-report.md)."
     icon: "🔎"
     task:
       prompt: 'Run the "research-report" protocol on this topic and write the cited brief to the workspace: {topic}'
       model: "anthropic/claude-sonnet-4.5"
-      persona: "analyst"
+      persona: "victoria"
       allow_network: true
       max_iterations: 30
       tags: ["research"]
@@ -554,11 +774,121 @@ agent_policy:
     - mcp_knowledge_base_kb_list_categories
     - mcp_example_api_api_get_record
     - mcp_example_api_api_list_records
+    # SES/S3 email reads follow Victoria's read-only report workflow. Download
+    # tools only materialize files into fleet's managed workspace.
+    - mcp_email_search_emails
+    - mcp_email_search_emails_fuzzy
+    - mcp_email_get_email
+    - mcp_email_download_attachment
+    - mcp_email_download_link_attachment
+    - mcp_email_extract_download_links
+    - mcp_email_find_latest_report
+    - mcp_email_list_archived_attachments
+    # render_email only writes a uniquely named HTML file into the agent's own
+    # working directory; nothing leaves the host until send_email is approved.
+    - mcp_ses_outbound_render_email
+    - mcp_ses_outbound_validate_email_content
+    - mcp_ses_outbound_validate_email_address
+    # pages: read-only tools (readOnlyHint in the Pages catalog).
+    - mcp_pages_list_pages
+    - mcp_pages_get_page
+    - mcp_pages_get_page_data
+    - mcp_pages_get_page_refresh
+    - mcp_pages_prepare_dashboard_update
+    - mcp_pages_find_in_version
+    - mcp_pages_preflight_page
+    - mcp_pages_get_version
+    - mcp_pages_list_versions
+    - mcp_pages_list_workspaces
+    - mcp_pages_list_themes
+    - mcp_pages_get_guide
+    - mcp_pages_list_templates
+    - mcp_pages_get_template
+    - mcp_pages_list_template_revisions
+    - mcp_pages_validate_template
+    - mcp_pages_template_urls
+    - mcp_pages_list_template_pages
+    - mcp_pages_get_page_config
+    - mcp_pages_page_urls
+    # Lens reads (lens_mcp.py marks each readOnlyHint): status, listings,
+    # result pages and options change nothing. get_download_link only mints an
+    # expiring signed URL for one file.
+    - mcp_lens_get_job
+    - mcp_lens_list_jobs
+    - mcp_lens_get_job_results
+    - mcp_lens_get_download_link
+    - mcp_lens_list_input_files
+    - mcp_lens_get_options
   # `api_submit_record` is a WRITE — gated behind an audit confirmation. This is
   # how you make an agent stop and get sign-off before a consequential action.
   critical_tools:
     - submit_record
+    # Outbound email. fleet already gates the send_email suffix on its own;
+    # it is listed anyway so this bundle's contract names every write tool.
+    - send_email
+    # pages: every write that changes a page, its access, a shared design
+    # (including registering a template revision, which moves the library's
+    # current design) or workspace organisation. Staging uploads and
+    # refresh-check records stay ungated: neither changes a page's content or
+    # published version.
+    - deploy_page
+    - deploy_page_upload
+    - update_page
+    - patch_page
+    - update_page_config
+    - create_page_from_template
+    - rerender_page_from_template
+    - create_template_from_page
+    - delete_template
+    - publish_page
+    - rollback_page
+    - set_password
+    - set_title
+    - delete_page
+    - create_workspace
+    - rename_workspace
+    - set_page_workspace
+    - register_template_upload
+    - update_page_data
+    - update_page_data_upload
+    # Lens job control, both in the default `approve` mode. create_job spends
+    # OpenRouter credit that no later call can give back (cancel_job stops
+    # further work, it refunds nothing, and a small job can finish before
+    # anyone reads a notify card), so a person approves each start in chat;
+    # scheduled runs stage no cards and pass the usual confirm_audit gate.
+    # cancel_job stops someone's run. Full server-qualified names on purpose:
+    # suffix matching must not catch another server's create_job/cancel_job.
+    - mcp_lens_create_job
+    - mcp_lens_cancel_job
+  # Approval cards offer "apply to all" (session pre-approval) unless a tool
+  # is listed here (fleet #1716). Lens job control needs a decision per call.
+  critical_tool_no_session_approval:
+    # Lens job control: each start spends credit that can't be refunded and each
+    # cancel stops a specific run, so neither may ride an "apply to all".
+    - mcp_lens_create_job
+    - mcp_lens_cancel_job
+  # After an approved card settles, start one turn so the agent carries on
+  # with the call's result (fleet #1718, docs/RESUME-AFTER-APPROVAL.md).
+  critical_tool_resume:
+    # Lens: approving a start (or cancel) card starts one new turn, so the
+    # agent reads the job id and reports it, then follows the skill's polling
+    # flow, instead of the card settling silently until the user types again.
+    - mcp_lens_create_job
+    - mcp_lens_cancel_job
   critical_tool_substitutes: {}
+  # pages: the inline and staged data commits are one audited action, so a
+  # scheduled refresh may switch transport by payload size without re-auditing.
+  critical_tool_aliases:
+    update_page_data: [update_page_data_upload]
+  # Data refreshes run and are recorded rather than waiting for a click: each
+  # creates an immutable version, and rollback_page restores the previous one.
+  # Every other Pages write above still waits for approval.
+  critical_tool_modes:
+    update_page_data: notify
+    update_page_data_upload: notify
+  critical_tool_undo_hints:
+    update_page_data: "Undo a published refresh with mcp_pages_rollback_page(slug, version_id=<the expected_version this call passed, i.e. the version live before it>, expected_version=<the version this call published>). A canary (publish=false) changed nothing live: do not roll the live page back for it."
+    update_page_data_upload: "Undo a published refresh with mcp_pages_rollback_page(slug, version_id=<the expected_version this call passed, i.e. the version live before it>, expected_version=<the version this call published>). A canary (publish=false) changed nothing live: do not roll the live page back for it."
   # Optional per-tool approval windows in SECONDS, keyed by the same bare
   # tool-name suffix as critical_tools. Highest-priority layer of the
   # approval-timeout chain (per-tool > per-conversation >
@@ -611,16 +941,9 @@ agent_policy:
 # `deny` = default-allow with exceptions; deny wins when both match. Patterns
 # match the runtime tool name: `bash` (exact native tool), `mcp:server/tool`,
 # `mcp:server/*`, `prefix/*`, `*`. The `name` matches the basename of a
-# personas/<name>.yaml file; personas with no entry here (Aria the assistant,
-# Atlas the analyst) keep the default and see every permitted tool.
-personas:
-  # Sage answers from the handbook — the onboarding guide never needs the REST
-  # connector, so it never sees it. Deny-only keeps everything else (bash,
-  # run_python, the kb_* tools) available.
-  - name: onboarding-guide
-    tool_permissions:
-      deny:
-        - "mcp:example_api/*"
+# personas/<name>.yaml file; personas with no entry here keep the default and
+# see every permitted tool. Victoria is the only persona and has no entry.
+personas: []
 
 # ── Custom model pricing ────────────────────────────────────────────────────
 # Cost accounting normally trusts the USD figure OpenRouter returns per step.

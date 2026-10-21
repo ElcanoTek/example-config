@@ -35,7 +35,7 @@ cases:
     model: "anthropic/claude-sonnet-4.6"
     # Optional: pin the bundle persona the case replays under (basename of a
     # personas/*.yaml file); absent = the server's default persona.
-    persona: "assistant"
+    persona: "victoria"
     # A reference answer strengthens the judge's grading (optional).
     expected: >-
       Evaluations catch quality regressions on known-good tasks before a model
