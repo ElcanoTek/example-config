@@ -199,7 +199,9 @@ def moved(original: str, final: str) -> str:
 def light_mode(b: Brand) -> Mode:
     m = Mode()
     bg = norm(b.paper)
-    primary = fit(b.primary, bg, UI, "darker")
+    # surface_1 (white) is lighter than any paper, so the page is the binding
+    # side; fitting against both keeps that true for any paper.
+    primary = fit(fit(b.primary, bg, UI, "darker"), WHITE, UI, "darker")
     on_primary = WHITE if contrast(WHITE, primary) >= TEXT else norm(b.ink)
     if contrast(on_primary, primary) < TEXT:
         primary = fit(primary, WHITE, TEXT, "darker")
@@ -241,12 +243,14 @@ def dark_mode(b: Brand) -> Mode:
     # paints accent, not primary, as text); a dark brand color is lifted along
     # its hue, and the label on it flips to a near-black of the same hue when
     # white no longer reaches 4.5:1.
-    primary = fit(b.primary, bg, UI, "lighter")
+    # surface_1 is lighter than the page, so it is the binding side (fleet
+    # paints primary as the hover border of fields on surface_1).
+    primary = fit(b.primary, s1, UI, "lighter")
     on_primary = on_fill(primary, deep)
     if contrast(on_primary, primary) < TEXT:
         primary = fit(primary, deep, TEXT, "lighter")
     hover = hover_of(primary, on_primary, 0.06)
-    if contrast(hover, bg) < UI:
+    if contrast(hover, s1) < UI:
         hover = primary
     m.set("primary", primary, f"{ratio(primary, bg)} on the background{moved(b.primary, primary)}")
     m.set("primary_hover", hover, f"{ratio(hover, bg)}; label {ratio(on_primary, hover)}")
@@ -536,6 +540,7 @@ PAIRS = [
     ("on_primary", "primary", TEXT),
     ("on_primary", "primary_hover", TEXT),
     ("primary", "background", UI),
+    ("primary", "surface_1", UI),
     ("secondary", "background", UI),
     ("accent", "background", TEXT),
 ]
