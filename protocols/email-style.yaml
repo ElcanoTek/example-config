@@ -567,7 +567,7 @@ canonical_template: |
                 <td class="header-pad" bgcolor="#1A0B1E" style="background-color:#1A0B1E; padding:22px 28px 24px 28px;">
                   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; border-collapse:collapse;">
                     <tr>
-                      <td class="header-kicker" style="font-size:12px; line-height:16px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:#D2D9DE; padding:0 0 14px 0;">Victoria &middot; Campaign Intelligence</td>
+                      <td class="header-kicker" style="font-size:12px; line-height:16px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:#D2D9DE; padding:0 0 14px 0;">Victoria | Campaign Intelligence</td>
                       <td class="header-date" data-preview="date" align="right" style="font-size:12px; line-height:16px; color:#BEB6CD; padding:0 0 14px 12px; white-space:nowrap;">{{date}}</td>
                     </tr>
                     <tr>
