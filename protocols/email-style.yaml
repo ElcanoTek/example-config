@@ -308,14 +308,14 @@ chart_colors:
 #   import matplotlib.pyplot as plt
 #
 #   mpl.rcParams.update({
-#       "figure.facecolor": "#F7F7F2",
-#       "axes.facecolor":   "#F7F7F2",
-#       "axes.edgecolor":   "#D9D5D1",
-#       "axes.labelcolor":  "#6B615C",
-#       "axes.titlecolor":  "#000000",
-#       "xtick.color":      "#6B615C",
-#       "ytick.color":      "#6B615C",
-#       "grid.color":       "#E5E2DF",
+#       "figure.facecolor": "#F4F6FB",
+#       "axes.facecolor":   "#F4F6FB",
+#       "axes.edgecolor":   "#D7DEEE",
+#       "axes.labelcolor":  "#586F7C",
+#       "axes.titlecolor":  "#141824",
+#       "xtick.color":      "#586F7C",
+#       "ytick.color":      "#586F7C",
+#       "grid.color":       "#E6EBF5",
 #       "grid.linewidth":   0.8,
 #       "legend.frameon":   False,
 #       "font.family":      "DejaVu Sans",   # ships with matplotlib; brand-safe sans fallback
@@ -326,28 +326,28 @@ chart_colors:
 #
 #   # Historical / actual series (solid, primary brand color)
 #   ax.plot(hist_dates, hist_values,
-#           color="#6B65FF", linewidth=1.8,
+#           color="#6262A0", linewidth=1.8,
 #           marker="o", markersize=4,
-#           markerfacecolor="#6B65FF", markeredgecolor="#6B65FF",
+#           markerfacecolor="#6262A0", markeredgecolor="#6262A0",
 #           label="Actual")
 #
 #   # Forecast series (dashed, accent color)
 #   ax.plot(fc_dates, fc_values,
-#           color="#8783FF", linewidth=1.8, linestyle="--",
+#           color="#9DA7EF", linewidth=1.8, linestyle="--",
 #           marker="o", markersize=4,
-#           markerfacecolor="#8783FF", markeredgecolor="#8783FF",
+#           markerfacecolor="#9DA7EF", markeredgecolor="#9DA7EF",
 #           label="Forecast")
 #
 #   # Confidence band (translucent lavender fill)
 #   ax.fill_between(fc_dates, fc_low, fc_high,
-#                   color="#D9D5D1", alpha=0.5, linewidth=0,
+#                   color="#D7DEEE", alpha=0.5, linewidth=0,
 #                   label="Confidence band")
 #
 #   # Spines: hide top + right, keep left + bottom in border color
 #   ax.spines["top"].set_visible(False)
 #   ax.spines["right"].set_visible(False)
-#   ax.spines["left"].set_color("#D9D5D1")
-#   ax.spines["bottom"].set_color("#D9D5D1")
+#   ax.spines["left"].set_color("#D7DEEE")
+#   ax.spines["bottom"].set_color("#D7DEEE")
 #
 #   # Grid: horizontal only, behind data
 #   ax.yaxis.grid(True)
@@ -365,7 +365,7 @@ chart_colors:
 #       mpl.ticker.FuncFormatter(lambda v, _: f"${v/1000:,.0f}k")
 #   )
 #
-#   ax.legend(loc="upper left", fontsize=8, labelcolor="#6B615C")
+#   ax.legend(loc="upper left", fontsize=8, labelcolor="#586F7C")
 #
 #   plt.savefig(buf, format="png", dpi=200, bbox_inches="tight",
 #               facecolor=fig.get_facecolor())

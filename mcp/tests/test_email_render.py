@@ -423,7 +423,7 @@ def synthetic_theme(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     sys.modules["make_palette_r"] = mp
     spec.loader.exec_module(mp)
     brand = mp.Brand(
-        slug="synthetic", primary="#083340", secondary="#377A99", accent="#85B148", ink="#252525", paper="#F7F9F9"
+        slug="synthetic", primary="#0B2A4A", secondary="#3A6E8F", accent="#7FA34A", ink="#222222", paper="#F6F8F9"
     )
     _, theme_text, _ = mp.build(brand)
     themes = tmp_path / "themes"

@@ -13,9 +13,9 @@ system:
 
 Usage:
 
-    python3 assets/make-palette.py --slug acme --primary "#C11001" \\
-        [--secondary "#425466"] [--accent "#FD0221"] [--ink "#252422"] \\
-        [--paper "#FAF9F7"] [--dark-background "#0B0A0A"] [--write]
+    python3 assets/make-palette.py --slug acme --primary "#B3122A" \\
+        [--secondary "#4A5560"] [--accent "#E8203A"] [--ink "#26221F"] \\
+        [--paper "#FBF8F6"] [--dark-background "#0C0A0B"] [--write]
     python3 assets/make-palette.py --check
 
 Without ``--write`` it prints what it would write. A brand color that is too

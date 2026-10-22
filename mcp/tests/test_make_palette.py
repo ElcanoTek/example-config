@@ -27,9 +27,9 @@ from test_email_theme import INTENTIONALLY_INHERITED  # noqa: E402
 # Deliberately awkward brands: very dark, very light, saturated mid-tone,
 # near-gray, and a primary that is almost the page color.
 BRANDS = {
-    "navy": {"primary": "#083340", "secondary": "#377A99", "accent": "#85B148", "ink": "#252525", "paper": "#F7F9F9"},
+    "navy": {"primary": "#0B2A4A", "secondary": "#3A6E8F", "accent": "#7FA34A", "ink": "#222222", "paper": "#F6F8F9"},
     "yellow": {"primary": "#FFD400", "secondary": "#FFE680", "accent": "#FFF200", "ink": "#111111", "paper": "#FFFFFF"},
-    "red": {"primary": "#C11001", "secondary": "#425466", "accent": "#FD0221", "ink": "#252422", "paper": "#FAF9F7"},
+    "red": {"primary": "#B3122A", "secondary": "#4A5560", "accent": "#E8203A", "ink": "#26221F", "paper": "#FBF8F6"},
     "gray": {"primary": "#808080", "secondary": "#999999", "accent": "#777777", "ink": "#333333", "paper": "#F5F5F5"},
     "pale": {"primary": "#F0F0F0", "secondary": "#E0E0E0", "accent": "#FAFAFA", "ink": "#202020", "paper": "#FFFFFF"},
 }
@@ -80,9 +80,9 @@ def test_generated_email_theme_covers_every_brand_hex(name: str) -> None:
 def test_dark_brand_color_is_lifted_not_kept_raw() -> None:
     # A dark brand red is under 4.5:1 on a near-black page; it must move along
     # its own hue (still red) rather than ship unreadable links.
-    block, _, _ = mp.build(_brand("red", dark_background="#0B0A0A"))
+    block, _, _ = mp.build(_brand("red", dark_background="#0C0A0B"))
     dark = yaml.safe_load("branding:\n" + block)["branding"]["colors"]["dark"]
-    assert mp.contrast(dark["primary"], "#0B0A0A") >= mp.TEXT
+    assert mp.contrast(dark["primary"], "#0C0A0B") >= mp.TEXT
     r, g, b = mp.rgb(dark["primary"])
     assert r > g and r > b, "the lifted primary keeps the brand hue"
 
@@ -198,14 +198,14 @@ def test_a_failed_write_changes_nothing(tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.setattr(mp, "THEMES_DIR", themes)
     monkeypatch.setattr(mp, "ROOT", tmp_path)
     with pytest.raises(SystemExit):
-        mp.main(["--slug", "acme", "--primary", "#083340", "--write"])
+        mp.main(["--slug", "acme", "--primary", "#0B2A4A", "--write"])
     assert manifest.read_text() == before
     assert not list(themes.iterdir())
 
 
 def test_default_slug_is_reserved() -> None:
     with pytest.raises(SystemExit):
-        mp.main(["--slug", "default", "--primary", "#083340", "--write"])
+        mp.main(["--slug", "default", "--primary", "#0B2A4A", "--write"])
 
 
 def test_chart_colors_match_the_final_theme_values() -> None:
