@@ -186,8 +186,9 @@ brand hexes (`--primary`, optionally `--secondary`, `--accent`, `--ink`,
 matching report-email theme under `protocols/email_styles/themes/` and the
 email chart colors, moving a color along its own hue only where it misses 4.5:1
 for text, labels and `accent` (fleet paints it as link text) or 3:1 for
-`primary` and `secondary` (fills, borders and active bars, on the page and on
-`surface_1`); `--check` re-verifies a hand-edited block and runs in the tests.
+`primary` (fills, borders and active bars, on the page and on `surface_1`) and
+`secondary` (the far end of the action gradient, on the page); `--check`
+re-verifies a hand-edited block and runs in the tests.
 `assets/make-share-card.py --host fleet.<domain>` then regenerates the unfurl
 card from the strings, the palette and the mark.
 
