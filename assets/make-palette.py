@@ -20,12 +20,16 @@ Usage:
 
 Without ``--write`` it prints what it would write. A brand color that is too
 light or too dark for its role is moved along its own hue (lightness only)
-until it passes: 4.5:1 for text and for text on a fill, 3:1 for accents and
-emphasis borders. The original hexes stay in the comments, so a reviewer can see
-what was moved and why.
+until it passes the floor for how fleet paints it: 4.5:1 for text (fleet
+paints ``accent`` as link and highlight text) and for a label on a fill, 3:1 for
+``primary`` and ``secondary``, which fleet uses only as fills, borders, checkbox
+ticks and active bars, never as text. The original hexes stay in the comments,
+so a reviewer can see what was moved and why.
 
-``--check`` reads ``manifest.yaml`` and exits non-zero if any text, primary or
-accent pair falls below those floors; the bundle's tests run it.
+``--check`` reads ``manifest.yaml`` and exits non-zero if any pair falls below
+those floors; the bundle's tests run it. Fleet since #1830 also darkens a filled
+button under its label at runtime, so a label pair that fails here is already
+readable on a current box; the check still holds it, for boxes on older fleet.
 """
 
 from __future__ import annotations
@@ -195,7 +199,7 @@ def moved(original: str, final: str) -> str:
 def light_mode(b: Brand) -> Mode:
     m = Mode()
     bg = norm(b.paper)
-    primary = fit(b.primary, bg, TEXT, "darker")
+    primary = fit(b.primary, bg, UI, "darker")
     on_primary = WHITE if contrast(WHITE, primary) >= TEXT else norm(b.ink)
     if contrast(on_primary, primary) < TEXT:
         primary = fit(primary, WHITE, TEXT, "darker")
@@ -204,7 +208,7 @@ def light_mode(b: Brand) -> Mode:
     m.set("primary", primary, f"{ratio(primary, bg)} on the background{moved(b.primary, primary)}")
     m.set("primary_hover", hover, f"{ratio(hover, bg)}; label {ratio(on_primary, hover)}")
     m.set("on_primary", on_primary, f"{ratio(on_primary, primary)} on primary")
-    secondary = fit(b.secondary, bg, TEXT, "darker")
+    secondary = fit(b.secondary, bg, UI, "darker")
     m.set("secondary", secondary, f"{ratio(secondary, bg)}{moved(b.secondary, secondary)}")
     accent = fit(b.accent, bg, TEXT, "darker")
     m.set("accent", accent, f"{ratio(accent, bg)}{moved(b.accent, accent)}")
@@ -233,21 +237,21 @@ def dark_mode(b: Brand) -> Mode:
     bg = norm(b.dark_background) if b.dark_background else with_lightness(b.ink, 0.045)
     s1, s2 = shift(bg, 0.04), shift(bg, 0.075)
     deep = with_lightness(b.primary, 0.05)
-    # Primary also colors links and icons on the dark page, so it must read as
-    # text there (4.5:1); a dark brand color is lifted along its hue, and the
-    # label on it flips to a near-black of the same hue when white no longer
-    # reaches 4.5:1.
-    primary = fit(b.primary, bg, TEXT, "lighter")
+    # Primary is a fill, border and active bar on the dark page (3:1; fleet
+    # paints accent, not primary, as text); a dark brand color is lifted along
+    # its hue, and the label on it flips to a near-black of the same hue when
+    # white no longer reaches 4.5:1.
+    primary = fit(b.primary, bg, UI, "lighter")
     on_primary = on_fill(primary, deep)
     if contrast(on_primary, primary) < TEXT:
         primary = fit(primary, deep, TEXT, "lighter")
     hover = hover_of(primary, on_primary, 0.06)
-    if contrast(hover, bg) < TEXT:
+    if contrast(hover, bg) < UI:
         hover = primary
     m.set("primary", primary, f"{ratio(primary, bg)} on the background{moved(b.primary, primary)}")
     m.set("primary_hover", hover, f"{ratio(hover, bg)}; label {ratio(on_primary, hover)}")
     m.set("on_primary", on_primary, f"{ratio(on_primary, primary)} on primary")
-    secondary = fit(b.secondary, bg, TEXT, "lighter")
+    secondary = fit(b.secondary, bg, UI, "lighter")
     m.set("secondary", secondary, f"{ratio(secondary, bg)}{moved(b.secondary, secondary)}")
     accent = fit(b.accent, bg, TEXT, "lighter")
     m.set("accent", accent, f"{ratio(accent, bg)}{moved(b.accent, accent)}")
@@ -531,9 +535,9 @@ PAIRS = [
     ("text_muted", "surface_2", TEXT),
     ("on_primary", "primary", TEXT),
     ("on_primary", "primary_hover", TEXT),
-    ("primary", "background", TEXT),
+    ("primary", "background", UI),
     ("secondary", "background", UI),
-    ("accent", "background", UI),
+    ("accent", "background", TEXT),
 ]
 
 

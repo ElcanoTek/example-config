@@ -78,11 +78,14 @@ def test_generated_email_theme_covers_every_brand_hex(name: str) -> None:
 
 
 def test_dark_brand_color_is_lifted_not_kept_raw() -> None:
-    # A dark brand red is under 4.5:1 on a near-black page; it must move along
-    # its own hue (still red) rather than ship unreadable links.
+    # A dark brand red is under 3:1 on a near-black page; it must move along
+    # its own hue (still red) rather than ship borders and active bars that
+    # vanish, and the accent (fleet's link color) must reach text contrast.
     block, _, _ = mp.build(_brand("red", dark_background="#0C0A0B"))
     dark = yaml.safe_load("branding:\n" + block)["branding"]["colors"]["dark"]
-    assert mp.contrast(dark["primary"], "#0C0A0B") >= mp.TEXT
+    assert mp.contrast(BRANDS["red"]["primary"], "#0C0A0B") < mp.UI
+    assert mp.contrast(dark["primary"], "#0C0A0B") >= mp.UI
+    assert mp.contrast(dark["accent"], "#0C0A0B") >= mp.TEXT
     r, g, b = mp.rgb(dark["primary"])
     assert r > g and r > b, "the lifted primary keeps the brand hue"
 
@@ -115,6 +118,15 @@ def test_replace_email_style_touches_only_default_and_chart_colors() -> None:
         if key not in {"themes", "chart_colors"}:
             assert after[key] == before[key], key
     assert after["chart_colors"]["positive_marker"] == before["chart_colors"]["positive_marker"]
+
+
+def test_primary_is_held_as_a_fill_and_accent_as_text() -> None:
+    # Fleet paints accent as link text and primary only as fills, borders and
+    # active bars, so the floors are 4.5:1 and 3:1 respectively.
+    floors = {(fg, bg): f for fg, bg, f in mp.PAIRS}
+    assert floors[("accent", "background")] == mp.TEXT
+    assert floors[("primary", "background")] == mp.UI
+    assert floors[("on_primary", "primary")] == mp.TEXT
 
 
 def test_check_reports_a_failing_pair(tmp_path: Path) -> None:
