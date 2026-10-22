@@ -184,10 +184,13 @@ with a placeholder mark at `assets/northwind-mark.svg` and a generated card at
 brand hexes (`--primary`, optionally `--secondary`, `--accent`, `--ink`,
 `--paper`, `--dark-background`) and writes all 19 tokens for both modes, the
 matching report-email theme under `protocols/email_styles/themes/` and the
-email chart colors, moving a color along its own hue only where it misses
-4.5:1 (text) or 3:1 (accents); `--check` re-verifies a hand-edited block and
-runs in the tests. `assets/make-share-card.py --host fleet.<domain>` then
-regenerates the unfurl card from the strings, the palette and the mark.
+email chart colors, moving a color along its own hue only where it misses 4.5:1
+for text, labels and `accent` (fleet paints it as link text) or 3:1 for
+`primary` and `secondary` on the page and on `surface_1` (fleet uses them only
+as graphics: fills, borders, active bars and a chart series); `--check`
+re-verifies a hand-edited block and runs in the tests.
+`assets/make-share-card.py --host fleet.<domain>` then regenerates the unfurl
+card from the strings, the palette and the mark.
 
 Two things worth knowing before you tune the palette. Fleet's defaults for the
 structure, scrim, and rail tokens are hand-tinted from **fleet's** primary hue

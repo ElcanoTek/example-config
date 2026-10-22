@@ -27,9 +27,9 @@ from test_email_theme import INTENTIONALLY_INHERITED  # noqa: E402
 # Deliberately awkward brands: very dark, very light, saturated mid-tone,
 # near-gray, and a primary that is almost the page color.
 BRANDS = {
-    "navy": {"primary": "#083340", "secondary": "#377A99", "accent": "#85B148", "ink": "#252525", "paper": "#F7F9F9"},
+    "navy": {"primary": "#0B2A4A", "secondary": "#3A6E8F", "accent": "#7FA34A", "ink": "#222222", "paper": "#F6F8F9"},
     "yellow": {"primary": "#FFD400", "secondary": "#FFE680", "accent": "#FFF200", "ink": "#111111", "paper": "#FFFFFF"},
-    "red": {"primary": "#C11001", "secondary": "#425466", "accent": "#FD0221", "ink": "#252422", "paper": "#FAF9F7"},
+    "red": {"primary": "#B3122A", "secondary": "#4A5560", "accent": "#E8203A", "ink": "#26221F", "paper": "#FBF8F6"},
     "gray": {"primary": "#808080", "secondary": "#999999", "accent": "#777777", "ink": "#333333", "paper": "#F5F5F5"},
     "pale": {"primary": "#F0F0F0", "secondary": "#E0E0E0", "accent": "#FAFAFA", "ink": "#202020", "paper": "#FFFFFF"},
 }
@@ -78,11 +78,14 @@ def test_generated_email_theme_covers_every_brand_hex(name: str) -> None:
 
 
 def test_dark_brand_color_is_lifted_not_kept_raw() -> None:
-    # A dark brand red is under 4.5:1 on a near-black page; it must move along
-    # its own hue (still red) rather than ship unreadable links.
-    block, _, _ = mp.build(_brand("red", dark_background="#0B0A0A"))
+    # A dark brand red is under 3:1 on a near-black page; it must move along
+    # its own hue (still red) rather than ship borders and active bars that
+    # vanish, and the accent (fleet's link color) must reach text contrast.
+    block, _, _ = mp.build(_brand("red", dark_background="#0C0A0B"))
     dark = yaml.safe_load("branding:\n" + block)["branding"]["colors"]["dark"]
-    assert mp.contrast(dark["primary"], "#0B0A0A") >= mp.TEXT
+    assert mp.contrast(BRANDS["red"]["primary"], "#0C0A0B") < mp.UI
+    assert mp.contrast(dark["primary"], "#0C0A0B") >= mp.UI
+    assert mp.contrast(dark["accent"], "#0C0A0B") >= mp.TEXT
     r, g, b = mp.rgb(dark["primary"])
     assert r > g and r > b, "the lifted primary keeps the brand hue"
 
@@ -115,6 +118,18 @@ def test_replace_email_style_touches_only_default_and_chart_colors() -> None:
         if key not in {"themes", "chart_colors"}:
             assert after[key] == before[key], key
     assert after["chart_colors"]["positive_marker"] == before["chart_colors"]["positive_marker"]
+
+
+def test_primary_is_held_as_a_fill_and_accent_as_text() -> None:
+    # Fleet paints accent as link text and primary only as fills, borders and
+    # active bars, so the floors are 4.5:1 and 3:1 respectively.
+    floors = {(fg, bg): f for fg, bg, f in mp.PAIRS}
+    assert floors[("accent", "background")] == mp.TEXT
+    assert floors[("primary", "background")] == mp.UI
+    assert floors[("primary", "surface_1")] == mp.UI
+    assert floors[("secondary", "background")] == mp.UI
+    assert floors[("secondary", "surface_1")] == mp.UI
+    assert floors[("on_primary", "primary")] == mp.TEXT
 
 
 def test_check_reports_a_failing_pair(tmp_path: Path) -> None:
@@ -198,14 +213,14 @@ def test_a_failed_write_changes_nothing(tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.setattr(mp, "THEMES_DIR", themes)
     monkeypatch.setattr(mp, "ROOT", tmp_path)
     with pytest.raises(SystemExit):
-        mp.main(["--slug", "acme", "--primary", "#083340", "--write"])
+        mp.main(["--slug", "acme", "--primary", "#0B2A4A", "--write"])
     assert manifest.read_text() == before
     assert not list(themes.iterdir())
 
 
 def test_default_slug_is_reserved() -> None:
     with pytest.raises(SystemExit):
-        mp.main(["--slug", "default", "--primary", "#083340", "--write"])
+        mp.main(["--slug", "default", "--primary", "#0B2A4A", "--write"])
 
 
 def test_chart_colors_match_the_final_theme_values() -> None:
