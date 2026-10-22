@@ -15,9 +15,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from email_fixtures import framed
 from ses_sender import _locate_attachment, send_email
 
-_VALID_HTML = "<html><body><p>Hello there.</p></body></html>"
+_VALID_HTML = framed("<p>Hello there.</p>")
 
 
 @pytest.fixture(autouse=True)
@@ -284,7 +285,7 @@ async def test_inline_attachment_path_is_passed_raw(run_roots, ses_send_env, cap
     workdir, _ = run_roots
     (workdir / "chart.png ").write_bytes(b"spaced")
     (workdir / "chart.png").write_bytes(b"plain")
-    html = '<html><body><div><img src="cid:chart"></div></body></html>'
+    html = framed('<div><img src="cid:chart"></div>')
     result = await send_email(
         to_email="test@example.com",
         subject="Weekly report",
