@@ -74,6 +74,7 @@ import html5lib
 #   EO  email Outlook/Word engine     (bgcolor fallbacks, single-side cell borders)
 #   ET  email template tokens         (unresolved {{...}} / ${...} / {...})
 #   EL  email leakage / placeholders  (canonical_template demo data)
+#   EB  email branding                (the canonical_template frame)
 #   EP  email pad-cell heuristics     (canonical_template specific)
 RULES: Final[dict[str, tuple[str, str]]] = {
     # Structure (EH)
@@ -123,6 +124,9 @@ RULES: Final[dict[str, tuple[str, str]]] = {
     # Pad-cell heuristics (EP) — canonical_template specific, but the rule
     # is harmless elsewhere (no false positives on hand-rolled HTML).
     "EP001": ("error", "Pad-class <td> nested inside another pad-class <td>"),
+    # Branding (EB) — only when the caller asks for it (require_frame=True):
+    # ses_sender does for every send; a fragment check does not.
+    "EB001": ("error", "HTML email is missing the branded frame"),
 }
 
 
@@ -157,7 +161,11 @@ class Finding:
 
 # ── Constants used by checks ────────────────────────────────────────────────
 
-DEFAULT_CONTENT_TYPE = "text/html"
+# What content with no HTML in it and no declared type is sent as. Plain
+# text: a model that writes a bare sentence is writing a plain note, and
+# fleet's pre-staging check (validate_email_content with content and subject
+# only) must reach the same verdict as send_email will after approval.
+DEFAULT_CONTENT_TYPE = "text/plain"
 
 _HTML_TAG_PATTERN = re.compile(
     r"<\s*(?:html|head|body|div|span|p|br|hr|table|tr|td|th|ul|ol|li|"
@@ -912,8 +920,9 @@ def resolve_content_type(content: str, explicit_type: str | None) -> tuple[str, 
 
     Auto-corrects `text/plain` → `text/html` when HTML is detected, so a
     caller that forgot to set the type can't accidentally send raw HTML
-    source as plain text. The reverse (plain text declared as HTML) is
-    allowed because HTML can legitimately contain only text.
+    source as plain text. Undeclared content without HTML is plain text.
+    The reverse (plain text declared as HTML) is kept as declared, and EH013
+    then says the declaration is wrong.
     """
     is_html = detect_html_content(content)
     if not explicit_type:
@@ -1015,6 +1024,63 @@ def _check_body_html_marker(content: str, content_type: str | None) -> Iterator[
             rule="EH013",
             message="Content type is 'text/html' but no HTML tags were found.",
             hint="Either wrap the prose in HTML tags or pass content_type='text/plain'.",
+        )
+
+
+# ── Branding ────────────────────────────────────────────────────────────────
+
+# The canonical_template's frame: the container table, the branded header
+# cell and the footer cell inside it. What sits between them is free.
+FRAME_CLASSES: Final[tuple[str, ...]] = ("email-container", "header-pad", "footer-pad")
+
+
+def _class_tokens(elem: Any) -> set[str]:
+    return set(str(elem.get("class") or "").split())
+
+
+def _missing_frame_parts(content: str) -> list[str]:
+    """The frame parts absent from the parsed document, in FRAME_CLASSES order.
+
+    Parsed, not pattern-matched, so class names in a comment or text do not
+    count and unquoted attributes do. The header and footer must be cells
+    inside the container table, as the template nests them.
+    """
+    tree = html5lib.parse(content, namespaceHTMLElements=False)
+    best = list(FRAME_CLASSES)
+    for container in tree.iter():
+        if _strip_ns(container.tag) != "table" or "email-container" not in _class_tokens(container):
+            continue
+        # Each container is judged alone: a header in one table and a footer
+        # in another is still no frame.
+        cells = [el for el in container.iter() if _strip_ns(el.tag) in {"td", "th"}]
+        missing = [name for name in FRAME_CLASSES[1:] if not any(name in _class_tokens(c) for c in cells)]
+        if not missing:
+            return []
+        if len(missing) < len(best):
+            best = missing
+    return best
+
+
+def _check_branded_frame(content: str) -> Iterator[Finding]:
+    """EB001 — HTML that does not sit in the canonical_template frame.
+
+    A model that skips render_email tends to send a bare page (white
+    background, a line of text), which reaches the client unbranded. The
+    frame is the container table with the header and footer cells in it;
+    any body inside it passes, so a hand-built section is never refused for
+    being custom.
+    """
+    missing = _missing_frame_parts(content)
+    if missing:
+        yield Finding(
+            rule="EB001",
+            message=f"HTML email has no branded frame (missing: {', '.join(missing)}).",
+            hint=(
+                "Build the email with render_email and send the content_file it returns (pass its "
+                "inline_attachments too). A section no block covers still goes inside the "
+                "canonical_template frame. Only a deliberately unbranded note may skip the frame, "
+                "and it is sent as plain text (content_type='text/plain'), never as bare HTML."
+            ),
         )
 
 
@@ -1206,6 +1272,7 @@ def validate(
     *,
     subject: str | None = None,
     content_type: str = "text/html",
+    require_frame: bool = False,
 ) -> list[Finding]:
     """Run every check applicable to `content` (+ `subject` if given).
 
@@ -1218,6 +1285,10 @@ def validate(
     HTML pass don't need to pass it. Pass `text/plain` to skip the
     HTML-structure checks for plaintext bodies (still runs token,
     placeholder, leakage checks).
+
+    `require_frame=True` also refuses HTML outside the canonical_template
+    frame (EB001). Senders pass it; it stays off by default so a fragment
+    (one component block) can be linted on its own.
     """
     findings: list[Finding] = []
 
@@ -1234,6 +1305,8 @@ def validate(
         findings.extend(_check_images(content))
         findings.extend(_check_html_structure(content))
         findings.extend(_check_template_leakage(content))
+        if require_frame:
+            findings.extend(_check_branded_frame(content))
 
     return findings
 

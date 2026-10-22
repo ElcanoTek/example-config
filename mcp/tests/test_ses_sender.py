@@ -5,9 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from email_fixtures import framed
 from ses_sender import send_email, validate_email_address
 
-_HTML = "<html><body><p>Report attached.</p></body></html>"
+_HTML = framed("<p>Report attached.</p>")
 
 
 @pytest.fixture
@@ -66,7 +67,7 @@ async def test_regular_and_inline_attachments_use_ses_attachment_shape(ses_env, 
     result = await send_email(
         to_email="alice@example.com",
         subject="Attachments",
-        content='<html><body><img src="cid:brand-logo"><p>Attached.</p></body></html>',
+        content=framed('<img src="cid:brand-logo"><p>Attached.</p>'),
         attachments=[str(report)],
         inline_attachments=[{"path": str(logo), "cid": "brand-logo"}],
     )

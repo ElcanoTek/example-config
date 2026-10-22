@@ -15,9 +15,10 @@ the task-runner signal the send-once ledger already keys on):
 """
 
 import pytest
+from email_fixtures import framed
 from ses_sender import send_email
 
-_VALID_HTML = "<html><body><p>Deal sheet attached.</p></body></html>"
+_VALID_HTML = framed("<p>Deal sheet attached.</p>")
 
 
 @pytest.fixture

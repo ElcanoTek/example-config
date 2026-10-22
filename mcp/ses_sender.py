@@ -11,6 +11,7 @@ that deployment's variables in, so this file stays the same across clients.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import mimetypes
 import os
@@ -619,6 +620,16 @@ def _reject_disallowed_recipients(addresses: Sequence[str] | None) -> str | None
     return None
 
 
+def _missing_cid_message(problem: str, missing: list[str]) -> str:
+    message = f"{problem} Missing inline cids: {', '.join(missing)}"
+    if email_render.LOGO_CID in missing:
+        message += (
+            f". cid:{email_render.LOGO_CID} is the header logo: pass the inline_attachments list that "
+            "render_email returned, unchanged."
+        )
+    return message
+
+
 @mcp.tool()
 async def send_email(
     to_email: str,
@@ -633,13 +644,19 @@ async def send_email(
     attachments: Sequence[str | Mapping[str, Any]] | None = None,
     inline_attachments: Sequence[Mapping[str, Any]] | None = None,
 ) -> MutableMapping[str, Any]:
-    """Send an email via Amazon SES. ALWAYS use HTML content with proper styling.
+    """Send an email via Amazon SES. Every email is branded HTML.
 
     This is a CALLABLE TOOL - just call it directly, do NOT import it in Python.
 
     FASTEST PATH: build the body with `render_email` first, then call this tool
-    with the `content_file` it returns and the same subject. Do not paste or
-    re-type the rendered HTML; the file is the email.
+    with the `content_file` and `inline_attachments` it returns and the same
+    subject. Do not paste or re-type the rendered HTML; the file is the email.
+
+    BRANDING IS REQUIRED: HTML outside the branded frame (the
+    canonical_template's container, header and footer) is refused (EB001),
+    even a one-line note, so use render_email. The only unbranded email is a
+    deliberately plain note (a short personal reply, not a report), sent as
+    plain text with content_type='text/plain'.
 
     Only when a section cannot be expressed as render_email blocks, render the
     HTML by hand from the canonical_template embedded in
@@ -811,7 +828,7 @@ async def send_email(
     resolved_type, was_corrected = resolve_content_type(actual_content, content_type)
 
     # Run the shared validator (subject + body + structure + leakage).
-    findings = validate(actual_content, subject=subject, content_type=resolved_type)
+    findings = validate(actual_content, subject=subject, content_type=resolved_type, require_frame=True)
     errors, warnings = partition_findings(findings)
 
     for finding in errors:
@@ -843,19 +860,16 @@ async def send_email(
         cid_refs = extract_cid_references(actual_content)
         if cid_refs:
             if not inline_cid_map:
-                missing = ", ".join(sorted(cid_refs))
                 return {
-                    "error": (
-                        "HTML contains cid: references but no inline_attachments were provided. "
-                        f"Missing inline cids: {missing}"
+                    "error": _missing_cid_message(
+                        "HTML contains cid: references but no inline_attachments were provided.", sorted(cid_refs)
                     )
                 }
             missing_refs = sorted(cid for cid in cid_refs if cid not in inline_cid_map)
             if missing_refs:
                 return {
-                    "error": (
-                        "HTML contains cid: references that are not mapped in inline_attachments. "
-                        f"Missing inline cids: {', '.join(missing_refs)}"
+                    "error": _missing_cid_message(
+                        "HTML contains cid: references that are not mapped in inline_attachments.", missing_refs
                     )
                 }
 
@@ -1053,6 +1067,7 @@ async def validate_email_content(
     content: str = "",
     content_file: str = "",
     subject: str = "",
+    content_type: str = "",
 ) -> MutableMapping[str, Any]:
     """Validate HTML email content before sending. Use this to check for errors
     and fix them before calling send_email.
@@ -1066,7 +1081,9 @@ async def validate_email_content(
 
     Provide either content (HTML string) or content_file (path to HTML file).
     Pass the intended subject line to catch unresolved template tokens there
-    as well; omit it to validate the body only.
+    as well; omit it to validate the body only. The content type is detected
+    as send_email detects it (pass content_type to override): HTML must sit
+    in the branded frame (EB001), and plain text skips the HTML checks.
     """
     actual_content = ""
     source = "content"
@@ -1088,7 +1105,8 @@ async def validate_email_content(
     else:
         return {"valid": False, "errors": ["Provide either content or content_file"], "warnings": []}
 
-    findings = validate(actual_content, subject=subject or None, content_type="text/html")
+    resolved_type, _ = resolve_content_type(actual_content, content_type or None)
+    findings = validate(actual_content, subject=subject or None, content_type=resolved_type, require_frame=True)
     errors, warnings = partition_findings(findings)
 
     return {
@@ -1100,6 +1118,7 @@ async def validate_email_content(
         "errors": [f.format() for f in errors],
         "warnings": [f.format() for f in warnings],
         "source": source,
+        "content_type": resolved_type,
         "stats": {
             "content_length": len(actual_content),
             "content_length_kb": round(len(actual_content) / 1024, 1),
@@ -1120,17 +1139,20 @@ async def render_email(
     badge_label: str = "",
     status: str = "",
     preheader: str = "",
+    headline: str = "",
 ) -> MutableMapping[str, Any]:
     """Render a branded HTML email from structured content and save it as a file.
 
     This is the fast way to send any styled email, from a two-line note to a
-    full report: you supply only the content, and the branded header, footer,
-    mobile layout, Outlook fallbacks and theme colors are added for you. It
-    sends nothing. Pass the returned `content_file` (and the same `subject`) to
-    send_email; never paste or re-type the HTML.
+    full report: you supply only the content, and the branded header (the
+    client's logo and name), footer, mobile layout, Outlook fallbacks and theme
+    colors are added for you. It sends nothing. Pass the returned
+    `content_file`, the same `subject` and the returned `inline_attachments`
+    (the logo, plus any chart files you add) to send_email; never paste or
+    re-type the HTML.
 
     Args:
-        subject: Email subject; also shown as the header headline (35-60 chars reads best).
+        subject: Email subject (35-60 chars reads best): the inbox line and page title.
         blocks: Ordered body sections. Each is an object with a "type":
             - {"type": "text", "heading"?: str, "paragraphs": [str, ...], "bullets"?: [str, ...]}
               Prose. Use this for short notes and the sign-off too.
@@ -1155,21 +1177,26 @@ async def render_email(
         output_dir: The ABSOLUTE path of your working directory (shown under
             "Working directory" in your instructions). The email is written there.
         theme: Theme id from protocols/email_styles/themes/; defaults to the bundle default.
-        client_name: Header meta text; defaults to this deployment's client name.
+        client_name: The header headline beside the logo; defaults to this deployment's
+            client name.
         date: Header date (ISO, e.g. 2026-10-08); defaults to today (UTC).
-        date_range: Period the numbers cover, shown after the client name.
+        date_range: Period the numbers cover, shown after the headline.
         badge_label, status: Status strip under the header, e.g. "On track" /
             "Pacing 98% of plan". Give both or neither; omitted, there is no strip.
         preheader: Inbox preview text; defaults to the start of the first paragraph.
+        headline: Short title under the client name, 2-6 words, e.g. "Weekly delivery
+            review". Leave out the client name and dates (both are already in the
+            header). Defaults to the subject.
 
     Text formatting: values are escaped, so write plain text. **bold** and line
     breaks are the only formatting. Real data only: never the template's
     example names or numbers.
 
     Returns:
-        content_file (absolute path to pass to send_email), valid, errors,
-        warnings, content_length, and inline_cids when a chart needs an inline
-        attachment.
+        content_file (absolute path to pass to send_email), inline_attachments
+        (the header logo's file under cid:brand-logo; pass it to send_email and
+        append your chart files), valid, errors, warnings, content_length, and
+        inline_cids (every cid the email references).
     """
     directory_arg = output_dir.strip()
     if not directory_arg:
@@ -1192,24 +1219,44 @@ async def render_email(
             badge_label=badge_label,
             status=status,
             preheader=preheader,
+            headline=headline,
         )
     except email_render.RenderError as exc:
         return {"error": f"Cannot render the email: {exc}"}
 
-    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    path = os.path.join(directory, f"email-{stamp}-{secrets.token_hex(3)}.html")
+    stem = os.path.join(directory, f"email-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{secrets.token_hex(3)}")
+    path = f"{stem}.html"
+    inline_attachments: list[dict[str, str]] = []
+    created: list[str] = []  # only files this call made, so cleanup never removes another
     try:
         # Create-only and owner-only: never overwrites, and an output_dir in a
         # shared location (the temp dir is a readable root) does not expose
         # the email to other local users. Fleet's approval stager and this
         # server run as the same user.
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        created.append(path)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(html_content)
+        logo = email_render.brand_logo()
+        if logo is not None and f"cid:{email_render.LOGO_CID}" in html_content:
+            # A copy beside the email, inside the workspace: send_email reads
+            # attachments only from there, and so does fleet's approval card
+            # when it previews the logo.
+            logo_path = f"{stem}-{email_render.LOGO_CID}.png"
+            logo_bytes = logo[0].read_bytes()
+            fd = os.open(logo_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            created.append(logo_path)
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(logo_bytes)
+            inline_attachments.append({"path": os.path.abspath(logo_path), "cid": email_render.LOGO_CID})
     except OSError as exc:
+        # Half a rendered email is not handed back, so do not leave it behind.
+        for leftover in created:
+            with contextlib.suppress(OSError):
+                os.unlink(leftover)
         return {"error": f"Could not write the rendered email into {directory_arg}: {exc}"}
 
-    findings = validate(html_content, subject=subject, content_type="text/html")
+    findings = validate(html_content, subject=subject, content_type="text/html", require_frame=True)
     errors, warnings = partition_findings(findings)
     for finding in errors:
         logger.error("render_email produced a lint error: %s", finding.format())
@@ -1217,6 +1264,7 @@ async def render_email(
 
     result: dict[str, Any] = {
         "content_file": os.path.abspath(path),
+        "inline_attachments": inline_attachments,
         "subject": subject,
         "valid": not errors,
         "errors": [f.format() for f in errors],

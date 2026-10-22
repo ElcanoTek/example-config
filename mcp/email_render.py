@@ -12,6 +12,9 @@ HTML here:
 * The fixed chrome (head + mobile CSS + Outlook conditionals, header, status
   bar, footer) is cut from `canonical_template` at runtime, so the protocol
   file stays the single source of truth for it.
+* The header carries the client's logo (`assets/email-logo.png`, attached by
+  the caller as `cid:brand-logo`) beside the client name; a bundle without
+  that file gets the name alone.
 * Body blocks reproduce the template's pattern sections (and the protocol's
   supplemental components) with the same inline styles;
   tests/test_email_render.py asserts they have not drifted from the protocol.
@@ -31,6 +34,7 @@ import functools
 import html
 import os
 import re
+import struct
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -39,6 +43,12 @@ import yaml
 
 BUNDLE_ROOT = Path(__file__).resolve().parent.parent
 PROTOCOL_PATH = BUNDLE_ROOT / "protocols" / "email-style.yaml"
+# The header logo: a PNG made for the dark header band (2x for retina). PNG
+# because Gmail and Outlook do not render SVG. The caller attaches it inline.
+LOGO_PATH = BUNDLE_ROOT / "assets" / "email-logo.png"
+LOGO_CID = "brand-logo"
+LOGO_HEIGHT = 44
+LOGO_MAX_WIDTH = 176
 
 MAX_TABLE_COLUMNS = 5
 MAX_CTA_TEXT = 25
@@ -69,6 +79,11 @@ _BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 _CID = re.compile(r"[A-Za-z0-9_.@\-]+")
 _SECTION_BANNER = re.compile(r"<!-- =+\s+([A-Z][A-Z ]*?):")
+_LOGO_CELL = re.compile(r'<td class="header-logo"[^>]*>.*?</td>\s*', re.DOTALL)
+_LOGO_SIZE_ATTRS = 'width="44" height="44"'
+_LOGO_SIZE_STYLE = "width:44px; height:44px;"
+_PERIOD_SEPARATOR = " &middot; {{date_range}}"
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 class RenderError(ValueError):
@@ -118,6 +133,47 @@ def _chrome() -> tuple[str, str, str]:
     # Each cut starts at the line holding the banner so indentation stays intact.
     status, body, footer = (template.rfind("\n", 0, starts[name]) + 1 for name in ("STATUS BAR", "BODY", "FOOTER"))
     return template[:status], template[status:body], template[footer:]
+
+
+@functools.lru_cache(maxsize=1)
+def brand_logo() -> tuple[Path, int, int] | None:
+    """(path, width, height) to show the bundle's header logo at, or None.
+
+    Shown LOGO_HEIGHT px tall at its own aspect ratio, capped at
+    LOGO_MAX_WIDTH so a long wordmark cannot crowd out the client name. A
+    missing or unreadable file means no logo, never a broken image.
+    """
+    try:
+        with LOGO_PATH.open("rb") as fh:
+            head = fh.read(24)
+    except OSError:
+        return None
+    if len(head) < 24 or not head.startswith(_PNG_SIGNATURE) or head[12:16] != b"IHDR":
+        return None
+    px_width, px_height = struct.unpack(">II", head[16:24])
+    if not px_width or not px_height:
+        return None
+    width, height = round(LOGO_HEIGHT * px_width / px_height), LOGO_HEIGHT
+    if width > LOGO_MAX_WIDTH:
+        width, height = LOGO_MAX_WIDTH, round(LOGO_MAX_WIDTH * px_height / px_width)
+    return LOGO_PATH, width, height
+
+
+def _header_logo(head: str, logo: tuple[Path, int, int] | None) -> str:
+    """Size the template's logo cell for this bundle's logo, or drop the cell."""
+    cell = _LOGO_CELL.search(head)
+    if cell is None:
+        raise RuntimeError("canonical_template header has no header-logo cell")
+    if logo is None:
+        return head[: cell.start()] + head[cell.end() :]
+    markup = cell.group(0)
+    if _LOGO_SIZE_ATTRS not in markup or _LOGO_SIZE_STYLE not in markup or f"cid:{LOGO_CID}" not in markup:
+        raise RuntimeError("canonical_template header-logo cell changed shape; update email_render")
+    _, width, height = logo
+    markup = markup.replace(_LOGO_SIZE_ATTRS, f'width="{width}" height="{height}"').replace(
+        _LOGO_SIZE_STYLE, f"width:{width}px; height:{height}px;"
+    )
+    return head[: cell.start()] + markup + head[cell.end() :]
 
 
 class _Slots:
@@ -558,10 +614,16 @@ def render_email(
     badge_label: str | None = None,
     status: str | None = None,
     preheader: str | None = None,
+    headline: str | None = None,
+    logo: bool = True,
 ) -> str:
-    """Render a complete, themed HTML email. Raises RenderError on bad input."""
-    # Shown exactly as send_email will send it: no **bold** stripping, so the
-    # headline never differs from the subject line.
+    """Render a complete, themed HTML email. Raises RenderError on bad input.
+
+    With `logo` (the default) and a bundle logo present, the header shows it
+    as cid:brand-logo; the caller must attach brand_logo()'s file under that
+    cid. The header leads with the client; under the name sit `headline`
+    (a short title, the subject when not given) and the period.
+    """
     subject_text = _clean(subject)
     if not subject_text:
         raise RenderError("'subject' is required.")
@@ -591,12 +653,15 @@ def render_email(
     if show_status and not (_clean(badge_label) and _clean(status)):
         raise RenderError("Give both 'badge_label' and 'status' for the status strip, or neither to omit it.")
     if not _clean(date_range):
-        head = head.replace(" | {{date_range}}", "")
+        if head.count(_PERIOD_SEPARATOR) != 1:
+            raise RuntimeError("canonical_template header-meta lost its period separator")
+        head = head.replace(_PERIOD_SEPARATOR, "")
+    head = _header_logo(head, brand_logo() if logo else None)
     values = {
         "preheader_text": slots.text(_preheader(preheader, blocks, subject_text)),
         "date": slots.text(_clean(date) or _dt.datetime.now(_dt.UTC).date().isoformat()),
-        "email_subject": slots.attr(subject_text),
         "client_name": slots.text(client),
+        "email_headline": slots.text(_plain(headline) or _plain(subject_text)),
         "date_range": slots.text(date_range),
         "badge_label": slots.text(badge_label),
         "status": slots.text(status),

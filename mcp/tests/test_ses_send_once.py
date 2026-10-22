@@ -16,10 +16,11 @@ tests/utils/test_run_ledger.py::test_shared_workdir_never_suppresses_a_later_tas
 """
 
 import pytest
+from email_fixtures import framed
 from ses_sender import send_email
 
-_VALID_HTML = "<html><body><p>Deal sheet attached.</p></body></html>"
-_OTHER_HTML = "<html><body><p>Completely different body.</p></body></html>"
+_VALID_HTML = framed("<p>Deal sheet attached.</p>")
+_OTHER_HTML = framed("<p>Completely different body.</p>")
 
 
 @pytest.fixture(autouse=True)

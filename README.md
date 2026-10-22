@@ -144,6 +144,7 @@ example-config/
     example.yaml         #   template set: the case format + every scorer kind
   assets/                # brand assets referenced from manifest.yaml
     northwind-mark.svg   #   the placeholder mark branding.logo points at
+    email-logo.png       #   the mark for the report-email header (PNG, 2x, made for its dark band)
     northwind-share.png  #   the generated 1280x640 unfurl card (branding.share_image)
     make-palette.py      #   brand hexes -> colors block + email theme + chart colors, contrast-checked
     make-share-card.py   #   regenerates the unfurl card from the branding block
@@ -466,6 +467,11 @@ repo's `main`) needs only these edits; everything else ships ready:
    `share_image` to `assets/<client>-share.png`, and run
    `python3 assets/make-share-card.py --host fleet.<client domain>` (needs
    Pillow, in `mcp/requirements.txt`, and `rsvg-convert` for an SVG mark).
+   Replace `assets/email-logo.png` with the mark for the report-email header:
+   a PNG (Gmail and Outlook do not show SVG) at twice its shown size, so 88px
+   tall for the 44px header, legible on the email theme's dark header band
+   (use the light version of the mark if the main one is dark). For an SVG,
+   `rsvg-convert -h 88 <mark>.svg -o assets/email-logo.png`.
    Delete the Northwind files.
 4. **Persona.** Replace `client_context` (and the Northwind wording) in
    `personas/victoria.yaml` with the client's sourced facts; fill in
