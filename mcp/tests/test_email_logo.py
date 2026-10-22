@@ -9,8 +9,15 @@ The check uses WCAG's 3:1 for graphics: at least a quarter of the logo's
 opaque pixels must reach 3:1 against the band. A share, not an average,
 because a mark may sit on an opaque tile in the band's own color (a black
 square on a black band), which is fine as long as the mark itself reads; a
-mark in the band's color scores close to zero. The PNG is decoded with the
-standard library (no Pillow), so the test runs wherever the suite does.
+mark in the band's color scores close to zero. Each pixel is blended onto the
+band by its alpha first, so a half-transparent pixel counts as it looks. The
+PNG is decoded with the standard library (no Pillow), so the test runs
+wherever the suite does.
+
+This is a heuristic that catches the failure seen in practice (a mark in the
+band's own color), not a proof of legibility: a pale mark on its own pale
+tile could still pass. The rendered preview remains the real check when a
+logo changes.
 """
 
 from __future__ import annotations
@@ -90,11 +97,14 @@ def read_png_rgba(path: Path) -> list[tuple[int, int, int, int]]:
             if color == 6:
                 pixels.append(tuple(px))
             elif color == 2:
-                pixels.append((*px, 255))
+                # tRNS for truecolor: one transparent RGB value (16-bit samples).
+                clear = trns is not None and len(trns) >= 6 and tuple(px) == tuple(trns[i] for i in (1, 3, 5))
+                pixels.append((*px, 0 if clear else 255))
             elif color == 4:
                 pixels.append((px[0], px[0], px[0], px[1]))
             elif color == 0:
-                pixels.append((px[0], px[0], px[0], 255))
+                clear = trns is not None and len(trns) >= 2 and px[0] == trns[1]
+                pixels.append((px[0], px[0], px[0], 0 if clear else 255))
             else:
                 alpha = trns[px[0]] if trns is not None and px[0] < len(trns) else 255
                 pixels.append((*palette[px[0]], alpha))
@@ -124,11 +134,18 @@ def header_band() -> tuple[int, int, int]:
     return tuple(int(band.lstrip("#")[i : i + 2], 16) for i in (0, 2, 4))
 
 
+def _on_band(px: tuple[int, int, int, int], band: tuple[int, int, int]) -> tuple[int, int, int]:
+    """The pixel as it looks on the band: blended by its alpha."""
+    a = px[3] / 255
+    return tuple(round(c * a + b * (1 - a)) for c, b in zip(px[:3], band, strict=True))
+
+
 def readable_share(path: Path, band: tuple[int, int, int]) -> float:
-    """The share of the logo's opaque pixels that reach MIN_CONTRAST on the band."""
-    opaque = [px[:3] for px in read_png_rgba(path) if px[3] >= 128]
-    assert opaque, f"{path.name} has no opaque pixels"
-    return sum(contrast(px, band) >= MIN_CONTRAST for px in opaque) / len(opaque)
+    """The share of the logo's mostly opaque pixels that, as they appear on the
+    band, reach MIN_CONTRAST against it."""
+    shown = [_on_band(px, band) for px in read_png_rgba(path) if px[3] >= 128]
+    assert shown, f"{path.name} has no opaque pixels"
+    return sum(contrast(px, band) >= MIN_CONTRAST for px in shown) / len(shown)
 
 
 def test_email_logo_stands_out_on_the_header_band() -> None:
@@ -158,3 +175,17 @@ def test_contrast_rule_rejects_a_mark_in_the_band_color(tmp_path: Path) -> None:
         + chunk(b"IEND", b"")
     )
     assert readable_share(same, band) < MIN_SHARE
+
+
+def test_the_canonical_band_is_still_the_template_header() -> None:
+    # CANONICAL_BAND must stay the header cell's color, or this test measures
+    # against the wrong band.
+    template = yaml.safe_load(EMAIL_STYLE_PATH.read_text(encoding="utf-8"))["canonical_template"]
+    assert f'class="header-pad" bgcolor="{CANONICAL_BAND}"' in template
+
+
+def test_half_transparent_pixels_count_as_they_look() -> None:
+    band = (0x1A, 0x0B, 0x1E)
+    # Mid gray at half alpha reads about 4.3:1 unblended but about 2:1 on the band.
+    assert contrast((120, 120, 120), band) >= MIN_CONTRAST
+    assert contrast(_on_band((120, 120, 120, 128), band), band) < MIN_CONTRAST
