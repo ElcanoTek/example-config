@@ -82,7 +82,7 @@ _SECTION_BANNER = re.compile(r"<!-- =+\s+([A-Z][A-Z ]*?):")
 _LOGO_CELL = re.compile(r'<td class="header-logo"[^>]*>.*?</td>\s*', re.DOTALL)
 _LOGO_SIZE_ATTRS = 'width="44" height="44"'
 _LOGO_SIZE_STYLE = "width:44px; height:44px;"
-_META_ROW = re.compile(r'<tr>\s*<td class="header-meta"[^>]*>\{\{date_range\}\}</td>\s*</tr>\s*')
+_PERIOD_SEPARATOR = " &middot; {{date_range}}"
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
@@ -614,14 +614,15 @@ def render_email(
     badge_label: str | None = None,
     status: str | None = None,
     preheader: str | None = None,
+    headline: str | None = None,
     logo: bool = True,
 ) -> str:
     """Render a complete, themed HTML email. Raises RenderError on bad input.
 
     With `logo` (the default) and a bundle logo present, the header shows it
     as cid:brand-logo; the caller must attach brand_logo()'s file under that
-    cid. The subject is the document <title> only: the inbox already shows
-    it, so the header leads with the client instead.
+    cid. The header leads with the client; under the name sit `headline`
+    (a short title, the subject when not given) and the period.
     """
     subject_text = _clean(subject)
     if not subject_text:
@@ -652,14 +653,15 @@ def render_email(
     if show_status and not (_clean(badge_label) and _clean(status)):
         raise RenderError("Give both 'badge_label' and 'status' for the status strip, or neither to omit it.")
     if not _clean(date_range):
-        head, removed = _META_ROW.subn("", head)
-        if removed != 1:
-            raise RuntimeError("canonical_template header has no header-meta row")
+        if head.count(_PERIOD_SEPARATOR) != 1:
+            raise RuntimeError("canonical_template header-meta lost its period separator")
+        head = head.replace(_PERIOD_SEPARATOR, "")
     head = _header_logo(head, brand_logo() if logo else None)
     values = {
         "preheader_text": slots.text(_preheader(preheader, blocks, subject_text)),
         "date": slots.text(_clean(date) or _dt.datetime.now(_dt.UTC).date().isoformat()),
         "client_name": slots.text(client),
+        "email_headline": slots.text(_plain(headline) or _plain(subject_text)),
         "date_range": slots.text(date_range),
         "badge_label": slots.text(badge_label),
         "status": slots.text(status),

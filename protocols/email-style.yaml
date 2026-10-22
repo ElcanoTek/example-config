@@ -137,8 +137,9 @@ rules:
 #   HEAD + outer       | verbatim | <head>, MSO conditionals, @media CSS, body
 #   structure          |          | wrapper, email-container table.
 #   -------------------|----------|---------------------------------------------
-#   HEADER             | verbatim | Dark branded header: logo + client name,
-#                      |          | date on the right. Substitute
+#   HEADER             | verbatim | Dark branded header: Victoria kicker and
+#                      |          | date, logo + client name, then a short
+#                      |          | headline and the period. Substitute
 #                      |          | {{placeholders}} but keep HTML structure.
 #                      |          | Hand-built: delete the LOGO cell (only
 #                      |          | render_email supplies the logo file).
@@ -217,7 +218,8 @@ placeholders:
     preheader_text: "Hidden inbox-preview text (40-100 chars)"
     date: "Header right side, ISO format e.g. 2026-04-09"
     client_name: "Header headline, beside the logo (the client's display name)"
-    date_range: "Header meta line: the period the numbers cover (drop the META row when there is none)"
+    email_headline: "Header meta line: a short title for the email (2-6 words, no client name or dates), e.g. Weekly delivery review"
+    date_range: "Header meta line, after the headline: the period the numbers cover (drop ' &middot; {{date_range}}' when there is none)"
     badge_label: "Status strip badge text"
     status: "Status strip inline text"
   optional:
@@ -422,8 +424,8 @@ rendering:
     - Identify which sections the workflow requires (e.g. required_sections_in_order).
     - "Build HTML: (a) copy HEAD + outer structure verbatim, (b) copy HEADER +
       STATUS BAR and substitute {{placeholders}}, deleting the header's LOGO
-      cell (no logo file is available to a hand-built email) and the META row
-      when there is no date range, (c) compose body from pattern
+      cell (no logo file is available to a hand-built email) and the
+      ' &middot; {{date_range}}' separator when there is no period, (c) compose body from pattern
       components to match workflow sections, (d) add CTA only if workflow
       requests it, (e) add FOOTER."
     - Apply theme color_overrides as literal hex find-replace (case-insensitive)
@@ -518,7 +520,7 @@ canonical_template: |
           .header-pad, .body-pad, .footer-pad { padding-left: 16px !important; padding-right: 16px !important; }
           .status-pad { padding-left: 16px !important; padding-right: 16px !important; }
           .table-pad { padding-left: 12px !important; padding-right: 12px !important; }
-          .header-date { font-size: 11px !important; }
+          .header-kicker, .header-date { font-size: 11px !important; }
           .header-brand { font-size: 21px !important; line-height: 26px !important; }
           .header-logo img { width: auto !important; height: auto !important; max-width: 132px !important; max-height: 36px !important; }
           .header-meta { font-size: 13px !important; line-height: 19px !important; }
@@ -552,19 +554,24 @@ canonical_template: |
             <table class="email-container" role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#FAFAFA" style="width:100%; max-width:600px; border-collapse:collapse; background-color:#FAFAFA; border:1px solid #D7DEEE;">
 
               <!-- ============================================
-                   HEADER: Dark branded header block. The client's
-                   logo and name lead; the subject is already the
-                   inbox line, so it is not repeated here.
+                   HEADER: Dark branded header block. A small
+                   Victoria line and the date, then the client's
+                   logo and name, then a short headline with the
+                   period it covers.
                    ============================================ -->
               <!-- Accent stripe: a filled 4px row, not a border-top on the header cell (Outlook drops single-side td borders) -->
               <tr>
                 <td height="4" bgcolor="#7272AB" style="height:4px; line-height:4px; mso-line-height-rule:exactly; font-size:1px; background-color:#7272AB; padding:0;">&nbsp;</td>
               </tr>
               <tr>
-                <td class="header-pad" bgcolor="#1A0B1E" style="background-color:#1A0B1E; padding:24px 28px;">
+                <td class="header-pad" bgcolor="#1A0B1E" style="background-color:#1A0B1E; padding:22px 28px 24px 28px;">
                   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; border-collapse:collapse;">
                     <tr>
-                      <td valign="middle" style="padding:0;">
+                      <td class="header-kicker" style="font-size:12px; line-height:16px; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:#D2D9DE; padding:0 0 14px 0;">Victoria &middot; Campaign Intelligence</td>
+                      <td class="header-date" data-preview="date" align="right" style="font-size:12px; line-height:16px; color:#BEB6CD; padding:0 0 14px 12px; white-space:nowrap;">{{date}}</td>
+                    </tr>
+                    <tr>
+                      <td colspan="2" style="padding:0;">
                         <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">
                           <tr>
                             <!-- LOGO: render_email sizes this from the bundle's assets/email-logo.png and returns the file to attach as cid:brand-logo. A hand-built email deletes this whole cell. -->
@@ -573,11 +580,10 @@ canonical_template: |
                           </tr>
                         </table>
                       </td>
-                      <td class="header-date" data-preview="date" align="right" valign="middle" style="font-size:13px; line-height:18px; color:#BEB6CD; padding:0 0 0 12px; white-space:nowrap;">{{date}}</td>
                     </tr>
-                    <!-- META: the period the numbers cover; render_email drops this row when there is none -->
+                    <!-- META: a short headline and the period it covers ("Weekly delivery review &middot; Oct 13 - Oct 19"); drop the separator and period when there is none -->
                     <tr>
-                      <td class="header-meta" data-preview="meta" colspan="2" style="font-size:15px; line-height:22px; color:#D2D9DE; padding:12px 0 0 0;">{{date_range}}</td>
+                      <td class="header-meta" data-preview="meta" colspan="2" style="font-size:15px; line-height:22px; color:#D2D9DE; padding:12px 0 0 0;"><strong style="font-weight:600; color:#FAFAFA;">{{email_headline}}</strong> &middot; {{date_range}}</td>
                     </tr>
                   </table>
                 </td>

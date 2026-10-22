@@ -1139,6 +1139,7 @@ async def render_email(
     badge_label: str = "",
     status: str = "",
     preheader: str = "",
+    headline: str = "",
 ) -> MutableMapping[str, Any]:
     """Render a branded HTML email from structured content and save it as a file.
 
@@ -1151,8 +1152,7 @@ async def render_email(
     re-type the HTML.
 
     Args:
-        subject: Email subject (35-60 chars reads best). It is the inbox line and the
-            page title; the header shows the client, not the subject.
+        subject: Email subject (35-60 chars reads best): the inbox line and page title.
         blocks: Ordered body sections. Each is an object with a "type":
             - {"type": "text", "heading"?: str, "paragraphs": [str, ...], "bullets"?: [str, ...]}
               Prose. Use this for short notes and the sign-off too.
@@ -1180,10 +1180,13 @@ async def render_email(
         client_name: The header headline beside the logo; defaults to this deployment's
             client name.
         date: Header date (ISO, e.g. 2026-10-08); defaults to today (UTC).
-        date_range: Period the numbers cover, shown under the client name.
+        date_range: Period the numbers cover, shown after the headline.
         badge_label, status: Status strip under the header, e.g. "On track" /
             "Pacing 98% of plan". Give both or neither; omitted, there is no strip.
         preheader: Inbox preview text; defaults to the start of the first paragraph.
+        headline: Short title under the client name, 2-6 words, e.g. "Weekly delivery
+            review". Leave out the client name and dates (both are already in the
+            header). Defaults to the subject.
 
     Text formatting: values are escaped, so write plain text. **bold** and line
     breaks are the only formatting. Real data only: never the template's
@@ -1216,6 +1219,7 @@ async def render_email(
             badge_label=badge_label,
             status=status,
             preheader=preheader,
+            headline=headline,
         )
     except email_render.RenderError as exc:
         return {"error": f"Cannot render the email: {exc}"}
