@@ -127,6 +127,8 @@ def test_primary_is_held_as_a_fill_and_accent_as_text() -> None:
     assert floors[("accent", "background")] == mp.TEXT
     assert floors[("primary", "background")] == mp.UI
     assert floors[("primary", "surface_1")] == mp.UI
+    assert floors[("secondary", "background")] == mp.UI
+    assert floors[("secondary", "surface_1")] == mp.UI
     assert floors[("on_primary", "primary")] == mp.TEXT
 
 

@@ -22,8 +22,9 @@ Without ``--write`` it prints what it would write. A brand color that is too
 light or too dark for its role is moved along its own hue (lightness only)
 until it passes the floor for how fleet paints it: 4.5:1 for text (fleet
 paints ``accent`` as link and highlight text) and for a label on a fill, 3:1 for
-``primary`` and ``secondary``, which fleet uses only as fills, borders, checkbox
-ticks and active bars, never as text. The original hexes stay in the comments,
+``primary`` and ``secondary`` on the page and on ``surface_1``: fleet uses them
+only as graphics (fills, borders, checkbox ticks, active bars, a chart series
+in generated cards), never as text. The original hexes stay in the comments,
 so a reviewer can see what was moved and why.
 
 ``--check`` reads ``manifest.yaml`` and exits non-zero if any pair falls below
@@ -210,7 +211,7 @@ def light_mode(b: Brand) -> Mode:
     m.set("primary", primary, f"{ratio(primary, bg)} on the background{moved(b.primary, primary)}")
     m.set("primary_hover", hover, f"{ratio(hover, bg)}; label {ratio(on_primary, hover)}")
     m.set("on_primary", on_primary, f"{ratio(on_primary, primary)} on primary")
-    secondary = fit(b.secondary, bg, UI, "darker")
+    secondary = fit(fit(b.secondary, bg, UI, "darker"), WHITE, UI, "darker")
     m.set("secondary", secondary, f"{ratio(secondary, bg)}{moved(b.secondary, secondary)}")
     accent = fit(b.accent, bg, TEXT, "darker")
     m.set("accent", accent, f"{ratio(accent, bg)}{moved(b.accent, accent)}")
@@ -255,7 +256,7 @@ def dark_mode(b: Brand) -> Mode:
     m.set("primary", primary, f"{ratio(primary, bg)} on the background{moved(b.primary, primary)}")
     m.set("primary_hover", hover, f"{ratio(hover, bg)}; label {ratio(on_primary, hover)}")
     m.set("on_primary", on_primary, f"{ratio(on_primary, primary)} on primary")
-    secondary = fit(b.secondary, bg, UI, "lighter")
+    secondary = fit(b.secondary, s1, UI, "lighter")
     m.set("secondary", secondary, f"{ratio(secondary, bg)}{moved(b.secondary, secondary)}")
     accent = fit(b.accent, bg, TEXT, "lighter")
     m.set("accent", accent, f"{ratio(accent, bg)}{moved(b.accent, accent)}")
@@ -542,6 +543,7 @@ PAIRS = [
     ("primary", "background", UI),
     ("primary", "surface_1", UI),
     ("secondary", "background", UI),
+    ("secondary", "surface_1", UI),
     ("accent", "background", TEXT),
 ]
 
