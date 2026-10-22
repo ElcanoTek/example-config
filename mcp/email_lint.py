@@ -1046,17 +1046,19 @@ def _missing_frame_parts(content: str) -> list[str]:
     inside the container table, as the template nests them.
     """
     tree = html5lib.parse(content, namespaceHTMLElements=False)
-    containers = [el for el in tree.iter() if _strip_ns(el.tag) == "table" and "email-container" in _class_tokens(el)]
-    for container in containers:
+    best = list(FRAME_CLASSES)
+    for container in tree.iter():
+        if _strip_ns(container.tag) != "table" or "email-container" not in _class_tokens(container):
+            continue
+        # Each container is judged alone: a header in one table and a footer
+        # in another is still no frame.
         cells = [el for el in container.iter() if _strip_ns(el.tag) in {"td", "th"}]
-        if any("header-pad" in _class_tokens(c) for c in cells) and any(
-            "footer-pad" in _class_tokens(c) for c in cells
-        ):
+        missing = [name for name in FRAME_CLASSES[1:] if not any(name in _class_tokens(c) for c in cells)]
+        if not missing:
             return []
-    if not containers:
-        return list(FRAME_CLASSES)
-    cells = [el for c in containers for el in c.iter() if _strip_ns(el.tag) in {"td", "th"}]
-    return [name for name in FRAME_CLASSES[1:] if not any(name in _class_tokens(c) for c in cells)]
+        if len(missing) < len(best):
+            best = missing
+    return best
 
 
 def _check_branded_frame(content: str) -> Iterator[Finding]:
