@@ -520,7 +520,7 @@ canonical_template: |
           .table-pad { padding-left: 12px !important; padding-right: 12px !important; }
           .header-date { font-size: 11px !important; }
           .header-brand { font-size: 21px !important; line-height: 26px !important; }
-          .header-logo img { height: 36px !important; width: auto !important; }
+          .header-logo img { width: auto !important; height: auto !important; max-width: 132px !important; max-height: 36px !important; }
           .header-meta { font-size: 13px !important; line-height: 19px !important; }
           .data-table { width: 100% !important; max-width: 100% !important; border: 0 !important; border-collapse: separate !important; border-spacing: 0 !important; table-layout: fixed !important; }
           .data-table thead { display: none !important; }

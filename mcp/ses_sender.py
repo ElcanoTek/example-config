@@ -11,6 +11,7 @@ that deployment's variables in, so this file stays the same across clients.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import mimetypes
 import os
@@ -1222,12 +1223,14 @@ async def render_email(
     stem = os.path.join(directory, f"email-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{secrets.token_hex(3)}")
     path = f"{stem}.html"
     inline_attachments: list[dict[str, str]] = []
+    created: list[str] = []  # only files this call made, so cleanup never removes another
     try:
         # Create-only and owner-only: never overwrites, and an output_dir in a
         # shared location (the temp dir is a readable root) does not expose
         # the email to other local users. Fleet's approval stager and this
         # server run as the same user.
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        created.append(path)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(html_content)
         logo = email_render.brand_logo()
@@ -1236,11 +1239,17 @@ async def render_email(
             # attachments only from there, and so does fleet's approval card
             # when it previews the logo.
             logo_path = f"{stem}-{email_render.LOGO_CID}.png"
+            logo_bytes = logo[0].read_bytes()
             fd = os.open(logo_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            created.append(logo_path)
             with os.fdopen(fd, "wb") as fh:
-                fh.write(logo[0].read_bytes())
+                fh.write(logo_bytes)
             inline_attachments.append({"path": os.path.abspath(logo_path), "cid": email_render.LOGO_CID})
     except OSError as exc:
+        # Half a rendered email is not handed back, so do not leave it behind.
+        for leftover in created:
+            with contextlib.suppress(OSError):
+                os.unlink(leftover)
         return {"error": f"Could not write the rendered email into {directory_arg}: {exc}"}
 
     findings = validate(html_content, subject=subject, content_type="text/html", require_frame=True)

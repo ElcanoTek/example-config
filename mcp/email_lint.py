@@ -1029,10 +1029,34 @@ def _check_body_html_marker(content: str, content_type: str | None) -> Iterator[
 
 # ── Branding ────────────────────────────────────────────────────────────────
 
-_CLASS_ATTR_PATTERN = re.compile(r"""\bclass\s*=\s*["']([^"']*)["']""", re.IGNORECASE)
 # The canonical_template's frame: the container table, the branded header
-# cell and the footer cell. What sits between them is free.
+# cell and the footer cell inside it. What sits between them is free.
 FRAME_CLASSES: Final[tuple[str, ...]] = ("email-container", "header-pad", "footer-pad")
+
+
+def _class_tokens(elem: Any) -> set[str]:
+    return set(str(elem.get("class") or "").split())
+
+
+def _missing_frame_parts(content: str) -> list[str]:
+    """The frame parts absent from the parsed document, in FRAME_CLASSES order.
+
+    Parsed, not pattern-matched, so class names in a comment or text do not
+    count and unquoted attributes do. The header and footer must be cells
+    inside the container table, as the template nests them.
+    """
+    tree = html5lib.parse(content, namespaceHTMLElements=False)
+    containers = [el for el in tree.iter() if _strip_ns(el.tag) == "table" and "email-container" in _class_tokens(el)]
+    for container in containers:
+        cells = [el for el in container.iter() if _strip_ns(el.tag) in {"td", "th"}]
+        if any("header-pad" in _class_tokens(c) for c in cells) and any(
+            "footer-pad" in _class_tokens(c) for c in cells
+        ):
+            return []
+    if not containers:
+        return list(FRAME_CLASSES)
+    cells = [el for c in containers for el in c.iter() if _strip_ns(el.tag) in {"td", "th"}]
+    return [name for name in FRAME_CLASSES[1:] if not any(name in _class_tokens(c) for c in cells)]
 
 
 def _check_branded_frame(content: str) -> Iterator[Finding]:
@@ -1040,11 +1064,11 @@ def _check_branded_frame(content: str) -> Iterator[Finding]:
 
     A model that skips render_email tends to send a bare page (white
     background, a line of text), which reaches the client unbranded. The
-    frame is the container, header and footer; any body inside it passes,
-    so a hand-built section is never refused for being custom.
+    frame is the container table with the header and footer cells in it;
+    any body inside it passes, so a hand-built section is never refused for
+    being custom.
     """
-    classes = {token for attr in _CLASS_ATTR_PATTERN.findall(content) for token in attr.split()}
-    missing = [name for name in FRAME_CLASSES if name not in classes]
+    missing = _missing_frame_parts(content)
     if missing:
         yield Finding(
             rule="EB001",
