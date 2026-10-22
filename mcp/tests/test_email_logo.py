@@ -137,7 +137,7 @@ def test_email_logo_stands_out_on_the_header_band() -> None:
     assert share >= MIN_SHARE, (
         f"assets/email-logo.png barely shows on the header band #{''.join(f'{c:02X}' for c in band)}: "
         f"only {share:.0%} of it reaches {MIN_CONTRAST}:1 (needs {MIN_SHARE:.0%}). "
-        "Use a light (or white) version of the mark, as for a dark background."
+        "Use a version of the mark that stands out on that band, usually the white or light one."
     )
 
 
