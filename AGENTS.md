@@ -12,12 +12,19 @@ The public **fork-this-to-start** client bundle for
 [`fleet`](https://github.com/ElcanoTek/fleet). fleet is a client-agnostic engine
 that ships no customer content and loads a bundle at boot
 (`FLEET_CLIENT_CONFIG_DIR`). This repo is that bundle, branded for a fictional
-company — **Northwind** — with a default persona named **Aria**: branding, model
-defaults, the MCP catalog (`manifest.yaml`), system prompts, personas,
-protocols, skills, and the two example Python MCP servers under `mcp/`.
+company — **Northwind** — with a default persona named **Victoria**: branding,
+model defaults, the MCP catalog (`manifest.yaml`), system prompts, the persona,
+protocols, skills, and the Python MCP servers under `mcp/`.
 
-Nothing here is industry-specific and nothing here is secret. Northwind is a
-placeholder. The servers, personas, and protocols exist to show the *shape*.
+It is also the starting point for every Elcano client bundle. Besides the two
+demo servers it ships the standard client stack's connectors (Pages, Lens,
+inbound `email` and `ses_outbound`), each dark until its host env is set, and
+two brand helpers (`assets/make-palette.py`, `assets/make-share-card.py`). A
+client fork changes branding, persona and docs and nothing else to start; see
+the README's "Make it yours".
+
+Nothing here is secret, and no real client appears anywhere. Northwind is a
+placeholder.
 
 **Bundles are data; fleet is engine.** If something a forking team needs can't be
 expressed here, the fix is usually to extend fleet's bundle schema — not to
@@ -27,10 +34,13 @@ special-case a customer in fleet, and not to special-case Northwind either.
 
 **Edit `mcp/` here. It is the source of truth. There is no upstream.**
 
-This template was never a mirror of another repo's servers. The two servers
-(`knowledge_base.py`, `example_api.py`) were written here, and so was the
-example Agent Plugin's server (`plugins/example-plugin/server/plugin_notes.py`).
-Keep it that way.
+This template was never a mirror of another repo's servers. The two demo
+servers (`knowledge_base.py`, `example_api.py`) and the example Agent Plugin's
+server (`plugins/example-plugin/server/plugin_notes.py`) were written here. The
+email servers (`ses_s3_email.py`, `ses_sender.py` and their helpers) were
+hand-ported from a client bundle once, in 2026-10, as a reviewed change; this is
+their home now, and client bundles receive fixes from here by hand. Keep it
+that way.
 
 - **MUST** make MCP server changes here, as normal reviewed PRs with tests.
 - **MUST NOT** introduce an automated sync between this bundle and any other
@@ -52,7 +62,8 @@ python3 -m venv .venv
 .venv/bin/pip install -r mcp/requirements.txt pytest
 
 .venv/bin/python -m pytest mcp/ -m 'not expensive' -q   # test suite (incl. the plugin's server)
-.venv/bin/python -m ruff check mcp/ plugins/            # lint
+.venv/bin/python -m ruff check mcp/ plugins/ assets/    # lint
+.venv/bin/python assets/make-palette.py --check          # palette contrast
 ```
 
 `pytest.ini` sets `testpaths = mcp mcp/tests`; `mcp/tests/test_plugin_notes.py`
@@ -102,8 +113,21 @@ manifest never provides means the subprocess never receives it.
   `mcp/tests/test_connector_copy.py` is the gate.
 - **Honest docs.** If you change behavior, change the README / `mcp/README.md`
   / `docs/` in the same PR.
-- **`FLEET_PERSONA_DEFAULT` is a file basename**, not the `name:` field inside the
-  YAML. The shipped default is `assistant` (display name Aria).
+- **The persona needs both variables.** `FLEET_PERSONA_DEFAULT` is a file
+  basename (`victoria`), not the `name:` field; `FLEET_PERSONA` is the path
+  (`personas/victoria.yaml`). fleet's stock default for both is `assistant`,
+  which this bundle does not ship; `bundle-preflight.yml` passes the same
+  values through `bundle_env`.
+- **Standard connectors stay dark and generic.** Pages and Lens keep their
+  reserved `.invalid` default URLs; `email` and `ses_outbound` read unprefixed
+  host variables (`EMAIL_*`, `SES_OUTBOUND_*`, the names production-support's
+  email provisioning writes), carry no `account_vars` (the named-account overlay
+  would not isolate their shared `AWS_*` keys), and default to refusing
+  unlisted recipients. Fixtures use `example.com` / `.example` addresses only:
+  no real sender, customer, vendor account or tracking host.
+- **Colors stay contrast-checked.** Change `branding.colors` with
+  `assets/make-palette.py`, or rerun its `--check` (the tests do) after a hand
+  edit; the email theme and `chart_colors` must follow the same palette.
 
 ## Where to look
 
@@ -113,6 +137,7 @@ manifest never provides means the subprocess never receives it.
   [`docs/TESTING-LOCALLY.md`](docs/TESTING-LOCALLY.md)
 - **Registering these servers in your own agent:** [`INSTALL.md`](INSTALL.md)
 - **Authoring and testing the Python MCP servers:** [`mcp/README.md`](mcp/README.md)
-- **Adding a bundle-managed SES/S3 email-report pipeline:** use the external
-  canonical [new-client email-report runbook](https://github.com/ElcanoTek/production-support/blob/main/ses-s3/docs/NEW-CLIENT-EMAIL-SETUP.md),
-  then keep real deployment details only in the forked client bundle.
+- **Setting up a client's SES/S3 email tenant:** the
+  [new-client email-report runbook](https://github.com/ElcanoTek/production-support/blob/main/ses-s3/docs/NEW-CLIENT-EMAIL-SETUP.md);
+  the connectors are already here, and real deployment details go only in the
+  forked client bundle's `docs/EMAIL-DEPLOYMENT.md`.

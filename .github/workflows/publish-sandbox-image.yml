@@ -34,6 +34,10 @@
 # sensitive is in the image (no COPY/ADD in the Containerfile; it is Fedora plus
 # RPMs) and the name discloses nothing, since this template is public anyway.
 #
+# A client fork is PRIVATE, so its package is private too, and must stay so:
+# the image is innocuous, but a public fleet-sandbox-<client> package name
+# would disclose the client as a customer. Let the box authenticate to GHCR.
+#
 # A first publish of a NEW image name needs no manual package setup: the pushing
 # repo creates and links it. An earlier version of this comment said otherwise —
 # it was generalising from fleet's June 2026 failures, which were a different

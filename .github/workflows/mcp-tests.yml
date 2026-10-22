@@ -1,0 +1,45 @@
+# MCP tests — lint and unit-test the bundle's Python MCP servers.
+#
+# WHY: bundle-preflight.yml validates the manifest, not the servers, so
+# nothing else in CI runs the tests under mcp/. The connector suites mock all
+# HTTP and AWS calls, so this job needs no secrets and never reaches a live
+# account.
+#
+# Two Pythons: 3.12 as the floor the code is written for, and 3.14, which is
+# what the fleet hosts run the servers with.
+name: MCP tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mcp:
+    name: MCP lint + tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.14"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: pip install -r mcp/requirements.txt
+
+      - name: Ruff
+        run: ruff check mcp/ plugins/ assets/
+
+      - name: Pytest (excluding expensive)
+        run: pytest -m 'not expensive' -q

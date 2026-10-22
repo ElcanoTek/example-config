@@ -9,8 +9,16 @@ fleet ships **no** client content. At boot it loads a *bundle* from the
 personas, playbooks, and MCP servers that turn the generic engine into *your*
 team's agent workspace. This repo is a clean, generic example of that bundle —
 branded for a fictional company, **Northwind**, with a default persona named
-**Aria** — written so any team running agents (support, ops, research,
+**Victoria** — written so any team running agents (support, ops, research,
 engineering, analytics, …) can fork it and swap in their own content.
+
+It is also the starting point for every Elcano client bundle: it ships the
+standard client stack's connectors (the deployment's own **Pages** and **Lens**,
+and **inbound and outbound email** through Amazon SES/S3), each dark until its
+credentials are in fleet's host environment, plus two helpers that turn a
+client's brand colors and logo into the palette, email theme and link card. A
+client fork changes branding, persona and docs; it never copies another
+client's bundle. See [Make it yours](#make-it-yours).
 
 > Nothing here is industry-specific and nothing here is secret. "Northwind" is a
 > placeholder for your company; the example MCP servers, personas, and protocols
@@ -71,8 +79,12 @@ own generic `config/default`). Point it at a checkout of this repo:
 
 ```sh
 export FLEET_CLIENT_CONFIG_DIR=/path/to/example-config
-export FLEET_PERSONA_DEFAULT=assistant        # personas/assistant.yaml — the persona named "Aria"
+export FLEET_PERSONA_DEFAULT=victoria         # personas/victoria.yaml (new chats)
+export FLEET_PERSONA=personas/victoria.yaml   # scheduled runs
 ```
+
+Set both: fleet's stock default for each is `assistant`, which this bundle does
+not ship.
 
 At boot fleet parses `manifest.yaml`, resolves each MCP server's **enable gate**
 and `${VAR}` env interpolation against the process environment, and reads the
@@ -80,7 +92,7 @@ and `${VAR}` env interpolation against the process environment, and reads the
 directories.
 `FLEET_PERSONA_DEFAULT` (fleet still accepts the legacy bare `PERSONA_DEFAULT`)
 selects the default persona by **file basename**: fleet reads
-`personas/<value>.yaml` (so `assistant`, not `Aria` — the `name:` field inside
+`personas/<value>.yaml` (so `victoria`, not `Victoria` — the `name:` field inside
 the file is display and prompt content, never the selector). Users can still
 switch persona per-conversation in the UI. The loader and the full manifest
 schema live in
@@ -101,31 +113,44 @@ example-config/
     default.md           # base prompt for SCHEDULED agents
     chat.md              # base prompt for INTERACTIVE chat
   personas/              # *.yaml — one per persona; FLEET_PERSONA_DEFAULT picks one by file basename
-    assistant.yaml       #   Aria  — general-purpose workspace assistant (the default)
-    analyst.yaml         #   Atlas — data & research analyst
-    onboarding-guide.yaml#   Sage  — internal-knowledge / onboarding guide
+    victoria.yaml        #   Victoria — the starter persona a client fork fills in (the default)
   protocols/             # *.md | *.yaml — reusable playbooks the agent runs on demand
     example.md           #   annotated template: what a protocol is and how to write one
     ask-the-handbook.md  #   grounded Q&A over the knowledge base, with citations
     research-report.md   #   web + attached-source research into a cited brief
     weekly-status.md     #   a SCHEDULED playbook: gather inputs → compute → write an artifact
+    email-style.yaml     #   the report-email template, rules and chart colors (render_email)
+    email_styles/        #   email themes: hex find-replace maps (default.yaml = unbranded)
   prompts/               # Git-backed library shown in Chat + Operations Center
     weekly-project-brief.yaml # exact prompt content with browse-friendly metadata
   skills/                # <name>/SKILL.md folders — Agent Skills: instructions + bundled code/refs
     example-skill/       #   annotated template: skill format + progressive disclosure (+ demo script)
     csv-profiler/        #   profile a CSV with the stdlib only (types, nulls, basic stats)
+    lens-classification/ #   run and read Lens jobs through the `lens` connector
+    pages-dashboards/    #   build, publish and update dashboards through the `pages` connector
   plugins/               # Agent Plugins (agent-plugins.org): portable skills + MCP packages
     example-plugin/      #   plugin.json + one skill + mcp.json (a stdio server using PLUGIN_ROOT/PLUGIN_DATA)
   mcp/                   # the bundle's Python MCP servers (+ tests, requirements.txt)
-    knowledge_base.py    #   always-on; searches mcp/data/handbook.json
+    knowledge_base.py    #   searches mcp/data/handbook.json (off by default: demo content)
     example_api.py       #   credential-gated generic REST connector
+    ses_s3_email.py      #   inbound email reports from the SES/S3 archive (`email`)
+    ses_sender.py        #   render, lint and send audited outbound email (`ses_outbound`)
+    email_render.py      #   render_email's HTML builder; email_lint.py its checks
+    utils/               #   shared run ledger, URL guard and filesystem helpers
     data/handbook.json   #   the demo company handbook (swap for your content)
   sandbox/
     Containerfile        # the execution-sandbox image for agent tool calls
   evals/                 # golden regression sets replayed by `fleet eval run`
     example.yaml         #   template set: the case format + every scorer kind
   assets/                # brand assets referenced from manifest.yaml
-    northwind-mark.svg   #   the placeholder mark the (commented) branding.logo points at
+    northwind-mark.svg   #   the placeholder mark branding.logo points at
+    northwind-share.png  #   the generated 1280x640 unfurl card (branding.share_image)
+    make-palette.py      #   brand hexes -> colors block + email theme + chart colors, contrast-checked
+    make-share-card.py   #   regenerates the unfurl card from the branding block
+  docs/                  # deployment-record templates a client fork fills in
+    DEPLOYMENT.md        #   hosts, decisions and checklist for the client's stack
+    EMAIL-DEPLOYMENT.md  #   the client's SES/S3 email tenant record
+    onboarding/solution-engineer-handoff.md  # the starter persona's sources and open topics
   install.sh             # register these MCP servers into your own coding agent (see INSTALL.md)
 ```
 
@@ -147,15 +172,22 @@ four things:
 | | Field | Notes |
 | --- | --- | --- |
 | Strings | `app_name`, `login_title`, `login_tagline`, `share_title`, `share_description` | Rendered in-app, in the browser tab, and in social-share cards. |
-| Mark | `logo` | Bundle-relative image path, served straight from this bundle — no web rebuild, nothing copied into fleet. Omit it and the rail shows fleet's own mark. Ships **commented** here: the field needs a fleet at/past #886 (2026-07-29) — see the dated note in `manifest.yaml`. |
-| Unfurl card | `share_image` | The `og:image`/`twitter:image` scrapers show when a deployment link is pasted into Slack/Teams/Discord. PNG/WebP/JPEG, served from the bundle. Also ships **commented**: needs a fleet at/past #900. |
+| Mark | `logo` | Bundle-relative image path, served straight from this bundle — no web rebuild, nothing copied into fleet. Omit it and the rail shows fleet's own mark. Needs a fleet at/past #886 (2026-07-29). |
+| Unfurl card | `share_image` | The `og:image`/`twitter:image` scrapers show when a deployment link is pasted into Slack/Teams/Discord. PNG/WebP/JPEG, served from the bundle. Needs a fleet at/past #900. |
 | Palette | `colors.light` / `colors.dark` | 19 tokens, applied as a render-blocking stylesheet so even the login page paints in your colors. |
 
-This bundle brands the strings and the neutral zinc palette as **Northwind**
-and ships a placeholder mark at `assets/northwind-mark.svg` behind the
-commented `logo:` line (uncomment it once your fleet understands the field).
-Change them and the app is yours; a sparse block is fine, since every field
-falls back to fleet's generic value.
+This bundle brands the strings and the neutral zinc palette as **Northwind**,
+with a placeholder mark at `assets/northwind-mark.svg` and a generated card at
+`assets/northwind-share.png`. Change them and the app is yours.
+
+**Two helpers do the brand work.** `assets/make-palette.py` takes a client's
+brand hexes (`--primary`, optionally `--secondary`, `--accent`, `--ink`,
+`--paper`, `--dark-background`) and writes all 19 tokens for both modes, the
+matching report-email theme under `protocols/email_styles/themes/` and the
+email chart colors, moving a color along its own hue only where it misses
+4.5:1 (text) or 3:1 (accents); `--check` re-verifies a hand-edited block and
+runs in the tests. `assets/make-share-card.py --host fleet.<domain>` then
+regenerates the unfurl card from the strings, the palette and the mark.
 
 Two things worth knowing before you tune the palette. Fleet's defaults for the
 structure, scrim, and rail tokens are hand-tinted from **fleet's** primary hue
@@ -190,13 +222,23 @@ catches up.
 
 ### MCP servers — connect agents to your data
 
-This bundle ships two servers that demonstrate the two shapes you will use for
-everything else.
+This bundle ships two demo servers that show the two shapes you will use for
+everything else, and the four connectors of the standard Elcano client stack.
 
-| Server | Gate | Credentials | What it shows |
+| Server | Gate | Credentials | What it does |
 | --- | --- | --- | --- |
-| `knowledge_base` | `always: true` | none | Point an agent at **your own docs.** Searches a bundled JSON handbook. |
+| `knowledge_base` | `always: true`, optional and off by default | none | Point an agent at **your own docs.** Searches a bundled JSON handbook (demo content, so no chat gets it unless a user switches it on). |
 | `example_api` | `enabled_env: [EXAMPLE_API_KEY]` | brokered host-side | The **gated connector** pattern — listed as **Needs setup** and never launched until the key is set. |
+| `pages` | `enabled_env: [PAGES_MCP_URL, PAGES_API_TOKEN]` | token in the header, host-side | Build, publish and refresh dashboards on the deployment's own Pages. Page changes wait for approval; data refreshes (`update_page_data`, `update_page_data_upload`) run at once and post a card (`critical_tool_modes: notify`). |
+| `lens` | `enabled_env: [LENS_MCP_URL, LENS_API_TOKEN]` | token in the header, host-side | Classify sites, apps and CTV apps into quality tiers on the deployment's own Lens. Starting or cancelling a job needs approval. |
+| `email` | `enabled_env: [EMAIL_S3_BUCKET]` | read-only IAM user, host-side | Search and read inbound report mail that SES stores in the client's S3 bucket. |
+| `ses_outbound` | `enabled_env: [SES_OUTBOUND_AWS_ACCESS_KEY_ID, …SECRET_ACCESS_KEY, SES_OUTBOUND_FROM_EMAIL]` | send-only IAM user, host-side | Render and send audited email as the client's sender. Every `send_email` needs approval; unlisted recipients are refused unless `SES_OUTBOUND_ALLOW_UNLISTED_RECIPIENTS=true`. |
+
+The Lens and Pages entries default their `url` to a reserved `.invalid` host:
+fleet needs a non-empty URL to load the bundle, and an unset one must never
+reach another organisation's box. The email host variables are unprefixed
+(`EMAIL_*`, `SES_OUTBOUND_*`) because one fleet box serves one client; the
+production-support email provisioning writes exactly these names.
 
 - **`knowledge_base`** is the canonical "answer from our docs" pattern. It serves
   a small company handbook (`mcp/data/handbook.json`, with People / Engineering /
@@ -243,36 +285,38 @@ so fleet may dispatch them concurrently within a single turn.
 ### Personas — the same engine, different voice and remit
 
 Personas live in `personas/*.yaml`. `FLEET_PERSONA_DEFAULT` (the **file basename** —
-`assistant` for `personas/assistant.yaml`, not the display name `Aria`) selects
-the default; users pick any persona per conversation in the UI.
+`victoria` for `personas/victoria.yaml`, not the display name) selects the
+default for new chats and `FLEET_PERSONA` (the path) the one scheduled runs use;
+users pick any persona per conversation in the UI.
 
-| File | Name | Remit |
-| --- | --- | --- |
-| `assistant.yaml` | **Aria** | Everyday workspace assistant — the shipped default. |
-| `analyst.yaml` | **Atlas** | Data & research analyst — computes on real data, shows the work. |
-| `onboarding-guide.yaml` | **Sage** | Internal-knowledge guide — answers "how do we do X here?", always cited from the handbook. |
+This bundle ships one, [`victoria.yaml`](personas/victoria.yaml): **Victoria**,
+in the starter shape from production-support's fleet-onboarding (mission,
+`client_context`, working style, context still to develop). Its context here is
+the fictional Northwind; a client fork replaces `client_context` with facts the
+client publishes, and records the sources in
+`docs/onboarding/solution-engineer-handoff.md`. Internal rules, fees and
+approval steps come later, from the client.
 
-The manifest's `personas:` block adds **per-persona tool permissions** — a
-least-privilege gate that can only *narrow* what a persona sees, never widen
-it. This bundle uses the deny-form on Sage (`deny: ["mcp:example_api/*"]`): the
-onboarding guide never needs the REST connector, so it never sees it. Aria and
-Atlas have no entry and keep every permitted tool.
+The manifest's `personas:` block can add **per-persona tool permissions** — a
+least-privilege gate that can only *narrow* what a persona sees, never widen it
+(for example `deny: ["mcp:example_api/*"]`). It is empty: Victoria keeps every
+permitted tool.
 
 ### Quick-start cards (empty state)
 
 The chat home screen shows the cards declared under `empty_state.cards`. This
-bundle ships four that span team types: **Summarize a document**, **Analyze a
-dataset** (runs Python in the sandbox on an attached CSV), **Ask the handbook**
-(grounded in `knowledge_base`), and **Draft something**.
+bundle ships three that span team types: **Summarize a document**, **Analyze a
+dataset** (runs Python in the sandbox on an attached CSV), and **Draft
+something**. The "Ask the handbook" card is gone because the handbook is demo
+content and off by default; its protocol stays for local testing.
 
 ### Task templates — pre-filled scheduled tasks
 
 `task_templates:` seeds the Operations Center's "new task from a template"
-picker. This bundle ships three that exercise its own content: **Weekly Status
-Report** (runs `protocols/weekly-status.md` on a Friday cron, as Atlas, with an
-SLA hint), **Handbook Freshness Check** (audits the knowledge base, with a
-fallback model), and **Research Brief** (a `{topic}` placeholder the UI prompts
-for, with network enabled). Templates pre-fill only form-editable fields — the
+picker. This bundle ships two that exercise its own content: **Weekly Status
+Report** (runs `protocols/weekly-status.md` on a Friday cron, as Victoria, with
+an SLA hint) and **Research Brief** (a `{topic}` placeholder the UI prompts for,
+with network enabled). Templates pre-fill only form-editable fields — the
 security-sensitive knobs (credentials, MCP selection, triggers) are deliberately
 not templatable, so a template can never widen a task's authority.
 
@@ -318,12 +362,14 @@ instead of being re-derived. The optional `allowed-tools` frontmatter field is
 advisory metadata only — fleet does **not** enforce it as an authorization gate;
 govern consequential tools through `agent_policy` instead.
 
-This bundle ships two:
+This bundle ships four:
 
 | Skill | What it shows |
 | --- | --- |
 | `example-skill` | The annotated **template** — frontmatter rules, the three disclosure levels, a `REFERENCE.md`, and a tiny stdlib demo script. Copy it to start your own. |
 | `csv-profiler` | A genuinely useful skill with a real **standard-library-only** script that profiles a CSV (row/col counts, per-column type inference, null counts, basic stats) — so it runs even without pandas. |
+| `lens-classification` | How to run and read Lens jobs (site, app and CTV quality tiers) through the `lens` connector. |
+| `pages-dashboards` | How to build, publish and update dashboards through the `pages` connector. |
 
 ### Agent Plugins — the portable package for skills + MCP servers
 
@@ -398,47 +444,75 @@ gate automatic. See fleet's
 
 ## Make it yours
 
-1. **Rebrand.** Edit `branding:` in `manifest.yaml` — the strings, the `colors`
-   block, and (on a fleet new enough for the fields — see the dated notes in
-   the manifest) uncomment `logo` / `share_image`, replacing
-   `assets/northwind-mark.svg` with your own files. The app name, tab title,
-   and share cards all follow the bundle at request time — no web rebuild.
-   Rename the persona files and their `name:` fields, and set `FLEET_PERSONA_DEFAULT`
-   to your default persona's **file basename**. Run `fleet validate-config` to
-   catch a bad `logo` path before you restart into it.
-2. **Point the knowledge base at your docs.** Replace `mcp/data/handbook.json`
-   with your own content — or edit `mcp/knowledge_base.py` to read your wiki,
-   database, or vector store.
-3. **Add your MCP servers.** Drop a Python server under `mcp/`, add an entry to
-   `mcp_servers[]` with the right enable gate (`always`, or `enabled_env` for a
-   credential-gated connector), and name its credential *variables* (never
-   values) — fleet brokers the secret host-side. See
-   [`mcp/README.md`](mcp/README.md) for the server-authoring guide and tests.
-   For scheduled inputs, map your connector's input-directory variable to
-   `${FLEET_WORKSPACE}/inputs`; map an attribution variable to
-   `${FLEET_TASK_ID}` when the remote system records the originating task.
-   If the connector is an inbound SES/S3 email-report archive, follow the
-   external canonical
-   [new-client email-report runbook](https://github.com/ElcanoTek/production-support/blob/main/ses-s3/docs/NEW-CLIENT-EMAIL-SETUP.md)
-   and create a deployment-specific `docs/EMAIL-DEPLOYMENT.md` in the real
-   client bundle. Do not put real domains, account IDs, bucket names, or
-   credentials into this template.
-4. **Govern new tools.** List read-only tools in `agent_policy.parallel_safe_tools`
-   and writes / consequential actions in `critical_tools` so they require an
-   audit gate before running.
-5. **Write personas, prompts, protocols, and skills.** Copy an existing
-   `personas/*.yaml`, `prompts/*.yaml`, or `protocols/*.md` and adapt it to your
-   team. Git-backed prompt files appear directly in the shared Prompt Library;
-   UI-authored prompts cover teammates who do not use Git. For a
-   capability that ships code or reference files, copy the `skills/example-skill/`
-   folder (the annotated template) and replace its body and `scripts/`.
-6. **Tune the sandbox.** Add packages your agents need to `sandbox/Containerfile`.
-   The base tracks `fedora-minimal:latest`; pin a digest there if you want
-   reproducible builds.
-7. **Capture goldens and gate regressions.** Once a scheduled task or a
-   conversation does something well, `fleet eval capture` it into an
-   `evals/<set>.yaml` and run `fleet eval run <set>` in CI — so the next model
-   swap or prompt edit has to prove it didn't make your known-good work worse.
+A client fork (a **private** `ElcanoTek/<client>-config` created from this
+repo's `main`) needs only these edits; everything else ships ready:
+
+1. **Brand strings.** In `manifest.yaml` `branding:`, set `app_name`,
+   `login_title`, `login_tagline`, `share_title`, `share_description` from the
+   client's own wording, and `SES_TENANT_LABEL` in the `ses_outbound` entry to
+   the same name as `app_name` (a test checks).
+2. **Palette and email theme.** Run
+   `python3 assets/make-palette.py --slug <client> --primary <hex> [--secondary
+   <hex> --accent <hex> --ink <hex> --paper <hex> --dark-background <hex>]
+   --write` with the hexes from the client's site or brand guide. It rewrites
+   `branding.colors`, writes `protocols/email_styles/themes/<client>.yaml`,
+   makes it the default theme and recolors the email charts. Note the source of
+   the hexes in a comment above `colors:`.
+3. **Mark and card.** Replace `assets/northwind-mark.svg` with the client's mark
+   (a square PNG of at least 256x256, or an SVG), point `logo` at it, set
+   `share_image` to `assets/<client>-share.png`, and run
+   `python3 assets/make-share-card.py --host fleet.<client domain>` (needs
+   Pillow, in `mcp/requirements.txt`, and `rsvg-convert` for an SVG mark).
+   Delete the Northwind files.
+4. **Persona.** Replace `client_context` (and the Northwind wording) in
+   `personas/victoria.yaml` with the client's sourced facts; fill in
+   `docs/onboarding/solution-engineer-handoff.md` with the pages read. Follow
+   production-support's fleet-onboarding starter task.
+5. **Names and docs.** `fleet-sandbox-example` → `fleet-sandbox-<client>` in
+   `manifest.yaml` and the sandbox workflows; `REPO` and the default directory
+   in `install.sh`; the title and intro of this README and `AGENTS.md`; fill in
+   `docs/DEPLOYMENT.md` as the deployment goes, and `docs/EMAIL-DEPLOYMENT.md`
+   once the email tenant exists.
+6. **Check.** `pytest -m 'not expensive'`, `ruff check mcp/ plugins/ assets/`,
+   `python3 assets/make-palette.py --check`, and `fleet validate-config` with
+   `FLEET_PERSONA_DEFAULT=victoria FLEET_PERSONA=personas/victoria.yaml`,
+   built at the fleet revision the box will run.
+
+Do not copy files from another client's bundle: improvements to the shared
+connectors land here first, as reviewed PRs, and are hand-ported to existing
+client bundles in their own PRs.
+
+**Going further** (any fork, any time):
+
+- **Point the knowledge base at your docs.** Replace `mcp/data/handbook.json`
+  with your own content (and switch the connector back on by default), or edit
+  `mcp/knowledge_base.py` to read your wiki, database, or vector store.
+- **Add your MCP servers.** Drop a Python server under `mcp/`, add an entry to
+  `mcp_servers[]` with the right enable gate (`always`, or `enabled_env` for a
+  credential-gated connector), and name its credential *variables* (never
+  values) — fleet brokers the secret host-side. See
+  [`mcp/README.md`](mcp/README.md) for the server-authoring guide and tests.
+  For scheduled inputs, map your connector's input-directory variable to
+  `${FLEET_WORKSPACE}/inputs`; map an attribution variable to
+  `${FLEET_TASK_ID}` when the remote system records the originating task.
+  Do not put real domains, account IDs, bucket names, or credentials into this
+  template.
+- **Govern new tools.** List read-only tools in `agent_policy.parallel_safe_tools`
+  and writes / consequential actions in `critical_tools` so they require an
+  audit gate before running.
+- **Write prompts, protocols, and skills.** Copy an existing `prompts/*.yaml` or
+  `protocols/*.md` and adapt it to your team. Git-backed prompt files appear
+  directly in the shared Prompt Library; UI-authored prompts cover teammates who
+  do not use Git. For a capability that ships code or reference files, copy the
+  `skills/example-skill/` folder (the annotated template) and replace its body
+  and `scripts/`.
+- **Tune the sandbox.** Add packages your agents need to `sandbox/Containerfile`.
+  The base tracks `fedora-minimal:latest`; pin a digest there if you want
+  reproducible builds.
+- **Capture goldens and gate regressions.** Once a scheduled task or a
+  conversation does something well, `fleet eval capture` it into an
+  `evals/<set>.yaml` and run `fleet eval run <set>` in CI — so the next model
+  swap or prompt edit has to prove it didn't make your known-good work worse.
 
 ### Deployment-level knobs (host env, not bundle)
 
@@ -498,7 +572,8 @@ specifics — names, domains, IPs — stay out of this public template.
     with `fleet config set-openrouter-key` (fleet exits by design until it
     exists, and `fleet-web` dependency-fails alongside — expected pre-key
     state, not a broken deploy).
-- **First-boot env**: `FLEET_PERSONA_DEFAULT=<persona file basename>` and
+- **First-boot env**: `FLEET_PERSONA_DEFAULT=victoria`,
+  `FLEET_PERSONA=personas/victoria.yaml` and
   `FLEET_SANDBOX_MEMORY=2g` (pandas-sized jobs are OOM-killed at the 512 MiB
   default) in `fleet.env`; `NEXT_PUBLIC_APP_NAME=<Client>` in `fleet-web.env`
   (see the knob above).
@@ -511,7 +586,8 @@ specifics — names, domains, IPs — stay out of this public template.
   will boot.
 - **Harden**: remove Fedora's default-open `cockpit` from firewalld — end
   state `ssh http https` only. If the bundle's share card carries a
-  placeholder hostname, stamp the real domain and regenerate it.
+  placeholder hostname, regenerate it with
+  `assets/make-share-card.py --host fleet.<domain>`.
 
 ## Where to go next
 

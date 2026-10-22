@@ -11,7 +11,7 @@ you. You don't need any of that to *try the pieces*. A local coding agent can:
 
 - run the bundle's [MCP servers](../mcp/) and call their tools,
 - adopt a [persona](../personas/) / [system prompt](../system_prompts/) so the
-  agent behaves like `fleet`'s "Aria" would,
+  agent behaves like `fleet`'s "Victoria" would,
 - execute a [protocol](../protocols/) as a one-shot task, and
 - load a [skill](../skills/) and run its bundled script.
 
@@ -44,7 +44,7 @@ Throughout, replace `<bundle>` with the absolute path to your checkout (e.g.
    - [Call `kb_search` from inside the agent](#call-kb_search-from-inside-the-agent)
 3. [Part 2 — Personas & system prompts](#part-2--personas--system-prompts)
    - [What they are in this bundle](#what-they-are-in-this-bundle)
-   - [Applying Aria + a system prompt in Claude Code](#applying-aria--a-system-prompt-in-claude-code)
+   - [Applying Victoria + a system prompt in Claude Code](#applying-victoria--a-system-prompt-in-claude-code)
 4. [Part 3 — Protocols & workflows](#part-3--protocols--workflows)
    - [What a protocol is here](#what-a-protocol-is-here)
    - [Worked end-to-end: ask-the-handbook (Claude Code)](#worked-end-to-end-ask-the-handbook-claude-code)
@@ -264,19 +264,18 @@ This bundle separates the agent's *base behavior* from its *character*:
   define rules like leading with the answer, grounding claims in tool results,
   tool-use discipline, and how to load on-demand MCP servers.
 - **`personas/`** — a YAML *character* layered on top.
-  [`assistant.yaml`](../personas/assistant.yaml) is this bundle's default persona,
-  **"Aria"** — a general-purpose workspace assistant. It carries the voice, the
-  operating approach, the grounding principles, the formatting rules, and a QA
-  checklist. (The bundle also ships `analyst.yaml` — "Atlas" — and
-  `onboarding-guide.yaml` — "Sage"; the same steps apply to any of them.)
+  [`victoria.yaml`](../personas/victoria.yaml) is this bundle's only persona,
+  **"Victoria"**, the workspace assistant. It carries the client's company
+  context (in the template, the fictional Northwind), its vocabulary, and the
+  working style.
 
-In `fleet`, `FLEET_PERSONA_DEFAULT=assistant` selects Aria and the system prompt is
+In `fleet`, `FLEET_PERSONA_DEFAULT=victoria` selects Victoria and the system prompt is
 applied automatically. **To test locally you reproduce that layering yourself** by
 feeding the prompt text into the agent. The persona YAML is structured data, not a
 ready-made prompt string — the practical move is to **hand the agent the file(s)
 and tell it to adopt them**, which every agent below can do.
 
-### Applying Aria + a system prompt in Claude Code
+### Applying Victoria + a system prompt in Claude Code
 
 Claude Code gives you several mechanisms; pick by how persistent you want it.
 
@@ -290,7 +289,7 @@ claude \
   --append-system-prompt-file <bundle>/system_prompts/chat.md \
   --append-system-prompt "Adopt this persona for all responses (its voice,
 operating approach, principles, and formatting):
-$(cat <bundle>/personas/assistant.yaml)"
+$(cat <bundle>/personas/victoria.yaml)"
 ```
 
 `--system-prompt` / `--system-prompt-file` *replace* the entire default prompt
@@ -303,12 +302,12 @@ closest analogue to how `fleet` always applies the persona. Create a `CLAUDE.md`
 at your test project root that points Claude at the bundle's prompt files:
 
 ```markdown
-# Test harness for the Northwind example bundle
+# Test harness for this bundle
 
 When acting in this project, adopt the bundle's base rules and persona:
 
 1. Read and follow `<bundle>/system_prompts/chat.md` as your base operating rules.
-2. Read and follow `<bundle>/personas/assistant.yaml` — adopt Aria's voice,
+2. Read and follow `<bundle>/personas/victoria.yaml` and adopt Victoria's voice,
    operating approach, grounding principles, and formatting rules.
 3. The bundle's MCP servers (knowledge_base, …) are registered; prefer them over
    reimplementing their behavior.
@@ -320,10 +319,10 @@ into the project if you'd rather not use absolute paths.)
 **Option C — Output styles (persistent, switchable persona).** Claude Code's
 [output styles](https://code.claude.com/docs/en/output-styles) are the built-in
 way to save a persona you can toggle between sessions. Create
-`.claude/output-styles/aria.md` from the persona content (Markdown with
+`.claude/output-styles/victoria.md` from the persona content (Markdown with
 frontmatter `name`/`description` and the behavior in the body — paste the voice,
-principles, and formatting rules out of `assistant.yaml`), then select it with
-`/output-style aria`.
+principles, and formatting rules out of `victoria.yaml`), then select it with
+`/output-style victoria`.
 
 ---
 
@@ -353,9 +352,15 @@ locally. The recipe for testing any protocol is the same three ingredients:
 
 ### Worked end-to-end: ask-the-handbook (Claude Code)
 
-A concrete, credential-free pick: **persona `assistant` (Aria) + protocol
-[`ask-the-handbook.md`](../protocols/ask-the-handbook.md) + the always-on
-`knowledge_base` MCP server.** The protocol searches the knowledge base, reads the
+A concrete, credential-free pick: **persona `victoria` (Victoria) + protocol
+[`ask-the-handbook.md`](../protocols/ask-the-handbook.md) + the
+`knowledge_base` MCP server.**
+
+> **This exercise tests the protocol's mechanics on fictional data.** The
+> handbook in `mcp/data/handbook.json` is the template's demo for a made-up
+> company. Its policies (time off, expenses, deploys) are not any real
+> organisation's policy, and a good answer says the source is the demo handbook. In
+> fleet the connector is off by default for this reason. The protocol searches the knowledge base, reads the
 source article, and answers with a citation — refusing to invent policy when the
 handbook doesn't cover the question. It explicitly calls
 `mcp_knowledge_base_kb_search`, `mcp_knowledge_base_kb_get_article`, and
@@ -375,7 +380,7 @@ claude mcp add knowledge_base -s user \
 claude \
   --append-system-prompt-file <bundle>/system_prompts/chat.md \
   --append-system-prompt "Adopt this persona:
-$(cat <bundle>/personas/assistant.yaml)"
+$(cat <bundle>/personas/victoria.yaml)"
 ```
 
 **Step 3 — verify the wiring** before running the protocol. In the session:
@@ -400,8 +405,10 @@ protocol: call `kb_search` with the question as terms, take the top result's id
 (`requesting-time-off`), call `kb_get_article` to read the **full** article (not
 the snippet), then answer directly and **cite the source by title and id** — e.g.
 *Source: "Requesting Time Off" (`requesting-time-off`)* — quoting the exact notice
-period verbatim rather than paraphrasing it. Because Aria is in effect, the answer
-leads with the specific number, stays tight, and never fabricates a figure.
+period verbatim rather than paraphrasing it, and saying it comes from the demo
+handbook rather than presenting it as the organisation's policy. Because Victoria is in
+effect, the answer leads with the specific number, stays tight, and never
+fabricates a figure.
 
 **The "not in the handbook" path is worth testing too** — it's the protocol's
 strict contract. Ask something the handbook doesn't cover:
@@ -416,7 +423,7 @@ and **does not invent a policy**. An honest "not found" is the right answer here
 that the agent refuses to guess is the thing you're verifying.
 
 The same three-ingredient recipe works for every protocol — swap the protocol
-file, keep Aria as the persona, and register whichever MCP server(s) that protocol
+file, keep Victoria as the persona, and register whichever MCP server(s) that protocol
 names.
 
 ---
@@ -444,7 +451,7 @@ library, so they run directly — no MCP server or credentials involved:
 cd <bundle>
 
 # Level-3 demo from the template skill
-python3 skills/example-skill/scripts/greet.py "Aria"
+python3 skills/example-skill/scripts/greet.py "Victoria"
 
 # The real one: profile a CSV with the standard library only
 python3 skills/csv-profiler/scripts/profile_csv.py path/to/data.csv
@@ -526,14 +533,14 @@ restart. See [INSTALL.md → Troubleshooting](../INSTALL.md#troubleshooting).
 
 For Goose, opencode, Codex, and Crush, **lean on INSTALL.md for the MCP wiring**
 and use the persona/prompt equivalent below. Protocol testing is identical to the
-Claude Code flow: register the MCP server(s) the protocol names, put Aria in
+Claude Code flow: register the MCP server(s) the protocol names, put Victoria in
 effect, then give the agent the protocol's Usage line as the task. As with every
 agent, point `cmd`/`args` (or `command`) at `<bundle>/.venv/bin/python
 <bundle>/mcp/<server>.py` so deps resolve.
 
 | Agent | MCP registration | Persona / system-prompt equivalent |
 |---|---|---|
-| **Goose** | [INSTALL.md → Goose](../INSTALL.md#goose) (`~/.config/goose/config.yaml` under `extensions:`; literals in `envs:`, credential names in `env_keys:`). Verify with `goose configure → Toggle Extensions`. | A [`.goosehints`](https://block.github.io/goose/docs/guides/using-goosehints/) file (global `~/.config/goose/.goosehints` or per-project) is added to the system prompt every request — reference `system_prompts/chat.md` + `personas/assistant.yaml` there. For a runnable, parameterized persona+task unit, use a [Goose recipe](https://block.github.io/goose/docs/category/recipes/). |
+| **Goose** | [INSTALL.md → Goose](../INSTALL.md#goose) (`~/.config/goose/config.yaml` under `extensions:`; literals in `envs:`, credential names in `env_keys:`). Verify with `goose configure → Toggle Extensions`. | A [`.goosehints`](https://block.github.io/goose/docs/guides/using-goosehints/) file (global `~/.config/goose/.goosehints` or per-project) is added to the system prompt every request — reference `system_prompts/chat.md` + `personas/victoria.yaml` there. For a runnable, parameterized persona+task unit, use a [Goose recipe](https://block.github.io/goose/docs/category/recipes/). |
 | **opencode** | [INSTALL.md → opencode](../INSTALL.md#opencode) (`opencode.json`, `command` is an array, env block is `environment`, `{env:VAR}` substitution) | An [`AGENTS.md`](https://opencode.ai/docs/rules/) file (project root or global `~/.config/opencode/AGENTS.md`) is added to context — reference the bundle's prompt + persona there. opencode also supports a per-agent custom system-prompt file via its [agent `prompt` config](https://opencode.ai/docs/agents/). |
 | **Codex CLI** | [INSTALL.md → Codex CLI](../INSTALL.md#codex-cli) (`~/.codex/config.toml`; `env_vars` forwards credential names; generous `tool_timeout_sec`) | An [`AGENTS.md`](https://developers.openai.com/codex/guides/agents-md) file — repo-root for project scope or `~/.codex/AGENTS.md` for global — supplies custom instructions; reference the bundle's prompt + persona there. |
 | **Crush** | [INSTALL.md → Crush](../INSTALL.md#crush) (`crush.json`; top-level key is `mcp`, `$VAR`/`${VAR}` expansion, `timeout` in **ms**) | A [context file](https://github.com/charmbracelet/crush) — `CRUSH.md` (or `AGENTS.md`) in the project root, plus global `~/.config/crush/CRUSH.md` — is read into context; reference the bundle's prompt + persona there. |
@@ -547,7 +554,7 @@ agent, point `cmd`/`args` (or `command`) at `<bundle>/.venv/bin/python
 
 ## This pattern is copyable to other client bundles
 
-Nothing in this guide is specific to this example except the names (Aria, the two
+Nothing in this guide is specific to this example except the names (Victoria, the two
 example servers, the handbook protocols). The **bundle contract is generic** —
 `fleet` loads any `*-config` bundle the same way, and `install.sh` reads
 `manifest.yaml` so it works unchanged in a sibling bundle. To adapt this guide for

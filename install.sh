@@ -15,6 +15,9 @@
 #   curl -fsSL .../install.sh | bash -s -- ~/code/example-config
 #   curl -fsSL .../install.sh | BUNDLE_DIR=/opt/example-config bash
 #
+# A private client fork: change REPO and the default dir below, and clone it
+# with your own GitHub access (an anonymous curl of a private raw file is a 404).
+#
 # If you already have the repo checked out, just run ./install.sh in it.
 #
 # Safe by design:
@@ -163,11 +166,27 @@ manifest_py() {
 # manifest.yaml. Columns:
 #   name  type  command  argsJSON  envJSON  optenvJSON  url  headersJSON
 US=$'\037'   # field separator used across the script
-read_manifest() {  # $1 = python interpreter, $2 = manifest path, $3 = bundle dir
-  "$1" - "$2" "$3" <<'PYEOF'
-import json, sys, yaml
+read_manifest() {  # $1 = python interpreter, $2 = manifest path, $3 = bundle dir, $4 = "all" to keep every row
+  "$1" - "$2" "$3" "${4:-}" <<'PYEOF'
+import json, os, re, sys, yaml
 US = "\x1f"
 manifest, bundle = sys.argv[1], sys.argv[2]
+keep_all = len(sys.argv) > 3 and sys.argv[3] == "all"
+URL_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+
+
+def clean_http_url(u):
+    """An http(s) URL with a real host, a valid port, and no whitespace or
+    control characters anywhere (they would corrupt the row table below)."""
+    from urllib.parse import urlsplit
+    if any(ord(c) <= 32 or ord(c) == 127 for c in u):
+        return False
+    try:
+        parts = urlsplit(u)
+        parts.port  # raises ValueError on a malformed port
+    except ValueError:
+        return False
+    return parts.scheme in ("http", "https") and bool(parts.hostname)
 with open(manifest) as fh:
     doc = yaml.safe_load(fh) or {}
 for s in doc.get("mcp_servers", []) or []:
@@ -177,7 +196,32 @@ for s in doc.get("mcp_servers", []) or []:
     args = s.get("args", []) or []
     env = s.get("env", {}) or {}
     optenv = s.get("optional_env", []) or []
-    url = s.get("url", "") or ""
+    # The url is not a secret, and no agent config format expands the
+    # manifest's ${VAR:-default} syntax in it (Codex takes url literally), so
+    # resolve it HERE from the installer's environment: export e.g.
+    # LENS_MCP_URL / PAGES_MCP_URL before installing. Headers keep their
+    # ${VAR} references and stay env-backed in each agent.
+    raw_url = s.get("url", "") or ""
+    url = URL_REF.sub(lambda m: os.environ.get(m.group(1)) or (m.group(2) or ""), raw_url)
+    unset = [m.group(1) for m in URL_REF.finditer(raw_url) if not os.environ.get(m.group(1))]
+    host = re.sub(r"^[a-z]+://", "", url).split("/")[0].split(":")[0]
+    # Skip only when the URL is unusable: an unset variable with no default,
+    # or a default that is a reserved never-resolving placeholder (RFC 6761).
+    # A real default (a production host) still registers as before.
+    if unset and not keep_all and (not url or not host or host.endswith(".invalid")):
+        # Registering now would freeze a placeholder (e.g. lens.invalid) into
+        # the agent's config, and a rerun skips servers that already exist.
+        # Leave it out until the URL is known; rerunning after the export
+        # then registers it.
+        print("skipping %s: export %s and rerun to register it"
+              % (name, " ".join(unset)), file=sys.stderr)
+        continue
+    # The resolved url goes into a newline- and unit-separator-delimited
+    # table below, so a pasted value with a stray newline or control
+    # character would corrupt every later row. Refuse it here, by name.
+    if url and not clean_http_url(url):
+        sys.exit("error: %s url is not a clean http(s) URL; check %s"
+                 % (name, " ".join(m.group(1) for m in URL_REF.finditer(raw_url)) or "manifest.yaml"))
     headers = s.get("headers", {}) or {}
     row = [
         name, typ, cmd,
@@ -218,7 +262,8 @@ render_val() {  # $1 value  $2 style
 is_ref() { case "$1" in '${'*'}') return 0 ;; *) return 1 ;; esac; }
 
 # ── load the server table once ────────────────────────────────────────────────
-MANIFEST_TSV="$(read_manifest "$PYJSON" "$MANIFEST" "$DIR")"
+# --list registers nothing, so it reads every row (no "skipping" notes).
+MANIFEST_TSV="$(read_manifest "$PYJSON" "$MANIFEST" "$DIR" "$([ "$DO_LIST" -eq 1 ] && echo all)")"
 SERVER_COUNT="$(printf '%s\n' "$MANIFEST_TSV" | grep -c . || true)"
 
 # ── --list ────────────────────────────────────────────────────────────────────
@@ -235,6 +280,20 @@ if [ "$DO_LIST" -eq 1 ]; then
     # show the credential (ref) env-var names so a client knows what to export
     refs="$(printf '%s' "$envj" | "$PYJSON" -c 'import json,sys;d=json.load(sys.stdin);print(" ".join(k for k,v in d.items() if isinstance(v,str) and v.startswith("${") and v.endswith("}")))')"
     [ -n "$refs" ] && printf '       env: %s\n' "$refs"
+    # http servers carry their variables in the gate, url and headers instead
+    needs="$("$PYJSON" - "$MANIFEST" "$name" <<'NEEDS'
+import re, sys, yaml
+doc = yaml.safe_load(open(sys.argv[1])) or {}
+for s in doc.get("mcp_servers", []) or []:
+    if s.get("name") != sys.argv[2]:
+        continue
+    names = list(s.get("enabled_env") or [])
+    text = " ".join([s.get("url") or ""] + [str(v) for v in (s.get("headers") or {}).values()])
+    names += re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)", text)
+    print(" ".join(dict.fromkeys(names)))
+NEEDS
+)"
+    [ -n "$needs" ] && [ "$typ" = "http" ] && printf '       needs: %s\n' "$needs"
   done <<< "$MANIFEST_TSV"
   b "Detected agents"
   for a in claude opencode codex goose crush grok; do
