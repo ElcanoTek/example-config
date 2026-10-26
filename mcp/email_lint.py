@@ -127,6 +127,11 @@ RULES: Final[dict[str, tuple[str, str]]] = {
     # Branding (EB) — only when the caller asks for it (require_frame=True):
     # ses_sender does for every send; a fragment check does not.
     "EB001": ("error", "HTML email is missing the branded frame"),
+    # Mobile responsiveness (EM) — checked when require_frame=True so every
+    # full HTML email is mobile-friendly by default.
+    "EM001": ("error", "HTML email is missing mobile-responsive @media rules"),
+    "EM002": ("error", "Data table is missing mobile-label spans for mobile card stacking"),
+    "EM003": ("warning", "Fixed-width .email-container breaks mobile viewports"),
 }
 
 
@@ -1084,6 +1089,439 @@ def _check_branded_frame(content: str) -> Iterator[Finding]:
         )
 
 
+# ── Mobile responsiveness (EM001 / EM002 / EM003 + auto-normalizer) ──────────
+
+_TABLE_OPEN_CLOSE_RE = re.compile(r"<(/?)table\b[^>]*>", re.IGNORECASE)
+_TR_BLOCK_RE = re.compile(r"(<tr\b[^>]*>)((?:(?!<tr\b).)*?)(</tr\s*>)", re.IGNORECASE | re.DOTALL)
+_TH_BLOCK_RE = re.compile(r"(<th\b[^>]*>)((?:(?!<th\b).)*?)(</th\s*>)", re.IGNORECASE | re.DOTALL)
+_TD_BLOCK_RE = re.compile(r"(<td\b[^>]*>)((?:(?!<td\b).)*?)(</td\s*>)", re.IGNORECASE | re.DOTALL)
+_TAG_STRIP_RE = re.compile(r"<[^>]+>")
+_WHITESPACE_RE = re.compile(r"\s+")
+_CLASS_ATTR_RE = re.compile(r'\bclass=(["\'])(.*?)\1', re.IGNORECASE | re.DOTALL)
+_STYLE_ATTR_FULL_RE = re.compile(r'\bstyle=(["\'])(.*?)\1', re.IGNORECASE | re.DOTALL)
+_WIDTH_ATTR_RE = re.compile(r'\bwidth=(["\']?)(\d+%?)\1', re.IGNORECASE)
+
+_MOBILE_MEDIA_FALLBACK_RULES = """\
+          .email-container { width: 100% !important; max-width: 100% !important; }
+          .header-pad, .body-pad, .footer-pad { padding-left: 16px !important; padding-right: 16px !important; }
+          .status-pad { padding-left: 16px !important; padding-right: 16px !important; }
+          .table-pad { padding-left: 12px !important; padding-right: 12px !important; }
+          .header-kicker, .header-date { font-size: 11px !important; }
+          .header-brand { font-size: 21px !important; line-height: 26px !important; }
+          .header-logo img { width: auto !important; height: auto !important; max-width: 132px !important; max-height: 36px !important; }
+          .header-meta { font-size: 13px !important; line-height: 19px !important; }
+          .mobile-stack { display: block !important; width: 100% !important; box-sizing: border-box !important; margin-bottom: 8px !important; }
+          .mobile-stack:last-child { margin-bottom: 0 !important; }
+          .data-table { width: 100% !important; max-width: 100% !important; border: 0 !important; border-collapse: separate !important; border-spacing: 0 !important; table-layout: fixed !important; }
+          .data-table thead { display: none !important; }
+          .data-table tbody, .data-table tr, .data-table td { display: block !important; width: 100% !important; }
+          .data-table tr { width: 100% !important; margin-bottom: 12px !important; }
+          .data-table tr:last-child { margin-bottom: 0 !important; }
+          .data-table td { box-sizing: border-box !important; background-color: #FAFAFA !important; font-size: 15px !important; line-height: 20px !important; padding: 8px 10px !important; text-align: left !important; white-space: normal !important; word-break: break-word !important; border-left: 1px solid #D7DEEE !important; border-right: 1px solid #D7DEEE !important; border-bottom: 1px solid #E6EBF5 !important; }
+          .data-table td:first-child { border-top: 1px solid #D7DEEE !important; }
+          .data-table td:last-child { border-bottom: 0 !important; }
+          .data-table tr td:last-child { border-bottom: 1px solid #D7DEEE !important; }
+          .data-table .campaign-name { background-color: #EEF3FF !important; font-weight: 700 !important; }
+          .data-table td .mobile-label, .mobile-label { display: block !important; min-width: 0 !important; max-height: none !important; overflow: visible !important; font-size: 13px !important; line-height: 18px !important; font-weight: 700 !important; color: #586F7C !important; margin-bottom: 4px !important; }"""
+
+
+def _add_class_to_tag(open_tag: str, new_class: str) -> str:
+    m = _CLASS_ATTR_RE.search(open_tag)
+    if m:
+        classes = m.group(2).split()
+        if new_class in classes:
+            return open_tag
+        updated = " ".join([*classes, new_class])
+        return open_tag[: m.start()] + f'class={m.group(1)}{updated}{m.group(1)}' + open_tag[m.end() :]
+    return open_tag[:-1] + f' class="{new_class}">'
+
+
+def _remove_class_from_tag(open_tag: str, target_class: str) -> str:
+    m = _CLASS_ATTR_RE.search(open_tag)
+    if not m:
+        return open_tag
+    classes = [c for c in m.group(2).split() if c != target_class]
+    if len(classes) == len(m.group(2).split()):
+        return open_tag
+    if not classes:
+        return open_tag[: m.start()].rstrip() + open_tag[m.end() :]
+    updated = " ".join(classes)
+    return open_tag[: m.start()] + f'class={m.group(1)}{updated}{m.group(1)}' + open_tag[m.end() :]
+
+
+def _default_pct_widths(n: int) -> list[int]:
+    if n <= 1:
+        return [100]
+    first = 24 if n >= 6 else (40 if n >= 3 else 50)
+    rem = 100 - first
+    share, extra = divmod(rem, n - 1)
+    return [first, *(share + (1 if i < extra else 0) for i in range(n - 1))]
+
+
+def _upgrade_single_data_table(table_html: str) -> str:
+    """Upgrade a single data table with .data-table, width %, .campaign-name, and .mobile-label spans."""
+    first_gt = table_html.find(">")
+    if first_gt == -1:
+        return table_html
+    open_tag = table_html[: first_gt + 1]
+    inner_and_close = table_html[first_gt + 1 :]
+
+    # Extract header labels from the first <tr> that contains <th> cells.
+    th_matches = list(_TH_BLOCK_RE.finditer(inner_and_close))
+    if not th_matches:
+        return table_html
+
+    # Only consider <th> cells belonging to the first header row.
+    first_tr_match = _TR_BLOCK_RE.search(inner_and_close)
+    if not first_tr_match:
+        return table_html
+    header_tr_m = None
+    for tr_m in _TR_BLOCK_RE.finditer(inner_and_close):
+        if _TH_BLOCK_RE.search(tr_m.group(2)):
+            header_tr_m = tr_m
+            break
+    if header_tr_m is None:
+        return table_html
+
+    row_ths = list(_TH_BLOCK_RE.finditer(header_tr_m.group(2)))
+    if not row_ths:
+        return table_html
+
+    headers: list[str] = []
+    for th_m in row_ths:
+        text = _WHITESPACE_RE.sub(" ", _TAG_STRIP_RE.sub("", th_m.group(2))).strip()
+        headers.append(text or "Value")
+    num_cols = len(headers)
+
+    # Check if this table already has everything it needs.
+    has_data_table_class = "data-table" in open_tag
+    has_fixed_layout = "table-layout:fixed" in open_tag.replace(" ", "").lower()
+    all_ths_have_pct_width = all(
+        bool(_WIDTH_ATTR_RE.search(th_m.group(1)) and "%" in (_WIDTH_ATTR_RE.search(th_m.group(1)).group(2)))  # type: ignore[union-attr]
+        for th_m in row_ths
+    )
+    # Check if all data rows already have mobile-label in every td and no nowrap on wide tables.
+    needs_upgrade = not (has_data_table_class and has_fixed_layout and all_ths_have_pct_width)
+    if not needs_upgrade:
+        tbody_m = re.search(r"<tbody\b[^>]*>(.*?)</tbody\s*>", inner_and_close, re.IGNORECASE | re.DOTALL)
+        scan_region = tbody_m.group(1) if tbody_m else inner_and_close[header_tr_m.end() :]
+        for tr_m in _TR_BLOCK_RE.finditer(scan_region):
+            tr_inner = tr_m.group(2)
+            if "colspan=" in tr_inner.lower() and ("height:1px" in tr_inner.replace(" ", "").lower() or 'height="1"' in tr_inner.lower()):
+                continue
+            tds = list(_TD_BLOCK_RE.finditer(tr_inner))
+            if not tds:
+                continue
+            if any("mobile-label" not in td_m.group(2) for td_m in tds):
+                needs_upgrade = True
+                break
+            if num_cols >= 4 and any("nowrap" in td_m.group(1).lower() for td_m in tds):
+                needs_upgrade = True
+                break
+    if not needs_upgrade:
+        return table_html
+
+    # 1. Upgrade <table ...> open tag: ensure class="data-table", width="100%", table-layout:fixed.
+    open_tag = _add_class_to_tag(open_tag, "data-table")
+    if not _WIDTH_ATTR_RE.search(open_tag):
+        open_tag = open_tag[:-1] + ' width="100%">'
+    style_m = _STYLE_ATTR_FULL_RE.search(open_tag)
+    if style_m:
+        style_val = style_m.group(2).strip()
+        if "table-layout" not in style_val.lower():
+            sep = "" if style_val.endswith(";") else ";"
+            style_val = f"{style_val}{sep} table-layout:fixed;"
+        open_tag = open_tag[: style_m.start()] + f'style={style_m.group(1)}{style_val}{style_m.group(1)}' + open_tag[style_m.end() :]
+    else:
+        open_tag = open_tag[:-1] + ' style="width:100%; border-collapse:collapse; table-layout:fixed;">'
+
+    # 2. Upgrade header <tr> <th> cells with percentage widths and word-break.
+    widths = _default_pct_widths(num_cols)
+    new_ths: list[str] = []
+    for idx, th_m in enumerate(row_ths):
+        th_open, th_inner, th_close = th_m.group(1), th_m.group(2), th_m.group(3)
+        if not _WIDTH_ATTR_RE.search(th_open):
+            th_open = th_open[:-1] + f' width="{widths[idx]}%">'
+        st_m = _STYLE_ATTR_FULL_RE.search(th_open)
+        if st_m:
+            st_val = st_m.group(2)
+            if num_cols >= 4:
+                st_val = re.sub(r"\s*white-space\s*:\s*nowrap\s*;?", "", st_val, flags=re.IGNORECASE)
+            if "word-break" not in st_val.lower():
+                stripped_st = st_val.strip()
+                if not stripped_st:
+                    st_val = "word-break:break-word;"
+                else:
+                    sep = "" if stripped_st.endswith(";") else ";"
+                    st_val = f"{stripped_st}{sep} word-break:break-word;"
+            th_open = th_open[: st_m.start()] + f'style={st_m.group(1)}{st_val}{st_m.group(1)}' + th_open[st_m.end() :]
+        new_ths.append(f"{th_open}{th_inner}{th_close}")
+    new_header_tr = f"{header_tr_m.group(1)}{''.join(new_ths)}{header_tr_m.group(3)}"
+
+    # 3. Upgrade data <tr> rows.
+    def _upgrade_data_tr(tr_m: re.Match[str]) -> str:
+        tr_open, tr_inner, tr_close = tr_m.group(1), tr_m.group(2), tr_m.group(3)
+        if _TH_BLOCK_RE.search(tr_inner):
+            return tr_m.group(0)
+        if "colspan=" in tr_inner.lower() and ("height:1px" in tr_inner.replace(" ", "").lower() or 'height="1"' in tr_inner.lower()):
+            return tr_m.group(0)
+        # Skip rows that contain nested tables unless they already have mobile-label
+        if "<table" in tr_inner.lower():
+            return tr_m.group(0)
+        tds = list(_TD_BLOCK_RE.finditer(tr_inner))
+        if len(tds) != num_cols:
+            return tr_m.group(0)
+        new_tds: list[str] = []
+        for c, td_m in enumerate(tds):
+            td_open, td_inner, td_close = td_m.group(1), td_m.group(2), td_m.group(3)
+            if c == 0:
+                td_open = _add_class_to_tag(td_open, "campaign-name")
+            else:
+                td_open = _remove_class_from_tag(td_open, "campaign-name")
+            st_m = _STYLE_ATTR_FULL_RE.search(td_open)
+            if st_m:
+                st_val = st_m.group(2)
+                if num_cols >= 4:
+                    st_val = re.sub(r"\s*white-space\s*:\s*nowrap\s*;?", "", st_val, flags=re.IGNORECASE)
+                if "word-break" not in st_val.lower():
+                    stripped_st = st_val.strip()
+                    if not stripped_st:
+                        st_val = "word-break:break-word;"
+                    else:
+                        sep = "" if stripped_st.endswith(";") else ";"
+                        st_val = f"{stripped_st}{sep} word-break:break-word;"
+                td_open = td_open[: st_m.start()] + f'style={st_m.group(1)}{st_val}{st_m.group(1)}' + td_open[st_m.end() :]
+            if "mobile-label" not in td_inner:
+                label_span = (
+                    '<span class="mobile-label" style="display:none; font-size:0; line-height:0; '
+                    f'max-height:0; overflow:hidden;">{headers[c]}</span>'
+                )
+                td_inner = f"{label_span}{td_inner}"
+            new_tds.append(f"{td_open}{td_inner}{td_close}")
+        return f"{tr_open}{''.join(new_tds)}{tr_close}"
+
+    # Replace header_tr and upgrade tbody rows.
+    before_header = inner_and_close[: header_tr_m.start()]
+    after_header = inner_and_close[header_tr_m.end() :]
+    after_header_upgraded = _TR_BLOCK_RE.sub(_upgrade_data_tr, after_header)
+
+    if "<thead" not in before_header.lower() and "<tbody" not in after_header_upgraded.lower():
+        close_table_m = re.search(r"</table\s*>\s*$", after_header_upgraded, re.IGNORECASE)
+        if close_table_m:
+            body_rows = after_header_upgraded[: close_table_m.start()]
+            close_tag = after_header_upgraded[close_table_m.start() :]
+            return f"{open_tag}{before_header}<thead>{new_header_tr}</thead><tbody>{body_rows}</tbody>{close_tag}"
+
+    return f"{open_tag}{before_header}{new_header_tr}{after_header_upgraded}"
+
+
+def _upgrade_kpi_card_strips(content: str) -> str:
+    """Add class='mobile-stack' to horizontal multi-card KPI rows (2-6 columns of bordered/div cards)."""
+    def _check_tr(tr_m: re.Match[str]) -> str:
+        tr_open, tr_inner, tr_close = tr_m.group(1), tr_m.group(2), tr_m.group(3)
+        if "<th" in tr_inner.lower() or "<table" in tr_inner.lower() or "mobile-label" in tr_inner:
+            return tr_m.group(0)
+        tds = list(_TD_BLOCK_RE.finditer(tr_inner))
+        if not (2 <= len(tds) <= 6):
+            return tr_m.group(0)
+        # Every td in the strip must be a card cell (has border: in style and <div children, or percentage width + <div)
+        for td_m in tds:
+            td_open, td_inner = td_m.group(1).lower(), td_m.group(2).lower()
+            if "<div" not in td_inner:
+                return tr_m.group(0)
+            if "border:" not in td_open and "width=" not in td_open and "width:" not in td_open:
+                return tr_m.group(0)
+        if all("mobile-stack" in td_m.group(1) for td_m in tds):
+            return tr_m.group(0)
+        rebuilt = []
+        last = 0
+        for td_m in tds:
+            rebuilt.append(tr_inner[last : td_m.start()])
+            new_open = _add_class_to_tag(td_m.group(1), "mobile-stack")
+            rebuilt.append(f"{new_open}{td_m.group(2)}{td_m.group(3)}")
+            last = td_m.end()
+        rebuilt.append(tr_inner[last:])
+        return f"{tr_open}{''.join(rebuilt)}{tr_close}"
+
+    return _TR_BLOCK_RE.sub(_check_tr, content)
+
+
+def ensure_mobile_friendly(content: str) -> str:
+    """Automatically normalize and upgrade an HTML email for mobile responsiveness.
+
+    Idempotent: emails rendered by `render_email` or `render_deal_sheet_email`
+    (and minimal 1-column test fixtures without data tables or `<style>`) are
+    returned byte-for-byte unchanged. Hand-built HTML emails that omit
+    `.mobile-label` spans, omit or truncate the `@media` block, use a fixed
+    `width="600"`/`width="680"` container, or use horizontal multi-column KPI
+    card strips are upgraded in place.
+    """
+    if not content or "email-container" not in content:
+        return content
+
+    result = content
+
+    # 1. Normalize fixed-width .email-container and MSO wrapper > 600px.
+    def _fix_container_tag(m: re.Match[str]) -> str:
+        tag = m.group(0)
+        tag = re.sub(r'\bwidth=(["\']?)(?:6\d\d)\1', r'width=\g<1>100%\g<1>', tag, flags=re.IGNORECASE)
+        st_m = _STYLE_ATTR_FULL_RE.search(tag)
+        if st_m:
+            st_val = st_m.group(2)
+            st_val = re.sub(r"(?:^|(?<=;))\s*width\s*:\s*6\d\dpx", " width:100%", st_val, flags=re.IGNORECASE).lstrip()
+            st_val = re.sub(r"max-width\s*:\s*6[1-9]\dpx", "max-width:600px", st_val, flags=re.IGNORECASE)
+            tag = tag[: st_m.start()] + f"style={st_m.group(1)}{st_val}{st_m.group(1)}" + tag[st_m.end() :]
+        return tag
+
+    result = re.sub(r"<table\b[^>]*\bemail-container\b[^>]*>", _fix_container_tag, result, flags=re.IGNORECASE)
+    result = re.sub(
+        r"(<!--\[if mso\]>\s*<table\b[^>]*\bwidth=[\"'])6[1-9]\d([\"'])",
+        r"\g<1>600\g<2>",
+        result,
+        flags=re.IGNORECASE,
+    )
+
+    # 2. Upgrade any data tables (tables with class="data-table" or >= 2 <th> cells).
+    # Find balanced <table>...</table> spans so nested tables inside cells don't truncate matches.
+    spans: list[tuple[int, int]] = []
+    stack: list[int] = []
+    for m in _TABLE_OPEN_CLOSE_RE.finditer(result):
+        is_close = bool(m.group(1))
+        if not is_close:
+            stack.append(m.start())
+        elif stack:
+            start = stack.pop()
+            tag_open = result[start : result.find(">", start) + 1]
+            table_slice = result[start : m.end()]
+            # A data table either carries class="data-table" or has >= 2 <th> cells at its own level (no nested data tables).
+            if "data-table" in tag_open or (
+                "email-container" not in tag_open
+                and len(_TH_BLOCK_RE.findall(table_slice)) >= 2
+                and "<table" not in table_slice[len(tag_open) : -len(m.group(0))].lower()
+            ):
+                spans.append((start, m.end()))
+
+    # Keep only non-overlapping spans and apply from right to left.
+    filtered_spans: list[tuple[int, int]] = []
+    for s, e in sorted(spans, key=lambda x: (x[0], -(x[1] - x[0]))):
+        if not filtered_spans or s >= filtered_spans[-1][1]:
+            filtered_spans.append((s, e))
+    for s, e in reversed(filtered_spans):
+        result = result[:s] + _upgrade_single_data_table(result[s:e]) + result[e:]
+
+    # 3. Upgrade horizontal multi-card KPI strips (e.g. 5-col Spend Snapshot).
+    result = _upgrade_kpi_card_strips(result)
+
+    # 4. Ensure <style> has complete @media mobile rules when the email uses <style>, .data-table, or .mobile-stack.
+    has_style = "<style" in result.lower()
+    needs_table_media = "data-table" in result
+    needs_stack_media = "mobile-stack" in result
+    if has_style or needs_table_media or needs_stack_media:
+        style_m = re.search(r"(<style\b[^>]*>)(.*?)(</style\s*>)", result, flags=re.IGNORECASE | re.DOTALL)
+        if style_m:
+            style_open, style_css, style_close = style_m.group(1), style_m.group(2), style_m.group(3)
+            missing_table_css = needs_table_media and (".data-table" not in style_css or ".mobile-label" not in style_css)
+            missing_stack_css = needs_stack_media and (".mobile-stack" not in style_css)
+            if missing_table_css or missing_stack_css:
+                new_style_css = (
+                    "\n        @media only screen and (max-width: 480px) {\n"
+                    f"{_MOBILE_MEDIA_FALLBACK_RULES}\n"
+                    "        }\n      "
+                )
+                result = result[: style_m.start()] + f"{style_open}{new_style_css}{style_close}" + result[style_m.end() :]
+        elif needs_table_media or needs_stack_media:
+            media_block = (
+                "<style>\n        @media only screen and (max-width: 480px) {\n"
+                f"{_MOBILE_MEDIA_FALLBACK_RULES}\n"
+                "        }\n      </style>"
+            )
+            head_close = re.search(r"</head\s*>", result, flags=re.IGNORECASE)
+            if head_close:
+                result = result[: head_close.start()] + f"  {media_block}\n    " + result[head_close.start() :]
+            else:
+                body_open = re.search(r"<body\b", result, flags=re.IGNORECASE)
+                if body_open:
+                    result = (
+                        result[: body_open.start()]
+                        + f'<head><meta name="viewport" content="width=device-width, initial-scale=1.0">{media_block}</head>'
+                        + result[body_open.start() :]
+                    )
+
+    return result
+
+
+def _check_mobile_friendly(content: str) -> Iterator[Finding]:
+    """EM001 / EM002 / EM003 — verify mobile-responsive CSS, .mobile-label spans, and flexible container."""
+    tree = html5lib.parse(content, namespaceHTMLElements=False)
+
+    # EM003: Fixed-width .email-container
+    for el in tree.iter():
+        if _strip_ns(el.tag) == "table" and "email-container" in _class_tokens(el):
+            width_attr = (el.get("width") or "").strip()
+            style_attr = (el.get("style") or "").lower()
+            if (width_attr.isdigit() and int(width_attr) > 480) or re.search(
+                r"(?:^|;)\s*width\s*:\s*[5-9]\d\dpx", style_attr
+            ):
+                yield Finding(
+                    rule="EM003",
+                    message=f'<table class="email-container"> uses a fixed pixel width ({width_attr or style_attr}) instead of width="100%" with max-width:600px.',
+                    hint='Set width="100%" and style="width:100%; max-width:600px; ..." on .email-container so it shrinks cleanly on mobile viewports.',
+                )
+                break
+
+    # Find data tables (.data-table or tables inside .email-container with >= 2 <th> cells)
+    data_tables: list[Any] = []
+    for el in tree.iter():
+        if _strip_ns(el.tag) != "table" or "email-container" in _class_tokens(el):
+            continue
+        if "data-table" in _class_tokens(el):
+            data_tables.append(el)
+        else:
+            nested_tables = [t for t in el.iter() if t is not el and _strip_ns(t.tag) == "table"]
+            ths = [c for c in el.iter() if _strip_ns(c.tag) == "th"]
+            if not nested_tables and len(ths) >= 2:
+                data_tables.append(el)
+
+    style_text = " ".join((el.text or "") for el in tree.iter() if _strip_ns(el.tag) == "style")
+
+    # EM001: If the email has data tables (or a <style> block with @media and data tables), it must have @media rules for .data-table and .mobile-label.
+    if data_tables and ("@media" not in style_text or ".data-table" not in style_text or ".mobile-label" not in style_text):
+        yield Finding(
+            rule="EM001",
+            message="HTML email contains data tables but is missing the @media (max-width: 480px) rules for .data-table and .mobile-label.",
+            hint="Include the complete @media CSS block from canonical_template (or build the email with render_email).",
+        )
+
+    # EM002: Every data-table tbody <td> must contain a .mobile-label span.
+    missing_label_cells = 0
+    for table in data_tables:
+        tbodies = [child for child in table if _strip_ns(child.tag) == "tbody"]
+        row_parents = tbodies if tbodies else [table]
+        for parent in row_parents:
+            for tr in parent:
+                if _strip_ns(tr.tag) != "tr":
+                    continue
+                if any(_strip_ns(c.tag) == "th" for c in tr):
+                    continue
+                tds = [c for c in tr if _strip_ns(c.tag) == "td"]
+                if not tds:
+                    continue
+                if len(tds) == 1 and tds[0].get("colspan") and (
+                    tds[0].get("height") == "1" or "height:1px" in (tds[0].get("style") or "").replace(" ", "").lower()
+                ):
+                    continue
+                for td in tds:
+                    has_label = any("mobile-label" in _class_tokens(desc) for desc in td.iter())
+                    if not has_label:
+                        missing_label_cells += 1
+    if missing_label_cells > 0:
+        yield Finding(
+            rule="EM002",
+            message=f"Data table is missing <span class=\"mobile-label\"> in {missing_label_cells} <td> cell(s), breaking mobile card stacking.",
+            hint="Put <span class=\"mobile-label\" style=\"display:none; font-size:0; line-height:0; max-height:0; overflow:hidden;\">ColumnHeader</span> inside every data-table tbody <td> (or build the email with render_email).",
+        )
+
+
 # ── Image checks ────────────────────────────────────────────────────────────
 
 
@@ -1307,6 +1745,7 @@ def validate(
         findings.extend(_check_template_leakage(content))
         if require_frame:
             findings.extend(_check_branded_frame(content))
+            findings.extend(_check_mobile_friendly(content))
 
     return findings
 

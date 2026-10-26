@@ -50,7 +50,7 @@ LOGO_CID = "brand-logo"
 LOGO_HEIGHT = 44
 LOGO_MAX_WIDTH = 176
 
-MAX_TABLE_COLUMNS = 5
+MAX_TABLE_COLUMNS = 10
 MAX_CTA_TEXT = 25
 
 # Inline styles shared by several blocks, verbatim from canonical_template.
@@ -307,9 +307,9 @@ def _block_metrics(block: Mapping[str, Any], slots: _Slots, top: int, where: str
 
 def _block_headline_metrics(block: Mapping[str, Any], slots: _Slots, top: int, where: str) -> str:
     items = _require(block, "items", where)
-    if len(items) > 5:
+    if len(items) > 6:
         raise RenderError(
-            f"{where}: headline_metrics holds 3-5 KPIs; got {len(items)}. Move the rest to a 'metrics' block or a table."
+            f"{where}: headline_metrics holds 1-6 KPIs; got {len(items)}. Move the rest to a 'metrics' block or a table."
         )
     kpis = ""
     for i, item in enumerate(items):
@@ -317,10 +317,10 @@ def _block_headline_metrics(block: Mapping[str, Any], slots: _Slots, top: int, w
             raise RenderError(f"{where}: items[{i}] must be an object with 'label' and 'value'.")
         label = _require(item, "label", f"{where} items[{i}]")
         value = _require(item, "value", f"{where} items[{i}]")
-        trend = _clean(item.get("trend") or "neutral").lower()
+        trend = _clean(item.get("trend") or item.get("tone") or "neutral").lower()
         if trend not in _DELTA_COLORS:
             raise RenderError(f"{where} items[{i}]: trend must be one of {', '.join(_DELTA_COLORS)}.")
-        delta = slots.text(item.get("delta") or "")
+        delta = slots.text(item.get("delta") or item.get("subtext") or "")
         kpis += (
             "              <tr>\n"
             f'                <td style="padding:6px 0; font-size:14px; line-height:20px; color:#586F7C; width:45%;">{slots.text(label)}</td>\n'
@@ -337,6 +337,8 @@ def _block_headline_metrics(block: Mapping[str, Any], slots: _Slots, top: int, w
         '          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;">\n'
         f"{kpis}          </table>\n        </td>\n      </tr>\n"
     )
+    if _clean(block.get("caption")):
+        rows += f'      <tr>\n        <td style="font-size:12px; line-height:17px; color:#586F7C; padding:0 18px 12px 18px;">{slots.text(block["caption"])}</td>\n      </tr>\n'
     return _row(
         f"{top}px 28px 0 28px", _layout_table(rows, "background-color:#F4F6FB; border:1px solid #D7DEEE;", "#F4F6FB")
     )
@@ -349,14 +351,18 @@ _CALLOUTS = {
 
 
 def _block_callout(block: Mapping[str, Any], slots: _Slots, top: int, where: str) -> str:
-    kind = _clean(block.get("kind")).lower()
+    kind = _clean(block.get("kind") or block.get("tone")).lower()
     if kind not in _CALLOUTS:
         raise RenderError(f"{where}: callout 'kind' must be 'risk' or 'opportunity'.")
     default_title, bg, accent, border, title_color = _CALLOUTS[kind]
-    paragraphs = _string_list(block.get("paragraphs", block.get("text")), "text", where)
-    if not paragraphs:
+    paragraphs = _string_list(block.get("paragraphs", block.get("text", block.get("body"))), "text", where)
+    bullets = _string_list(block.get("bullets"), "bullets", where)
+    if not paragraphs and not bullets:
         raise RenderError(f"{where}: 'text' is required.")
-    body = "<br><br>".join(slots.text(p) for p in paragraphs)
+    parts = [slots.text(p) for p in paragraphs]
+    if bullets:
+        parts.append("<br>".join(f"&bull; {slots.text(item)}" for item in bullets))
+    body = "<br><br>".join(parts)
     title = slots.text(block.get("title") or default_title)
     rows = (
         f'      <tr>\n        <td style="padding:14px 16px 6px 16px;"><h2 style="margin:0; font-size:16px; line-height:24px; font-weight:700; color:{title_color};">{title}</h2></td>\n      </tr>\n'
@@ -385,7 +391,7 @@ def _column_widths(columns: list[Mapping[str, Any]], where: str) -> list[int]:
     widths = list(given)
     if len(columns) > 1 and missing[0] == 0 and len(missing) == len(columns):
         # Nothing given: the dimension column gets the room it needs for names.
-        widths[0] = 40 if len(columns) >= 3 else 50
+        widths[0] = 24 if len(columns) >= 6 else (40 if len(columns) >= 3 else 50)
         remaining -= widths[0]
         missing = missing[1:]
     share, extra = divmod(remaining, len(missing))
@@ -394,7 +400,25 @@ def _column_widths(columns: list[Mapping[str, Any]], where: str) -> list[int]:
     return [int(w) for w in widths]
 
 
-def _table_cell(cell: Any, label: str, align: str, bg: str, first: bool, slots: _Slots, where: str) -> str:
+def _is_prose_column(rows: Sequence[Any], col_idx: int) -> bool:
+    for row in rows:
+        if not isinstance(row, Sequence) or isinstance(row, str) or col_idx >= len(row):
+            continue
+        cell = row[col_idx]
+        if isinstance(cell, Mapping):
+            if "share" in cell:
+                return False
+            raw = _clean(cell.get("text", cell.get("value", "")))
+        else:
+            raw = _clean(cell)
+        if len(raw) > 20 and " " in raw and any(ch.isalpha() for ch in raw) and raw[0] not in "$+-0123456789":
+            return True
+    return False
+
+
+def _table_cell(
+    cell: Any, label: str, align: str, bg: str, first: bool, slots: _Slots, where: str, compact: bool = False
+) -> str:
     classes = ' class="campaign-name"' if first else ""
     align_attr = "" if align == "left" else f' align="{align}"'
     color, weight, label_extra = "#141824", "", ""
@@ -416,18 +440,19 @@ def _table_cell(cell: Any, label: str, align: str, bg: str, first: bool, slots: 
         )
     else:
         if isinstance(cell, Mapping):
-            trend = _clean(cell.get("trend")).lower()
+            trend = _clean(cell.get("trend") or cell.get("tone")).lower()
             if trend:
                 if trend not in _DELTA_COLORS:
                     raise RenderError(f"{where}: trend must be one of {', '.join(_DELTA_COLORS)}.")
                 color, weight, label_extra = _DELTA_COLORS[trend], " font-weight:700;", " color:#586F7C;"
-            text = slots.text(cell.get("text", ""))
+            text = slots.text(cell.get("text", cell.get("value", "")))
         else:
             text = slots.text(cell)
         content = _MOBILE_LABEL.format(extra=label_extra, label=label) + text
+    font_pad = "font-size:12px; line-height:17px;{weight} padding:8px 5px;" if compact else "font-size:15px; line-height:22px;{weight} padding:10px 8px;"
     return (
         f'          <td{classes}{align_attr} bgcolor="{bg}" style="background-color:{bg}; color:{color}; '
-        f'font-size:15px; line-height:22px;{weight} padding:10px 8px; word-break:break-word;">{content}</td>\n'
+        f'{font_pad.format(weight=weight)} word-break:break-word;">{content}</td>\n'
     )
 
 
@@ -439,23 +464,30 @@ def _block_table(block: Mapping[str, Any], slots: _Slots, top: int, where: str) 
             f"{where}: {len(columns)} columns; the 600px layout holds at most {MAX_TABLE_COLUMNS}. "
             "Split it into two tables (e.g. Performance and Efficiency) or drop the least useful column."
         )
+    rows = block.get("rows") or []
+    if not isinstance(rows, Sequence) or isinstance(rows, str) or not rows:
+        raise RenderError(f"{where}: 'rows' must be a non-empty list of rows, each a list of cells.")
     labels = []
     for i, col in enumerate(columns):
         labels.append(slots.text(_require(col, "label", f"{where} columns[{i}]")))
+    block_aligns = block.get("align")
     aligns = []
     for i, col in enumerate(columns):
-        align = _clean(col.get("align") or ("left" if i == 0 else "right")).lower()
+        explicit_align = col.get("align")
+        if explicit_align is None and isinstance(block_aligns, Sequence) and not isinstance(block_aligns, str) and i < len(block_aligns):
+            explicit_align = block_aligns[i]
+        default_align = "left" if (i == 0 or _is_prose_column(rows, i)) else "right"
+        align = _clean(explicit_align or default_align).lower()
         if align not in {"left", "right", "center"}:
             raise RenderError(f"{where}: columns[{i}].align must be left, right or center.")
         aligns.append(align)
     widths = _column_widths(columns, where)
-    rows = block.get("rows") or []
-    if not isinstance(rows, Sequence) or isinstance(rows, str) or not rows:
-        raise RenderError(f"{where}: 'rows' must be a non-empty list of rows, each a list of cells.")
+    compact = len(columns) > 5
+    th_font_pad = "font-size:11px; line-height:15px; font-weight:700; padding:8px 5px;" if compact else "font-size:13px; line-height:18px; font-weight:700; padding:10px 8px;"
 
     head = "".join(
         f'          <th scope="col" align="{align}" width="{width}%" bgcolor="#EEF3FF" style="background-color:#EEF3FF; '
-        f'color:#33415F; font-size:13px; line-height:18px; font-weight:700; padding:10px 8px; word-break:break-word;">{label}</th>\n'
+        f'color:#33415F; {th_font_pad} word-break:break-word;">{label}</th>\n'
         for label, align, width in zip(labels, aligns, widths, strict=True)
     )
     body = ""
@@ -464,7 +496,7 @@ def _block_table(block: Mapping[str, Any], slots: _Slots, top: int, where: str) 
             raise RenderError(f"{where}: rows[{r}] must be a list of {len(columns)} cells, one per column.")
         bg = _ZEBRA[r % 2]
         cells = "".join(
-            _table_cell(cell, label, align, bg, c == 0, slots, f"{where} rows[{r}][{c}]")
+            _table_cell(cell, label, align, bg, c == 0, slots, f"{where} rows[{r}][{c}]", compact=compact)
             for c, (cell, label, align) in enumerate(zip(row, labels, aligns, strict=True))
         )
         body += f"        <tr>\n{cells}        </tr>\n"
@@ -475,6 +507,14 @@ def _block_table(block: Mapping[str, Any], slots: _Slots, top: int, where: str) 
         table_top = 8
     else:
         table_top = top
+    caption_row = ""
+    if _clean(block.get("caption")):
+        caption_row = (
+            '<tr>\n  <td class="body-pad" style="padding:6px 28px 0 28px;">\n'
+            '    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%; border-collapse:collapse;">\n'
+            f'      <tr>\n        <td style="font-size:12px; line-height:17px; color:#586F7C; padding:0 0 4px 0;">{slots.text(block["caption"])}</td>\n      </tr>\n'
+            "    </table>\n  </td>\n</tr>\n"
+        )
     return (
         heading_row + "<tr>\n"
         f'  <td class="table-pad" style="padding:{table_top}px 28px 0 28px;">\n'
@@ -484,6 +524,7 @@ def _block_table(block: Mapping[str, Any], slots: _Slots, top: int, where: str) 
         f'        <tr>\n          <td colspan="{len(columns)}" height="1" bgcolor="#D7DEEE" style="height:1px; line-height:1px; '
         'mso-line-height-rule:exactly; font-size:1px; background-color:#D7DEEE; padding:0;">&nbsp;</td>\n        </tr>\n'
         f"      </thead>\n      <tbody>\n{body}      </tbody>\n    </table>\n  </td>\n</tr>\n"
+        + caption_row
     )
 
 
