@@ -33,6 +33,7 @@ from email_lint import (
     detect_html_content as _detect_html_content,
 )
 from email_lint import (
+    ensure_mobile_friendly,
     extract_cid_references,
     format_findings,
     partition_findings,
@@ -827,6 +828,14 @@ async def send_email(
     # Auto-detect and resolve content type
     resolved_type, was_corrected = resolve_content_type(actual_content, content_type)
 
+    if resolved_type == "text/html":
+        upgraded = ensure_mobile_friendly(actual_content)
+        if upgraded != actual_content:
+            actual_content = upgraded
+            if content_file:
+                with contextlib.suppress(OSError), open(file_path, "w", encoding="utf-8") as fh:
+                    fh.write(actual_content)
+
     # Run the shared validator (subject + body + structure + leakage).
     findings = validate(actual_content, subject=subject, content_type=resolved_type, require_frame=True)
     errors, warnings = partition_findings(findings)
@@ -1106,6 +1115,13 @@ async def validate_email_content(
         return {"valid": False, "errors": ["Provide either content or content_file"], "warnings": []}
 
     resolved_type, _ = resolve_content_type(actual_content, content_type or None)
+    if resolved_type == "text/html":
+        upgraded = ensure_mobile_friendly(actual_content)
+        if upgraded != actual_content:
+            actual_content = upgraded
+            if content_file:
+                with contextlib.suppress(OSError), open(resolved_path, "w", encoding="utf-8") as fh:
+                    fh.write(actual_content)
     findings = validate(actual_content, subject=subject or None, content_type=resolved_type, require_frame=True)
     errors, warnings = partition_findings(findings)
 
@@ -1130,8 +1146,9 @@ async def validate_email_content(
 async def render_email(
     subject: str,
     blocks: list[dict[str, Any]],
-    output_dir: str,
+    output_dir: str = "",
     *,
+    output_file: str = "",
     theme: str = "",
     client_name: str = "",
     date: str = "",
@@ -1157,17 +1174,19 @@ async def render_email(
             - {"type": "text", "heading"?: str, "paragraphs": [str, ...], "bullets"?: [str, ...]}
               Prose. Use this for short notes and the sign-off too.
             - {"type": "headline_metrics", "heading"?: str, "items": [{"label", "value",
-              "delta"?: "+4.2% WoW", "trend"?: "positive"|"negative"|"neutral"}]}  (at most 5; 3-5 reads best)
+              "delta"?: "+4.2% WoW", "trend"?: "positive"|"negative"|"neutral"}], "caption"?: str}
+              (1-6 KPIs; 3-5 reads best)
             - {"type": "metrics", "heading"?: str, "items": [{"label", "value"}, ...]}
               Compact key-figures card.
-            - {"type": "callout", "kind": "risk"|"opportunity", "title"?: str, "text": str}
+            - {"type": "callout", "kind": "risk"|"opportunity", "title"?: str, "text"?: str, "bullets"?: [str, ...]}
             - {"type": "table", "heading"?: str, "columns": ["Channel", "Spend", ...] or
               [{"label", "align"?: "left"|"right"|"center", "width"?: percent}],
-              "rows": [[cell, ...], ...]}  At most 5 columns; widths default sensibly
-              and must sum to 100 when all given. A cell is a string, {"text": str,
-              "trend": "positive"|"negative"} for a colored delta, or {"share": 63.6}
-              for a share-of-total bar. Column labels must be dimensional (Campaign,
-              Channel, Date), never "Metric" or "Item". Put Spend before Margin.
+              "rows": [[cell, ...], ...], "caption"?: str}  Up to 10 columns (6-10 columns
+              automatically use compact desktop sizing and stack into full-width cards on
+              mobile); widths default sensibly and must sum to 100 when all given. A cell is
+              a string, {"text": str, "trend": "positive"|"negative"} for a colored delta,
+              or {"share": 63.6} for a share-of-total bar. Column labels must be dimensional
+              (Campaign, Channel, Date), never "Metric" or "Item". Put Spend before Margin.
             - {"type": "chart", "heading"?: str, "cid": str, "alt": str, "caption"?: str}
               A 1088px-wide PNG you pass to send_email as
               inline_attachments=[{"path": ..., "cid": <same cid>}].
@@ -1176,6 +1195,9 @@ async def render_email(
             - {"type": "closing", "heading"?: str, "text": str or [str, ...]}
         output_dir: The ABSOLUTE path of your working directory (shown under
             "Working directory" in your instructions). The email is written there.
+        output_file: Optional exact output file path (e.g. when a workflow contract
+            requires a specific body_html_path). If given without output_dir, its
+            parent directory is used as output_dir.
         theme: Theme id from protocols/email_styles/themes/; defaults to the bundle default.
         client_name: The header headline beside the logo; defaults to this deployment's
             client name.
@@ -1198,13 +1220,18 @@ async def render_email(
         append your chart files), valid, errors, warnings, content_length, and
         inline_cids (every cid the email references).
     """
-    directory_arg = output_dir.strip()
+    file_arg = output_file.strip()
+    directory_arg = output_dir.strip() or (os.path.dirname(file_arg) if file_arg else "")
     if not directory_arg:
         return {"error": "output_dir is required: pass the absolute path of your working directory."}
     try:
         directory = _validate_path_security(directory_arg)
+        target_file = _validate_path_security(file_arg) if file_arg else ""
     except ValueError as exc:
         return {"error": str(exc)}
+    if file_arg and not os.path.isdir(directory):
+        with contextlib.suppress(OSError):
+            os.makedirs(directory, exist_ok=True)
     if not os.path.isdir(directory):
         return {"error": f"output_dir is not an existing directory: {directory_arg}"}
 
@@ -1237,6 +1264,11 @@ async def render_email(
         created.append(path)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(html_content)
+        if target_file:
+            os.makedirs(os.path.dirname(target_file), exist_ok=True)
+            with open(target_file, "w", encoding="utf-8") as fh:
+                fh.write(html_content)
+            path = target_file
         logo = email_render.brand_logo()
         if logo is not None and f"cid:{email_render.LOGO_CID}" in html_content:
             # A copy beside the email, inside the workspace: send_email reads

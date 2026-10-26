@@ -14,8 +14,13 @@ description: >
 rules:
   - "SHOULD build the email with the ses_outbound render_email tool: pass the
     content as ordered blocks (text, headline_metrics, metrics, callout,
-    table, chart, cta, closing) plus your working directory as output_dir,
-    then call send_email with the content_file it returns. It applies this
+    table, chart, cta, closing) plus output_dir (or output_file when the
+    workflow specifies an exact body_html_path), then call send_email with
+    the content_file it returns. render_email supports tables up to 10
+    columns (automatically compacting 6-10 column tables on desktop and
+    stacking every row into labeled cards on mobile), headline_metrics strips
+    of 1-6 KPI cards (with optional subtext, tone, and caption), bullet lists
+    in text/callout blocks, and automatic brand-logo sizing. It applies this
     file's template, components, theme and cleanup rules for you, so the
     rest of this file is reference for the rare section no block covers.
     Never paste or re-type the rendered HTML."
@@ -516,7 +521,7 @@ canonical_template: |
       <style>
         /* Mobile-responsive overrides — email clients that support <style> */
         @media only screen and (max-width: 480px) {
-          .email-container { width: 100% !important; }
+          .email-container { width: 100% !important; max-width: 100% !important; }
           .header-pad, .body-pad, .footer-pad { padding-left: 16px !important; padding-right: 16px !important; }
           .status-pad { padding-left: 16px !important; padding-right: 16px !important; }
           .table-pad { padding-left: 12px !important; padding-right: 12px !important; }
@@ -524,17 +529,19 @@ canonical_template: |
           .header-brand { font-size: 21px !important; line-height: 26px !important; }
           .header-logo img { width: auto !important; height: auto !important; max-width: 132px !important; max-height: 36px !important; }
           .header-meta { font-size: 13px !important; line-height: 19px !important; }
+          .mobile-stack { display: block !important; width: 100% !important; box-sizing: border-box !important; margin-bottom: 8px !important; }
+          .mobile-stack:last-child { margin-bottom: 0 !important; }
           .data-table { width: 100% !important; max-width: 100% !important; border: 0 !important; border-collapse: separate !important; border-spacing: 0 !important; table-layout: fixed !important; }
           .data-table thead { display: none !important; }
           .data-table tbody, .data-table tr, .data-table td { display: block !important; width: 100% !important; }
           .data-table tr { width: 100% !important; margin-bottom: 12px !important; }
           .data-table tr:last-child { margin-bottom: 0 !important; }
-          .data-table td { box-sizing: border-box !important; background-color: #FAFAFA !important; font-size: 15px !important; line-height: 20px !important; padding: 8px 10px !important; text-align: left !important; border-left: 1px solid #D7DEEE !important; border-right: 1px solid #D7DEEE !important; border-bottom: 1px solid #E6EBF5 !important; }
+          .data-table td { box-sizing: border-box !important; background-color: #FAFAFA !important; font-size: 15px !important; line-height: 20px !important; padding: 8px 10px !important; text-align: left !important; white-space: normal !important; word-break: break-word !important; border-left: 1px solid #D7DEEE !important; border-right: 1px solid #D7DEEE !important; border-bottom: 1px solid #E6EBF5 !important; }
           .data-table td:first-child { border-top: 1px solid #D7DEEE !important; }
           .data-table td:last-child { border-bottom: 0 !important; }
           .data-table tr td:last-child { border-bottom: 1px solid #D7DEEE !important; }
           .data-table .campaign-name { background-color: #EEF3FF !important; font-weight: 700 !important; }
-          .data-table td .mobile-label { display: block !important; min-width: 0 !important; max-height: none !important; overflow: visible !important; font-size: 13px !important; line-height: 18px !important; font-weight: 700 !important; color: #586F7C !important; margin-bottom: 4px !important; }
+          .data-table td .mobile-label, .mobile-label { display: block !important; min-width: 0 !important; max-height: none !important; overflow: visible !important; font-size: 13px !important; line-height: 18px !important; font-weight: 700 !important; color: #586F7C !important; margin-bottom: 4px !important; }
         }
       </style>
     </head>
