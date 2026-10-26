@@ -828,12 +828,13 @@ async def send_email(
     # Auto-detect and resolve content type
     resolved_type, was_corrected = resolve_content_type(actual_content, content_type)
 
-    if resolved_type == "text/html":
+    if resolved_type == "text/html" and content_file:
         upgraded = ensure_mobile_friendly(actual_content)
         if upgraded != actual_content:
             actual_content = upgraded
-            if content_file:
-                with contextlib.suppress(OSError), open(file_path, "w", encoding="utf-8") as fh:
+            with contextlib.suppress(OSError):
+                fd = os.open(file_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
                     fh.write(actual_content)
 
     # Run the shared validator (subject + body + structure + leakage).
@@ -1115,13 +1116,6 @@ async def validate_email_content(
         return {"valid": False, "errors": ["Provide either content or content_file"], "warnings": []}
 
     resolved_type, _ = resolve_content_type(actual_content, content_type or None)
-    if resolved_type == "text/html":
-        upgraded = ensure_mobile_friendly(actual_content)
-        if upgraded != actual_content:
-            actual_content = upgraded
-            if content_file:
-                with contextlib.suppress(OSError), open(resolved_path, "w", encoding="utf-8") as fh:
-                    fh.write(actual_content)
     findings = validate(actual_content, subject=subject or None, content_type=resolved_type, require_frame=True)
     errors, warnings = partition_findings(findings)
 
@@ -1252,23 +1246,27 @@ async def render_email(
         return {"error": f"Cannot render the email: {exc}"}
 
     stem = os.path.join(directory, f"email-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{secrets.token_hex(3)}")
-    path = f"{stem}.html"
+    path = target_file if target_file else f"{stem}.html"
     inline_attachments: list[dict[str, str]] = []
     created: list[str] = []  # only files this call made, so cleanup never removes another
     try:
-        # Create-only and owner-only: never overwrites, and an output_dir in a
-        # shared location (the temp dir is a readable root) does not expose
-        # the email to other local users. Fleet's approval stager and this
-        # server run as the same user.
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        created.append(path)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(html_content)
         if target_file:
             os.makedirs(os.path.dirname(target_file), exist_ok=True)
-            with open(target_file, "w", encoding="utf-8") as fh:
+            existed = os.path.exists(target_file)
+            fd = os.open(target_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            if not existed:
+                created.append(target_file)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(html_content)
-            path = target_file
+        else:
+            # Create-only and owner-only: never overwrites, and an output_dir in a
+            # shared location (the temp dir is a readable root) does not expose
+            # the email to other local users. Fleet's approval stager and this
+            # server run as the same user.
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            created.append(path)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(html_content)
         logo = email_render.brand_logo()
         if logo is not None and f"cid:{email_render.LOGO_CID}" in html_content:
             # A copy beside the email, inside the workspace: send_email reads
