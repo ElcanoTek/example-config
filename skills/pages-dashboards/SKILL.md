@@ -54,6 +54,10 @@ never substitute another source or reuse an old file.
   to the version it published. A bare `rollback_page(slug)` picks the newest
   other approved version, which is the wrong one after two refreshes. A canary
   (`publish=false`) changed nothing live, so there is nothing to roll back.
+- When creating a page that belongs in a workspace, pass `workspace_id`
+  directly to `create_page_from_template`, `deploy_page`, or
+  `deploy_page_upload` so the page is created and placed in the workspace in a
+  single approval card instead of staging a separate `set_page_workspace` card.
 - Say what a write will do before you make it, and confirm the page is live
   afterwards, as the guide's publishing section describes.
 
