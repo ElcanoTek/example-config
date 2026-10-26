@@ -870,6 +870,22 @@ agent_policy:
   # After an approved card settles, start one turn so the agent carries on
   # with the call's result (fleet #1718, docs/RESUME-AFTER-APPROVAL.md).
   critical_tool_resume:
+    # Pages writes that change what a page shows or its workspace/title.
+    # Approving the card starts one new turn so the agent verifies the page is
+    # live or continues the multi-step workflow instead of settling silently.
+    - deploy_page_upload
+    - deploy_page
+    - update_page
+    - patch_page
+    - update_page_config
+    - rerender_page_from_template
+    - create_page_from_template
+    - publish_page
+    - rollback_page
+    - create_workspace
+    - rename_workspace
+    - set_page_workspace
+    - set_title
     # Lens: approving a start (or cancel) card starts one new turn, so the
     # agent reads the job id and reports it, then follows the skill's polling
     # flow, instead of the card settling silently until the user types again.

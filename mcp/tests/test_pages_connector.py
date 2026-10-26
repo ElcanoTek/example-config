@@ -216,3 +216,27 @@ def test_only_data_commits_notify_and_they_are_one_action(manifest, pages):
         # unpublished canary; the hint must name the explicit version.
         assert "rollback_page" in hint and "version_id" in hint and "expected_version" in hint
         assert "publish=false" in hint
+
+
+PAGES_RESUME_WRITES = {
+    "deploy_page_upload",
+    "deploy_page",
+    "update_page",
+    "patch_page",
+    "update_page_config",
+    "rerender_page_from_template",
+    "create_page_from_template",
+    "publish_page",
+    "rollback_page",
+    "create_workspace",
+    "rename_workspace",
+    "set_page_workspace",
+    "set_title",
+}
+
+
+def test_pages_writes_resume_after_approval(manifest):
+    policy = manifest["agent_policy"]
+    resume = set(policy.get("critical_tool_resume") or [])
+    for tool in sorted(PAGES_RESUME_WRITES):
+        assert tool in resume, f"{tool} must be in critical_tool_resume"
