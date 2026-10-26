@@ -57,6 +57,7 @@ use the structured `Finding` API.
 
 from __future__ import annotations
 
+import contextlib
 import re
 from collections import Counter
 from collections.abc import Iterable, Iterator
@@ -1097,7 +1098,7 @@ _TH_BLOCK_RE = re.compile(r"(<th\b[^>]*>)((?:(?!<th\b).)*?)(</th\s*>)", re.IGNOR
 _TD_BLOCK_RE = re.compile(r"(<td\b[^>]*>)((?:(?!<td\b).)*?)(</td\s*>)", re.IGNORECASE | re.DOTALL)
 _TAG_STRIP_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
-_CLASS_ATTR_RE = re.compile(r'\bclass=(["\'])(.*?)\1', re.IGNORECASE | re.DOTALL)
+_CLASS_ATTR_RE = re.compile(r'\bclass\s*=\s*(?:(["\'])(.*?)\1|([^\s>"\']+))', re.IGNORECASE | re.DOTALL)
 _STYLE_ATTR_FULL_RE = re.compile(r'\bstyle=(["\'])(.*?)\1', re.IGNORECASE | re.DOTALL)
 _WIDTH_ATTR_RE = re.compile(r'\bwidth=(["\']?)(\d+%?)\1', re.IGNORECASE)
 
@@ -1128,11 +1129,13 @@ _MOBILE_MEDIA_FALLBACK_RULES = """\
 def _add_class_to_tag(open_tag: str, new_class: str) -> str:
     m = _CLASS_ATTR_RE.search(open_tag)
     if m:
-        classes = m.group(2).split()
+        raw_val = m.group(2) if m.group(1) is not None else (m.group(3) or "")
+        classes = raw_val.split()
         if new_class in classes:
             return open_tag
         updated = " ".join([*classes, new_class])
-        return open_tag[: m.start()] + f"class={m.group(1)}{updated}{m.group(1)}" + open_tag[m.end() :]
+        quote = m.group(1) or '"'
+        return open_tag[: m.start()] + f"class={quote}{updated}{quote}" + open_tag[m.end() :]
     return open_tag[:-1] + f' class="{new_class}">'
 
 
@@ -1140,13 +1143,15 @@ def _remove_class_from_tag(open_tag: str, target_class: str) -> str:
     m = _CLASS_ATTR_RE.search(open_tag)
     if not m:
         return open_tag
-    classes = [c for c in m.group(2).split() if c != target_class]
-    if len(classes) == len(m.group(2).split()):
+    raw_val = m.group(2) if m.group(1) is not None else (m.group(3) or "")
+    classes = [c for c in raw_val.split() if c != target_class]
+    if len(classes) == len(raw_val.split()):
         return open_tag
     if not classes:
         return open_tag[: m.start()].rstrip() + open_tag[m.end() :]
     updated = " ".join(classes)
-    return open_tag[: m.start()] + f"class={m.group(1)}{updated}{m.group(1)}" + open_tag[m.end() :]
+    quote = m.group(1) or '"'
+    return open_tag[: m.start()] + f"class={quote}{updated}{quote}" + open_tag[m.end() :]
 
 
 def _default_pct_widths(n: int) -> list[int]:
@@ -1156,6 +1161,62 @@ def _default_pct_widths(n: int) -> list[int]:
     rem = 100 - first
     share, extra = divmod(rem, n - 1)
     return [first, *(share + (1 if i < extra else 0) for i in range(n - 1))]
+
+
+def _resolve_pct_widths(row_ths: list[re.Match[str]]) -> list[int]:
+    n = len(row_ths)
+    if n <= 0:
+        return []
+    defaults = _default_pct_widths(n)
+    given: list[int | None] = []
+    for th_m in row_ths:
+        wm = _WIDTH_ATTR_RE.search(th_m.group(1))
+        if wm and wm.group(2).endswith("%"):
+            with contextlib.suppress(ValueError):
+                val = int(wm.group(2)[:-1])
+                if 0 < val < 100:
+                    given.append(val)
+                    continue
+        given.append(None)
+    if all(g is None for g in given):
+        return defaults
+    if all(g is not None for g in given):
+        return [int(g) for g in given if g is not None]
+    used = sum(g for g in given if g is not None)
+    missing_indices = [i for i, g in enumerate(given) if g is None]
+    rem = max(len(missing_indices), 100 - used)
+    share, extra = divmod(rem, len(missing_indices))
+    resolved = list(defaults)
+    for idx_pos, col_idx in enumerate(missing_indices):
+        resolved[col_idx] = share + (1 if idx_pos < extra else 0)
+    for col_idx, g in enumerate(given):
+        if g is not None:
+            resolved[col_idx] = g
+    return resolved
+
+
+def _is_presentation_table(open_tag: str) -> bool:
+    return bool(re.search(r'\brole=(["\']?)presentation\1', open_tag, re.IGNORECASE))
+
+
+def _extract_mobile_media_css(style_css: str) -> str:
+    """Return concatenated CSS bodies inside @media ...(max-width: 480px)... blocks."""
+    chunks: list[str] = []
+    for m in re.finditer(r"@media\b([^{]*)\{", style_css, re.IGNORECASE):
+        prelude = m.group(1).lower().replace(" ", "")
+        if "max-width:480px" not in prelude and "max-width:600px" not in prelude:
+            continue
+        depth = 1
+        pos = m.end()
+        while pos < len(style_css) and depth > 0:
+            ch = style_css[pos]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+            pos += 1
+        chunks.append(style_css[m.end() : pos - 1])
+    return "\n".join(chunks)
 
 
 def _upgrade_single_data_table(table_html: str) -> str:
@@ -1177,7 +1238,7 @@ def _upgrade_single_data_table(table_html: str) -> str:
         return table_html
     header_tr_m = None
     for tr_m in _TR_BLOCK_RE.finditer(inner_and_close):
-        if _TH_BLOCK_RE.search(tr_m.group(2)):
+        if len(_TH_BLOCK_RE.findall(tr_m.group(2))) >= 2:
             header_tr_m = tr_m
             break
     if header_tr_m is None:
@@ -1230,7 +1291,14 @@ def _upgrade_single_data_table(table_html: str) -> str:
     style_m = _STYLE_ATTR_FULL_RE.search(open_tag)
     if style_m:
         style_val = style_m.group(2).strip()
-        if "table-layout" not in style_val.lower():
+        if re.search(r"table-layout\s*:", style_val, flags=re.IGNORECASE):
+            style_val = re.sub(
+                r"table-layout\s*:\s*[^;]+",
+                "table-layout:fixed",
+                style_val,
+                flags=re.IGNORECASE,
+            )
+        else:
             sep = "" if style_val.endswith(";") else ";"
             style_val = f"{style_val}{sep} table-layout:fixed;"
         open_tag = (
@@ -1242,12 +1310,15 @@ def _upgrade_single_data_table(table_html: str) -> str:
         open_tag = open_tag[:-1] + ' style="width:100%; border-collapse:collapse; table-layout:fixed;">'
 
     # 2. Upgrade header <tr> <th> cells with percentage widths and word-break.
-    widths = _default_pct_widths(num_cols)
+    widths = _resolve_pct_widths(row_ths)
     new_ths: list[str] = []
     for idx, th_m in enumerate(row_ths):
         th_open, th_inner, th_close = th_m.group(1), th_m.group(2), th_m.group(3)
-        if not _WIDTH_ATTR_RE.search(th_open):
+        wm = _WIDTH_ATTR_RE.search(th_open)
+        if not wm:
             th_open = th_open[:-1] + f' width="{widths[idx]}%">'
+        elif not wm.group(2).endswith("%"):
+            th_open = th_open[: wm.start()] + f'width="{widths[idx]}%"' + th_open[wm.end() :]
         st_m = _STYLE_ATTR_FULL_RE.search(th_open)
         if st_m:
             st_val = st_m.group(2)
@@ -1315,7 +1386,7 @@ def _upgrade_single_data_table(table_html: str) -> str:
     after_header = inner_and_close[header_tr_m.end() :]
     after_header_upgraded = _TR_BLOCK_RE.sub(_upgrade_data_tr, after_header)
 
-    if "<thead" not in before_header.lower() and "<tbody" not in after_header_upgraded.lower():
+    if "<thead" not in before_header.lower() and "<tbody" not in inner_and_close.lower():
         close_table_m = re.search(r"</table\s*>\s*$", after_header_upgraded, re.IGNORECASE)
         if close_table_m:
             body_rows = after_header_upgraded[: close_table_m.start()]
@@ -1372,27 +1443,40 @@ def ensure_mobile_friendly(content: str) -> str:
 
     result = content
 
-    # 1. Normalize fixed-width .email-container and MSO wrapper > 600px.
+    # 1. Normalize fixed-width .email-container and MSO wrapper > 480px.
     def _fix_container_tag(m: re.Match[str]) -> str:
         tag = m.group(0)
-        tag = re.sub(r'\bwidth=(["\']?)(?:6\d\d)\1', r"width=\g<1>100%\g<1>", tag, flags=re.IGNORECASE)
+        wm = _WIDTH_ATTR_RE.search(tag)
+        if wm and wm.group(2).isdigit() and int(wm.group(2)) > 480:
+            q = wm.group(1)
+            tag = tag[: wm.start()] + f"width={q}100%{q}" + tag[wm.end() :]
         st_m = _STYLE_ATTR_FULL_RE.search(tag)
         if st_m:
             st_val = st_m.group(2)
-            st_val = re.sub(r"(?:^|(?<=;))\s*width\s*:\s*6\d\dpx", " width:100%", st_val, flags=re.IGNORECASE).lstrip()
-            st_val = re.sub(r"max-width\s*:\s*6[1-9]\dpx", "max-width:600px", st_val, flags=re.IGNORECASE)
+            st_val = re.sub(
+                r"(?:^|(?<=;))\s*width\s*:\s*(?:48[1-9]|49\d|[5-9]\d\d|\d{4,})px",
+                " width:100%",
+                st_val,
+                flags=re.IGNORECASE,
+            ).lstrip()
+            st_val = re.sub(
+                r"max-width\s*:\s*(?:6[1-9]\d|[7-9]\d\d|\d{4,})px",
+                "max-width:600px",
+                st_val,
+                flags=re.IGNORECASE,
+            )
             tag = tag[: st_m.start()] + f"style={st_m.group(1)}{st_val}{st_m.group(1)}" + tag[st_m.end() :]
         return tag
 
     result = re.sub(r"<table\b[^>]*\bemail-container\b[^>]*>", _fix_container_tag, result, flags=re.IGNORECASE)
     result = re.sub(
-        r"(<!--\[if mso\]>\s*<table\b[^>]*\bwidth=[\"'])6[1-9]\d([\"'])",
+        r"(<!--\[if mso\]>\s*<table\b[^>]*\bwidth=[\"'])(?:6[1-9]\d|[7-9]\d\d|\d{4,})([\"'])",
         r"\g<1>600\g<2>",
         result,
         flags=re.IGNORECASE,
     )
 
-    # 2. Upgrade any data tables (tables with class="data-table" or >= 2 <th> cells).
+    # 2. Upgrade any data tables (tables with class="data-table" or non-presentation tables with >= 2 <th> cells).
     # Find balanced <table>...</table> spans so nested tables inside cells don't truncate matches.
     spans: list[tuple[int, int]] = []
     stack: list[int] = []
@@ -1404,10 +1488,10 @@ def ensure_mobile_friendly(content: str) -> str:
             start = stack.pop()
             tag_open = result[start : result.find(">", start) + 1]
             table_slice = result[start : m.end()]
-            # A data table either carries class="data-table" or has >= 2 <th> cells at its own level (no nested data tables).
             if "data-table" in tag_open or (
                 "email-container" not in tag_open
-                and len(_TH_BLOCK_RE.findall(table_slice)) >= 2
+                and not _is_presentation_table(tag_open)
+                and any(len(_TH_BLOCK_RE.findall(tr_m.group(2))) >= 2 for tr_m in _TR_BLOCK_RE.finditer(table_slice))
                 and "<table" not in table_slice[len(tag_open) : -len(m.group(0))].lower()
             ):
                 spans.append((start, m.end()))
@@ -1431,16 +1515,20 @@ def ensure_mobile_friendly(content: str) -> str:
         style_m = re.search(r"(<style\b[^>]*>)(.*?)(</style\s*>)", result, flags=re.IGNORECASE | re.DOTALL)
         if style_m:
             style_open, style_css, style_close = style_m.group(1), style_m.group(2), style_m.group(3)
+            media_css = _extract_mobile_media_css(style_css)
             missing_table_css = needs_table_media and (
-                ".data-table" not in style_css or ".mobile-label" not in style_css
+                ".data-table" not in media_css or ".mobile-label" not in media_css
             )
-            missing_stack_css = needs_stack_media and (".mobile-stack" not in style_css)
+            missing_stack_css = needs_stack_media and (".mobile-stack" not in media_css)
             if missing_table_css or missing_stack_css:
-                new_style_css = (
+                fallback_block = (
                     "\n        @media only screen and (max-width: 480px) {\n"
                     f"{_MOBILE_MEDIA_FALLBACK_RULES}\n"
                     "        }\n      "
                 )
+                # Preserve any non-@media rules while appending the complete mobile @media block.
+                preserved = style_css.rstrip()
+                new_style_css = f"{preserved}{fallback_block}" if preserved else fallback_block
                 result = (
                     result[: style_m.start()] + f"{style_open}{new_style_css}{style_close}" + result[style_m.end() :]
                 )
@@ -1452,7 +1540,16 @@ def ensure_mobile_friendly(content: str) -> str:
             )
             head_close = re.search(r"</head\s*>", result, flags=re.IGNORECASE)
             if head_close:
-                result = result[: head_close.start()] + f"  {media_block}\n    " + result[head_close.start() :]
+                viewport_prefix = (
+                    '  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n  '
+                    if not re.search(r'<meta\b[^>]*name=["\']?viewport\b', result, flags=re.IGNORECASE)
+                    else ""
+                )
+                result = (
+                    result[: head_close.start()]
+                    + f"{viewport_prefix}  {media_block}\n    "
+                    + result[head_close.start() :]
+                )
             else:
                 body_open = re.search(r"<body\b", result, flags=re.IGNORECASE)
                 if body_open:
@@ -1461,6 +1558,16 @@ def ensure_mobile_friendly(content: str) -> str:
                         + f'<head><meta name="viewport" content="width=device-width, initial-scale=1.0">{media_block}</head>'
                         + result[body_open.start() :]
                     )
+        if (needs_table_media or needs_stack_media) and not re.search(
+            r'<meta\b[^>]*name=["\']?viewport\b', result, flags=re.IGNORECASE
+        ):
+            head_open = re.search(r"<head\b[^>]*>", result, flags=re.IGNORECASE)
+            if head_open:
+                result = (
+                    result[: head_open.end()]
+                    + '\n    <meta name="viewport" content="width=device-width, initial-scale=1.0">'
+                    + result[head_open.end() :]
+                )
 
     return result
 
@@ -1475,7 +1582,7 @@ def _check_mobile_friendly(content: str) -> Iterator[Finding]:
             width_attr = (el.get("width") or "").strip()
             style_attr = (el.get("style") or "").lower()
             if (width_attr.isdigit() and int(width_attr) > 480) or re.search(
-                r"(?:^|;)\s*width\s*:\s*[5-9]\d\dpx", style_attr
+                r"(?:^|;)\s*width\s*:\s*(?:48[1-9]|49\d|[5-9]\d\d|\d{4,})px", style_attr
             ):
                 yield Finding(
                     rule="EM003",
@@ -1484,25 +1591,26 @@ def _check_mobile_friendly(content: str) -> Iterator[Finding]:
                 )
                 break
 
-    # Find data tables (.data-table or tables inside .email-container with >= 2 <th> cells)
+    # Find data tables (.data-table or non-presentation tables inside .email-container with >= 2 <th> cells)
     data_tables: list[Any] = []
     for el in tree.iter():
         if _strip_ns(el.tag) != "table" or "email-container" in _class_tokens(el):
             continue
         if "data-table" in _class_tokens(el):
             data_tables.append(el)
-        else:
+        elif (el.get("role") or "").strip().lower() != "presentation":
             nested_tables = [t for t in el.iter() if t is not el and _strip_ns(t.tag) == "table"]
-            ths = [c for c in el.iter() if _strip_ns(c.tag) == "th"]
-            if not nested_tables and len(ths) >= 2:
+            has_col_header_row = any(
+                sum(1 for c in tr if _strip_ns(c.tag) == "th") >= 2 for tr in el.iter() if _strip_ns(tr.tag) == "tr"
+            )
+            if not nested_tables and has_col_header_row:
                 data_tables.append(el)
 
     style_text = " ".join((el.text or "") for el in tree.iter() if _strip_ns(el.tag) == "style")
+    media_text = _extract_mobile_media_css(style_text)
 
-    # EM001: If the email has data tables (or a <style> block with @media and data tables), it must have @media rules for .data-table and .mobile-label.
-    if data_tables and (
-        "@media" not in style_text or ".data-table" not in style_text or ".mobile-label" not in style_text
-    ):
+    # EM001: If the email has data tables, it must have @media (max-width: 480px) rules for .data-table and .mobile-label.
+    if data_tables and (".data-table" not in media_text or ".mobile-label" not in media_text):
         yield Finding(
             rule="EM001",
             message="HTML email contains data tables but is missing the @media (max-width: 480px) rules for .data-table and .mobile-label.",
@@ -1767,6 +1875,7 @@ def validate(
         findings.extend(_check_template_leakage(content))
         if require_frame:
             findings.extend(_check_branded_frame(content))
+        if require_frame or "email-container" in content or "data-table" in content:
             findings.extend(_check_mobile_friendly(content))
 
     return findings
