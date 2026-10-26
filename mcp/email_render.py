@@ -449,7 +449,11 @@ def _table_cell(
         else:
             text = slots.text(cell)
         content = _MOBILE_LABEL.format(extra=label_extra, label=label) + text
-    font_pad = "font-size:12px; line-height:17px;{weight} padding:8px 5px;" if compact else "font-size:15px; line-height:22px;{weight} padding:10px 8px;"
+    font_pad = (
+        "font-size:12px; line-height:17px;{weight} padding:8px 5px;"
+        if compact
+        else "font-size:15px; line-height:22px;{weight} padding:10px 8px;"
+    )
     return (
         f'          <td{classes}{align_attr} bgcolor="{bg}" style="background-color:{bg}; color:{color}; '
         f'{font_pad.format(weight=weight)} word-break:break-word;">{content}</td>\n'
@@ -474,7 +478,12 @@ def _block_table(block: Mapping[str, Any], slots: _Slots, top: int, where: str) 
     aligns = []
     for i, col in enumerate(columns):
         explicit_align = col.get("align")
-        if explicit_align is None and isinstance(block_aligns, Sequence) and not isinstance(block_aligns, str) and i < len(block_aligns):
+        if (
+            explicit_align is None
+            and isinstance(block_aligns, Sequence)
+            and not isinstance(block_aligns, str)
+            and i < len(block_aligns)
+        ):
             explicit_align = block_aligns[i]
         default_align = "left" if (i == 0 or _is_prose_column(rows, i)) else "right"
         align = _clean(explicit_align or default_align).lower()
@@ -483,7 +492,11 @@ def _block_table(block: Mapping[str, Any], slots: _Slots, top: int, where: str) 
         aligns.append(align)
     widths = _column_widths(columns, where)
     compact = len(columns) > 5
-    th_font_pad = "font-size:11px; line-height:15px; font-weight:700; padding:8px 5px;" if compact else "font-size:13px; line-height:18px; font-weight:700; padding:10px 8px;"
+    th_font_pad = (
+        "font-size:11px; line-height:15px; font-weight:700; padding:8px 5px;"
+        if compact
+        else "font-size:13px; line-height:18px; font-weight:700; padding:10px 8px;"
+    )
 
     head = "".join(
         f'          <th scope="col" align="{align}" width="{width}%" bgcolor="#EEF3FF" style="background-color:#EEF3FF; '
@@ -523,8 +536,7 @@ def _block_table(block: Mapping[str, Any], slots: _Slots, top: int, where: str) 
         f"      <thead>\n        <tr>\n{head}        </tr>\n"
         f'        <tr>\n          <td colspan="{len(columns)}" height="1" bgcolor="#D7DEEE" style="height:1px; line-height:1px; '
         'mso-line-height-rule:exactly; font-size:1px; background-color:#D7DEEE; padding:0;">&nbsp;</td>\n        </tr>\n'
-        f"      </thead>\n      <tbody>\n{body}      </tbody>\n    </table>\n  </td>\n</tr>\n"
-        + caption_row
+        f"      </thead>\n      <tbody>\n{body}      </tbody>\n    </table>\n  </td>\n</tr>\n" + caption_row
     )
 
 

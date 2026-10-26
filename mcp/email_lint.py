@@ -1132,7 +1132,7 @@ def _add_class_to_tag(open_tag: str, new_class: str) -> str:
         if new_class in classes:
             return open_tag
         updated = " ".join([*classes, new_class])
-        return open_tag[: m.start()] + f'class={m.group(1)}{updated}{m.group(1)}' + open_tag[m.end() :]
+        return open_tag[: m.start()] + f"class={m.group(1)}{updated}{m.group(1)}" + open_tag[m.end() :]
     return open_tag[:-1] + f' class="{new_class}">'
 
 
@@ -1146,7 +1146,7 @@ def _remove_class_from_tag(open_tag: str, target_class: str) -> str:
     if not classes:
         return open_tag[: m.start()].rstrip() + open_tag[m.end() :]
     updated = " ".join(classes)
-    return open_tag[: m.start()] + f'class={m.group(1)}{updated}{m.group(1)}' + open_tag[m.end() :]
+    return open_tag[: m.start()] + f"class={m.group(1)}{updated}{m.group(1)}" + open_tag[m.end() :]
 
 
 def _default_pct_widths(n: int) -> list[int]:
@@ -1207,7 +1207,9 @@ def _upgrade_single_data_table(table_html: str) -> str:
         scan_region = tbody_m.group(1) if tbody_m else inner_and_close[header_tr_m.end() :]
         for tr_m in _TR_BLOCK_RE.finditer(scan_region):
             tr_inner = tr_m.group(2)
-            if "colspan=" in tr_inner.lower() and ("height:1px" in tr_inner.replace(" ", "").lower() or 'height="1"' in tr_inner.lower()):
+            if "colspan=" in tr_inner.lower() and (
+                "height:1px" in tr_inner.replace(" ", "").lower() or 'height="1"' in tr_inner.lower()
+            ):
                 continue
             tds = list(_TD_BLOCK_RE.finditer(tr_inner))
             if not tds:
@@ -1231,7 +1233,11 @@ def _upgrade_single_data_table(table_html: str) -> str:
         if "table-layout" not in style_val.lower():
             sep = "" if style_val.endswith(";") else ";"
             style_val = f"{style_val}{sep} table-layout:fixed;"
-        open_tag = open_tag[: style_m.start()] + f'style={style_m.group(1)}{style_val}{style_m.group(1)}' + open_tag[style_m.end() :]
+        open_tag = (
+            open_tag[: style_m.start()]
+            + f"style={style_m.group(1)}{style_val}{style_m.group(1)}"
+            + open_tag[style_m.end() :]
+        )
     else:
         open_tag = open_tag[:-1] + ' style="width:100%; border-collapse:collapse; table-layout:fixed;">'
 
@@ -1254,7 +1260,7 @@ def _upgrade_single_data_table(table_html: str) -> str:
                 else:
                     sep = "" if stripped_st.endswith(";") else ";"
                     st_val = f"{stripped_st}{sep} word-break:break-word;"
-            th_open = th_open[: st_m.start()] + f'style={st_m.group(1)}{st_val}{st_m.group(1)}' + th_open[st_m.end() :]
+            th_open = th_open[: st_m.start()] + f"style={st_m.group(1)}{st_val}{st_m.group(1)}" + th_open[st_m.end() :]
         new_ths.append(f"{th_open}{th_inner}{th_close}")
     new_header_tr = f"{header_tr_m.group(1)}{''.join(new_ths)}{header_tr_m.group(3)}"
 
@@ -1263,7 +1269,9 @@ def _upgrade_single_data_table(table_html: str) -> str:
         tr_open, tr_inner, tr_close = tr_m.group(1), tr_m.group(2), tr_m.group(3)
         if _TH_BLOCK_RE.search(tr_inner):
             return tr_m.group(0)
-        if "colspan=" in tr_inner.lower() and ("height:1px" in tr_inner.replace(" ", "").lower() or 'height="1"' in tr_inner.lower()):
+        if "colspan=" in tr_inner.lower() and (
+            "height:1px" in tr_inner.replace(" ", "").lower() or 'height="1"' in tr_inner.lower()
+        ):
             return tr_m.group(0)
         # Skip rows that contain nested tables unless they already have mobile-label
         if "<table" in tr_inner.lower():
@@ -1290,7 +1298,9 @@ def _upgrade_single_data_table(table_html: str) -> str:
                     else:
                         sep = "" if stripped_st.endswith(";") else ";"
                         st_val = f"{stripped_st}{sep} word-break:break-word;"
-                td_open = td_open[: st_m.start()] + f'style={st_m.group(1)}{st_val}{st_m.group(1)}' + td_open[st_m.end() :]
+                td_open = (
+                    td_open[: st_m.start()] + f"style={st_m.group(1)}{st_val}{st_m.group(1)}" + td_open[st_m.end() :]
+                )
             if "mobile-label" not in td_inner:
                 label_span = (
                     '<span class="mobile-label" style="display:none; font-size:0; line-height:0; '
@@ -1317,6 +1327,7 @@ def _upgrade_single_data_table(table_html: str) -> str:
 
 def _upgrade_kpi_card_strips(content: str) -> str:
     """Add class='mobile-stack' to horizontal multi-card KPI rows (2-6 columns of bordered/div cards)."""
+
     def _check_tr(tr_m: re.Match[str]) -> str:
         tr_open, tr_inner, tr_close = tr_m.group(1), tr_m.group(2), tr_m.group(3)
         if "<th" in tr_inner.lower() or "<table" in tr_inner.lower() or "mobile-label" in tr_inner:
@@ -1364,7 +1375,7 @@ def ensure_mobile_friendly(content: str) -> str:
     # 1. Normalize fixed-width .email-container and MSO wrapper > 600px.
     def _fix_container_tag(m: re.Match[str]) -> str:
         tag = m.group(0)
-        tag = re.sub(r'\bwidth=(["\']?)(?:6\d\d)\1', r'width=\g<1>100%\g<1>', tag, flags=re.IGNORECASE)
+        tag = re.sub(r'\bwidth=(["\']?)(?:6\d\d)\1', r"width=\g<1>100%\g<1>", tag, flags=re.IGNORECASE)
         st_m = _STYLE_ATTR_FULL_RE.search(tag)
         if st_m:
             st_val = st_m.group(2)
@@ -1420,7 +1431,9 @@ def ensure_mobile_friendly(content: str) -> str:
         style_m = re.search(r"(<style\b[^>]*>)(.*?)(</style\s*>)", result, flags=re.IGNORECASE | re.DOTALL)
         if style_m:
             style_open, style_css, style_close = style_m.group(1), style_m.group(2), style_m.group(3)
-            missing_table_css = needs_table_media and (".data-table" not in style_css or ".mobile-label" not in style_css)
+            missing_table_css = needs_table_media and (
+                ".data-table" not in style_css or ".mobile-label" not in style_css
+            )
             missing_stack_css = needs_stack_media and (".mobile-stack" not in style_css)
             if missing_table_css or missing_stack_css:
                 new_style_css = (
@@ -1428,7 +1441,9 @@ def ensure_mobile_friendly(content: str) -> str:
                     f"{_MOBILE_MEDIA_FALLBACK_RULES}\n"
                     "        }\n      "
                 )
-                result = result[: style_m.start()] + f"{style_open}{new_style_css}{style_close}" + result[style_m.end() :]
+                result = (
+                    result[: style_m.start()] + f"{style_open}{new_style_css}{style_close}" + result[style_m.end() :]
+                )
         elif needs_table_media or needs_stack_media:
             media_block = (
                 "<style>\n        @media only screen and (max-width: 480px) {\n"
@@ -1485,7 +1500,9 @@ def _check_mobile_friendly(content: str) -> Iterator[Finding]:
     style_text = " ".join((el.text or "") for el in tree.iter() if _strip_ns(el.tag) == "style")
 
     # EM001: If the email has data tables (or a <style> block with @media and data tables), it must have @media rules for .data-table and .mobile-label.
-    if data_tables and ("@media" not in style_text or ".data-table" not in style_text or ".mobile-label" not in style_text):
+    if data_tables and (
+        "@media" not in style_text or ".data-table" not in style_text or ".mobile-label" not in style_text
+    ):
         yield Finding(
             rule="EM001",
             message="HTML email contains data tables but is missing the @media (max-width: 480px) rules for .data-table and .mobile-label.",
@@ -1506,8 +1523,13 @@ def _check_mobile_friendly(content: str) -> Iterator[Finding]:
                 tds = [c for c in tr if _strip_ns(c.tag) == "td"]
                 if not tds:
                     continue
-                if len(tds) == 1 and tds[0].get("colspan") and (
-                    tds[0].get("height") == "1" or "height:1px" in (tds[0].get("style") or "").replace(" ", "").lower()
+                if (
+                    len(tds) == 1
+                    and tds[0].get("colspan")
+                    and (
+                        tds[0].get("height") == "1"
+                        or "height:1px" in (tds[0].get("style") or "").replace(" ", "").lower()
+                    )
                 ):
                     continue
                 for td in tds:
@@ -1517,8 +1539,8 @@ def _check_mobile_friendly(content: str) -> Iterator[Finding]:
     if missing_label_cells > 0:
         yield Finding(
             rule="EM002",
-            message=f"Data table is missing <span class=\"mobile-label\"> in {missing_label_cells} <td> cell(s), breaking mobile card stacking.",
-            hint="Put <span class=\"mobile-label\" style=\"display:none; font-size:0; line-height:0; max-height:0; overflow:hidden;\">ColumnHeader</span> inside every data-table tbody <td> (or build the email with render_email).",
+            message=f'Data table is missing <span class="mobile-label"> in {missing_label_cells} <td> cell(s), breaking mobile card stacking.',
+            hint='Put <span class="mobile-label" style="display:none; font-size:0; line-height:0; max-height:0; overflow:hidden;">ColumnHeader</span> inside every data-table tbody <td> (or build the email with render_email).',
         )
 
 
