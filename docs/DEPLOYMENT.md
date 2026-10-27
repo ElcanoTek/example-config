@@ -56,7 +56,7 @@ Tick each with its evidence (command and result, date).
 ### Services
 - [ ] auth: password mode, `auth doctor` clean, `/healthz` ok
 - [ ] auth: apps registered (fleet, lens, explorer, pages) with back-channel logout
-- [ ] auth: first admin created, admin MFA policy on
+- [ ] auth: first admin created, admin MFA policy on, granted fleet, lens, explorer, pages
 - [ ] lens: central auth, `lens doctor` clean, fleet token minted
 - [ ] explorer: central auth, email bucket wired, `explorer doctor` clean
 - [ ] pages: both hosts, central auth, host split verified, agent token stored
