@@ -30,7 +30,7 @@ FROM = "Vendor Reports <reports@vendor.example>"
         ],
         ["amazonses.com; dmarc=pass header.from=vendor.example"],
         ["amazonses.com; spf=fail smtp.mailfrom=x.example; dkim=pass header.d=vendor.example"],
-        ["amazonses.com; spf=pass smtp.mailfrom=mail.vendor.example"],
+        ["amazonses.com; spf=pass smtp.mailfrom=vendor.example"],
     ],
 )
 def test_authenticated_from_domain(results):
@@ -52,6 +52,9 @@ def test_authenticated_from_domain(results):
         ["mx.attacker.example; dmarc=pass header.from=vendor.example"],
         # Not aligned: a lookalike domain.
         ["amazonses.com; dkim=pass header.d=notvendor.example"],
+        # Not aligned without dmarc=pass: a subdomain of the From domain (no public-suffix list).
+        ["amazonses.com; spf=pass smtp.mailfrom=mail.vendor.example"],
+        ["amazonses.com; dkim=pass header.d=mail.vendor.example; dmarc=none header.from=vendor.example"],
     ],
 )
 def test_unauthenticated_from_domain(results):
@@ -61,9 +64,12 @@ def test_unauthenticated_from_domain(results):
 # Real-shaped SES inbound headers (AWS SES receiving: amazonses.com authserv-id,
 # SPF properties as further ";" items, comments in parentheses).
 SES_SPF_ONLY = (
-    "amazonses.com; spf=pass (spf: domain of mail.vendor.example designates 192.0.2.1 as permitted sender) "
-    "client-ip=192.0.2.1; envelope-from=bounce@mail.vendor.example; helo=mail.vendor.example; "
+    "amazonses.com; spf=pass (spf: domain of vendor.example designates 192.0.2.1 as permitted sender) "
+    "client-ip=192.0.2.1; envelope-from=bounce@vendor.example; helo=mail.vendor.example; "
     "dkim=none; dmarc=none header.from=vendor.example;"
+)
+SES_SPF_ONLY_SUBDOMAIN = SES_SPF_ONLY.replace("bounce@vendor.example", "bounce@mail.vendor.example").replace(
+    "domain of vendor.example", "domain of mail.vendor.example"
 )
 SES_FULL = (
     "amazonses.com;\r\n spf=pass (spf: domain of vendor.example designates 192.0.2.1 as permitted sender) "
@@ -75,6 +81,8 @@ SES_FULL = (
 def test_real_shaped_ses_headers_authenticate():
     assert inbox.authenticated_sender_domain([SES_SPF_ONLY], FROM) == "vendor.example"
     assert inbox.authenticated_sender_domain([SES_FULL], FROM) == "vendor.example"
+    # SPF for a subdomain envelope-from with dmarc=none is not exact alignment.
+    assert inbox.authenticated_sender_domain([SES_SPF_ONLY_SUBDOMAIN], FROM) is None
     # A comment that looks like a verdict is not one.
     fake = "amazonses.com; spf=fail (dmarc=pass header.from=vendor.example) envelope-from=x@attacker.example;"
     assert inbox.authenticated_sender_domain([fake], FROM) is None
@@ -93,9 +101,10 @@ def test_spf_dkim_alignment_is_strict_and_siblings_need_dmarc():
         )
         == "reports.vendor.example"
     )
-    # A subdomain of the From domain aligns; a parent never does on SPF/DKIM alone
-    # (it could be a public / shared-hosting suffix): that needs dmarc=pass.
-    assert inbox._aligned("bounce.vendor.example", "vendor.example")
+    # The SPF/DKIM fallback is exact-domain only: neither a subdomain nor a parent
+    # aligns on its own (either could be a public / shared-hosting suffix tenant).
+    assert inbox._aligned("vendor.example", "vendor.example")
+    assert not inbox._aligned("bounce.vendor.example", "vendor.example")
     assert not inbox._aligned("vendor.example", "reports.vendor.example")
     # Never across a public suffix, a lookalike, or a sibling.
     assert not inbox._aligned("evil.co.id", "vendor.co.id")
@@ -113,15 +122,15 @@ def test_sender_filter_is_a_domain_or_a_full_mailbox():
         return {"from": f"Reports <{addr}>", "authenticated_domain": domain}
 
     match = inbox.sender_filter_matches
-    assert match("vendor.example", headers("reports@vendor.example"))
-    assert match("vendor.example", headers("do_not_reply.reporting@mail.vendor.example"))
-    assert match("@vendor.example", headers("reports@vendor.example"))
-    assert match("reports@vendor.example", headers("Reports@Vendor.example"))
-    assert match("vendor.onmicrosoft.com,vendor.example", headers("reporting@vendor.onmicrosoft.com"))
-    assert not match("vendor.example", headers("reports@notvendor.example"))
-    assert not match("vendor.example", headers('"vendor.example"@attacker.example'))
-    assert not match("reports@vendor.example", headers("other@vendor.example"))
-    assert not match("vendor", headers("reports@vendor.example"))  # a bare name is not a domain
+    assert match("ssp.example", headers("reports@ssp.example"))
+    assert match("ssp.example", headers("do_not_reply.reporting@mail.ssp.example"))
+    assert match("@ssp.example", headers("reports@ssp.example"))
+    assert match("reports@ssp.example", headers("Reports@SSP.example"))
+    assert match("exchange.tenants.example,exchange.example", headers("reporting@exchange.tenants.example"))
+    assert not match("ssp.example", headers("reports@notssp.example"))
+    assert not match("ssp.example", headers('"ssp.example"@attacker.example'))
+    assert not match("reports@ssp.example", headers("other@ssp.example"))
+    assert not match("ssp", headers("reports@ssp.example"))  # a bare name is not a domain
 
 
 def test_httpx_request_lines_never_carry_a_query_value():
@@ -144,9 +153,9 @@ def test_httpx_request_lines_never_carry_a_query_value():
         httpx_logger.setLevel(old_level)
     text = stream.getvalue()
     assert "SECRET1" not in text and "SECRET2" not in text
-    assert "https://b/x?upn=***&ticket=***&page=***" in text
+    assert "https://b/x?***" in text and "upn" not in text
     # Idempotent over already-masked values.
-    assert inbox.redact_url_queries("https://b/x?apiKey=***&page=1") == "https://b/x?apiKey=***&page=***"
+    assert inbox.redact_url_queries("https://b/x?***") == "https://b/x?***"
 
 
 def test_a_quoted_mail_from_cannot_inject_a_verdict():
@@ -162,13 +171,13 @@ def test_a_quoted_mail_from_cannot_inject_a_verdict():
 
 
 def test_a_display_name_cannot_carry_the_vendor_domain():
-    """Authenticated mail from attacker.example named "Vendor vendor.example" is not Vendor's."""
-    spoof = {"from": '"Vendor vendor.example" <reports@attacker.example>', "authenticated_domain": "attacker.example"}
+    """Authenticated mail from attacker.example named "ExampleSSP ssp.example" is not ExampleSSP's."""
+    spoof = {"from": '"ExampleSSP ssp.example" <reports@attacker.example>', "authenticated_domain": "attacker.example"}
     assert inbox.sender_authenticated(spoof)
-    assert not inbox.sender_filter_matches("vendor.example", spoof)
+    assert not inbox.sender_filter_matches("ssp.example", spoof)
     # The authenticated domain must be the From mailbox's own.
-    mismatched = {"from": "reports@vendor.example", "authenticated_domain": "attacker.example"}
-    assert not inbox.sender_filter_matches("vendor.example", mismatched)
+    mismatched = {"from": "reports@ssp.example", "authenticated_domain": "attacker.example"}
+    assert not inbox.sender_filter_matches("ssp.example", mismatched)
 
 
 def test_sender_filter_needs_authentication(monkeypatch):
@@ -295,7 +304,7 @@ def test_url_query_strings_are_redacted_from_logs(caplog):
     with caplog.at_level(logging.INFO, logger=inbox.logger.name):
         inbox.logger.info("downloading %s", url)
     assert "deadbeef" not in caplog.text and "AKIAEXAMPLE" not in caplog.text
-    assert "https://bucket.s3.amazonaws.com/report.csv?X-Amz-Signature=***&X-Amz-Credential=***" in caplog.text
+    assert "https://bucket.s3.amazonaws.com/report.csv?***" in caplog.text
 
 
 def test_default_debug_log_is_private(monkeypatch, tmp_path):
@@ -308,6 +317,25 @@ def test_default_debug_log_is_private(monkeypatch, tmp_path):
     inbox._open_private_log(path).close()
     assert stat.S_IMODE(os.stat(os.path.dirname(path)).st_mode) == 0o700
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+
+
+def test_debug_log_pre_created_by_another_user_is_refused(monkeypatch, tmp_path):
+    log = tmp_path / "debug.log"
+    log.write_text("planted\n")
+    owner = os.stat(log).st_uid
+    # The file is someone else's from this process's point of view.
+    monkeypatch.setattr(inbox.os, "geteuid", lambda: owner + 1)
+    monkeypatch.setattr(inbox.os, "getuid", lambda: owner)  # the directory check still passes
+    with pytest.raises(OSError, match="another user"):
+        inbox._open_private_log(str(log))
+
+
+def test_debug_log_with_other_hard_links_is_refused(tmp_path):
+    other = tmp_path / "other.txt"
+    other.write_text("x")
+    os.link(other, tmp_path / "debug.log")
+    with pytest.raises(OSError, match="hard links"):
+        inbox._open_private_log(str(tmp_path / "debug.log"))
 
 
 def test_debug_log_refuses_a_planted_symlink_dir(monkeypatch, tmp_path):
@@ -347,18 +375,22 @@ def test_operator_trusted_legacy_prefix_hook(monkeypatch):
 
 
 def test_shared_hosting_suffixes_never_align_tenants():
-    """vendor.onmicrosoft.com and evil.onmicrosoft.com are different senders."""
-    ix = "Reports <reporting@vendor.onmicrosoft.com>"
-    forged = "amazonses.com; spf=pass smtp.mailfrom=x@evil.onmicrosoft.com; dkim=pass header.d=onmicrosoft.com"
+    """exchange.tenants.example and evil.tenants.example are different senders."""
+    ix = "Reports <reporting@exchange.tenants.example>"
+    forged = "amazonses.com; spf=pass smtp.mailfrom=x@evil.tenants.example; dkim=pass header.d=tenants.example"
     assert inbox.authenticated_sender_domain([forged], ix) is None
-    assert not inbox._aligned("evil.onmicrosoft.com", "vendor.onmicrosoft.com")
-    genuine = "amazonses.com; dkim=pass header.d=vendor.onmicrosoft.com; dmarc=none"
-    assert inbox.authenticated_sender_domain([genuine], ix) == "vendor.onmicrosoft.com"
+    assert not inbox._aligned("evil.tenants.example", "exchange.tenants.example")
+    genuine = "amazonses.com; dkim=pass header.d=exchange.tenants.example; dmarc=none"
+    assert inbox.authenticated_sender_domain([genuine], ix) == "exchange.tenants.example"
 
 
 def test_redaction_masks_keyless_components_and_fragments():
     assert inbox.redact_url_queries("https://b/x?eyJhbGciOi") == "https://b/x?***"
-    assert inbox.redact_url_queries("https://b/x?a=1&eyJ#token=z") == "https://b/x?a=***&***#token=***"
+    assert inbox.redact_url_queries("https://b/x?a=1&eyJ#token=z") == "https://b/x?***#***"
+    # A credential used as the parameter NAME (empty value) is not kept either.
+    assert inbox.redact_url_queries("https://b/x?eyJhbGciOiJIUzI1NiJ9.e30.sig=") == "https://b/x?***"
+    # An apostrophe inside the query does not end the redaction.
+    assert inbox.redact_url_queries("https://b/x?t=ab'cd") == "https://b/x?***"
     assert inbox.redact_url_queries("https://b/x#frag") == "https://b/x#***"
     assert inbox.redact_url_queries("see https://b/x now") == "see https://b/x now"
 
@@ -367,7 +399,7 @@ def test_redaction_masks_keyless_components_and_fragments():
 async def test_fuzzy_sender_keywords_never_match_the_display_name(monkeypatch):
     raw = (
         b"Authentication-Results: amazonses.com; dmarc=pass header.from=evil.example\r\n"
-        b"From: Vendor <attacker@evil.example>\r\nTo: inbox@example.com\r\nSubject: Daily\r\n"
+        b"From: ExampleSSP <attacker@evil.example>\r\nTo: inbox@example.com\r\nSubject: Daily\r\n"
         b"Date: Mon, 26 Oct 2026 10:00:00 +0000\r\n\r\nbody\r\n"
     )
     monkeypatch.setattr(inbox, "session", _FakeSession(_FakeS3({"emails/spoof": raw})))
@@ -375,7 +407,7 @@ async def test_fuzzy_sender_keywords_never_match_the_display_name(monkeypatch):
     monkeypatch.setattr(inbox, "S3_PREFIX", "emails/")
     monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "")
     result = await inbox.search_emails_fuzzy(
-        keywords=["vendor"], search_fields=["sender"], date_from="2026-10-26", date_to="2026-10-26"
+        keywords=["examplessp"], search_fields=["sender"], date_from="2026-10-26", date_to="2026-10-26"
     )
     assert result["emails"] == [], result
 
@@ -410,8 +442,11 @@ def test_url_userinfo_is_masked_with_or_without_a_query():
         "GET https://***@example.com/report.csv done"
     )
     assert inbox.redact_url_queries("https://user:pa55@example.com/r.csv?sig=1#t=2") == (
-        "https://***@example.com/r.csv?sig=***#t=***"
+        "https://***@example.com/r.csv?***#***"
     )
+    # Every RFC 3986 userinfo character, apostrophe and sub-delims included.
+    for userinfo in ("user:pa'ss", "u(s)er:p*a+s,s;=!$&~", "us%40er:p.a_s-s"):
+        assert inbox.redact_url_queries(f"https://{userinfo}@example.com/x") == "https://***@example.com/x", userinfo
     assert inbox.redact_url_queries("mail me at reports@example.com") == "mail me at reports@example.com"
 
 
@@ -421,9 +456,10 @@ def test_a_dmarc_failure_is_final():
     for verdict in ("quarantine", "reject", "permerror", "temperror"):
         text = f"amazonses.com; dkim=pass header.d=vendor.example; dmarc={verdict} header.from=vendor.example"
         assert inbox.authenticated_sender_domain([text], FROM) is None, verdict
-    for header_d in ("vendor.example", "mail.vendor.example"):
-        ok = f"amazonses.com; dkim=pass header.d={header_d}; dmarc=none header.from=vendor.example"
-        assert inbox.authenticated_sender_domain([ok], FROM) == "vendor.example"
+    ok = "amazonses.com; dkim=pass header.d=vendor.example; dmarc=none header.from=vendor.example"
+    assert inbox.authenticated_sender_domain([ok], FROM) == "vendor.example"
+    sub = "amazonses.com; dkim=pass header.d=mail.vendor.example; dmarc=none header.from=vendor.example"
+    assert inbox.authenticated_sender_domain([sub], FROM) is None
 
 
 def test_a_debug_log_parent_swapped_for_a_symlink_is_refused(tmp_path):
@@ -478,3 +514,244 @@ async def test_bounded_searches_list_trusted_legacy_prefixes_by_date_header(monk
     )
     result = await inbox.search_emails(date_from="2026-10-26", date_to="2026-10-26")
     assert [e["s3_key"] for e in result["emails"]] == ["emails/legacy/mailbux-1"], result
+
+
+def test_fallback_requires_exact_domain_across_shared_suffixes():
+    """pages.example-style shared suffixes: a tenant subdomain must not vouch for the parent."""
+    sender = "Reports <reports@pages.example>"
+    for verdict in ("dmarc=none", ""):
+        sub_dkim = f"amazonses.com; dkim=pass header.d=attacker.pages.example; {verdict}".rstrip("; ")
+        sub_spf = f"amazonses.com; spf=pass smtp.mailfrom=x@attacker.pages.example; {verdict}".rstrip("; ")
+        assert inbox.authenticated_sender_domain([sub_dkim], sender) is None
+        assert inbox.authenticated_sender_domain([sub_spf], sender) is None
+        exact = f"amazonses.com; dkim=pass header.d=pages.example; {verdict}".rstrip("; ")
+        assert inbox.authenticated_sender_domain([exact], sender) == "pages.example"
+        exact_spf = f"amazonses.com; spf=pass smtp.mailfrom=x@pages.example; {verdict}".rstrip("; ")
+        assert inbox.authenticated_sender_domain([exact_spf], sender) == "pages.example"
+    # Relaxed alignment is still honoured when the receiver itself says dmarc=pass.
+    relaxed = "amazonses.com; dkim=pass header.d=bounce.vendor.example; dmarc=pass header.from=vendor.example"
+    assert inbox.authenticated_sender_domain([relaxed], "r <r@vendor.example>") == "vendor.example"
+
+
+class _DatedS3(_FakeS3):
+    """Lists only keys under the requested prefix, each with its own LastModified."""
+
+    def __init__(self, objects: dict[str, tuple[bytes, datetime]]) -> None:
+        super().__init__({k: v[0] for k, v in objects.items()})
+        self.modified = {k: v[1] for k, v in objects.items()}
+        self.listed: list[str] = []
+
+    def get_paginator(self, _name):
+        outer = self
+
+        class _Paginator:
+            def paginate(self, **kwargs):
+                outer.listed.append(kwargs["Prefix"])
+
+                async def pages():
+                    keys = [k for k in outer.objects if k.startswith(kwargs["Prefix"])]
+                    yield {
+                        "Contents": [
+                            {"Key": k, "LastModified": outer.modified[k], "Size": len(outer.objects[k])} for k in keys
+                        ]
+                    }
+
+                return pages()
+
+        return _Paginator()
+
+
+def _dated_mail(date_header: str, subject: str, auth: str | None) -> bytes:
+    lines = [f"Authentication-Results: {auth}"] if auth else []
+    lines += [f"From: {FROM}", "To: inbox@example.com", f"Subject: {subject}", f"Date: {date_header}"]
+    return ("\r\n".join(lines) + "\r\n\r\nbody\r\n").encode()
+
+
+def _newer_legacy_objects():
+    authed = "amazonses.com; dmarc=pass header.from=vendor.example"
+    return {
+        # SES-delivered, in the day partition, received 08:00.
+        "emails/2026/10/26/ses-1": (
+            _dated_mail("Mon, 26 Oct 2026 08:00:00 +0000", "Partition report", authed),
+            datetime(2026, 10, 26, 8, tzinfo=UTC),
+        ),
+        # Imported legacy mail sent 20:00 the same day; LastModified is the import time.
+        "emails/legacy/imp-1": (
+            _dated_mail("Mon, 26 Oct 2026 20:00:00 +0000", "Legacy report", None),
+            datetime(2026, 1, 1, tzinfo=UTC),
+        ),
+    }
+
+
+def _partition_setup(monkeypatch, s3):
+    monkeypatch.setattr(inbox, "session", _FakeSession(s3))
+    monkeypatch.setattr(inbox, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(inbox, "S3_PREFIX", "emails/")
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "emails/%Y/%m/%d/")
+    monkeypatch.setattr(inbox, "EMAIL_TRUSTED_LEGACY_PREFIXES", ("emails/legacy/",))
+
+
+@pytest.mark.asyncio
+async def test_a_full_partition_does_not_hide_a_newer_legacy_message(monkeypatch):
+    s3 = _DatedS3(_newer_legacy_objects())
+    _partition_setup(monkeypatch, s3)
+    result = await inbox.search_emails(
+        sender_contains="vendor.example", date_from="2026-10-26", date_to="2026-10-26", max_results=1
+    )
+    assert "emails/legacy/" in s3.listed
+    assert [e["s3_key"] for e in result["emails"]] == ["emails/legacy/imp-1"], result
+
+    fuzzy = await inbox.search_emails_fuzzy(
+        keywords=["report"], search_fields=["subject"], date_from="2026-10-26", date_to="2026-10-26", max_results=1
+    )
+    assert [e["s3_key"] for e in fuzzy["emails"]] == ["emails/legacy/imp-1"], fuzzy
+
+
+@pytest.mark.asyncio
+async def test_find_latest_report_returns_the_newer_legacy_message(monkeypatch):
+    _partition_setup(monkeypatch, _DatedS3(_newer_legacy_objects()))
+    result = await inbox.find_latest_report(
+        sender_contains="vendor.example", on_or_before="2026-10-26", lookback_days=1, require_payload=False
+    )
+    assert [e["s3_key"] for e in result["emails"]] == ["emails/legacy/imp-1"], result
+
+
+@pytest.mark.asyncio
+async def test_an_older_legacy_message_does_not_displace_the_partition_match(monkeypatch):
+    objects = _newer_legacy_objects()
+    objects["emails/legacy/imp-1"] = (
+        _dated_mail("Mon, 26 Oct 2026 01:00:00 +0000", "Legacy report", None),
+        datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    _partition_setup(monkeypatch, _DatedS3(objects))
+    result = await inbox.search_emails(
+        sender_contains="vendor.example", date_from="2026-10-26", date_to="2026-10-26", max_results=1
+    )
+    assert [e["s3_key"] for e in result["emails"]] == ["emails/2026/10/26/ses-1"], result
+
+
+@pytest.mark.parametrize(
+    "date_header",
+    ["Mon, 26 Oct 99999999999 10:00:00 +0000", "Mon, 26 Oct 2026 99:99:99 +9999", "", "garbage", "26 Oct"],
+)
+def test_unreadable_legacy_dates_are_skipped_not_fatal(monkeypatch, date_header):
+    monkeypatch.setattr(inbox, "EMAIL_TRUSTED_LEGACY_PREFIXES", ("emails/legacy/",))
+    window = (datetime(2026, 10, 26, tzinfo=UTC), datetime(2026, 10, 26, 23, 59, tzinfo=UTC))
+    assert inbox._message_sent_at(date_header) is None
+    assert inbox._legacy_outside_window("emails/legacy/x", date_header, *window) is True
+
+
+def test_message_sent_at_survives_every_parser_error(monkeypatch):
+    for exc in (OverflowError, ValueError, TypeError, IndexError):
+
+        def boom(_value, exc=exc):
+            raise exc("bad date")
+
+        monkeypatch.setattr(inbox.email.utils, "parsedate_to_datetime", boom)
+        assert inbox._message_sent_at("Mon, 26 Oct 2026 10:00:00 +0000") is None
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_message_with_an_overflowing_date_does_not_fail_the_search(monkeypatch):
+    objects = _newer_legacy_objects()
+    objects["emails/legacy/imp-2"] = (
+        _dated_mail("Mon, 26 Oct 99999999999 10:00:00 +0000", "Broken legacy", None),
+        datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    _partition_setup(monkeypatch, _DatedS3(objects))
+    result = await inbox.search_emails(sender_contains="vendor.example", date_from="2026-10-26", date_to="2026-10-26")
+    assert result["status"] == "success", result
+    assert "emails/legacy/imp-2" not in [e["s3_key"] for e in result["emails"]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("keyword", "sender", "expected"),
+    [
+        ("ssp.example", "reports@ssp.example.evil.example", False),
+        ("ssp.example", "reports@notssp.example", False),
+        ("ssp", "reports@ssp.example", False),
+        ("ssp.example", "reports@ssp.example", True),
+        ("ssp.example", "reports@mail.ssp.example", True),
+        ("reports@ssp.example", "reports@ssp.example", True),
+        ("reports@ssp.example", "other@ssp.example", False),
+    ],
+)
+async def test_fuzzy_sender_keywords_match_on_label_boundaries(monkeypatch, keyword, sender, expected):
+    domain = sender.rpartition("@")[2]
+    raw = (
+        f"Authentication-Results: amazonses.com; dmarc=pass header.from={domain}\r\n"
+        f"From: Reports <{sender}>\r\nTo: inbox@example.com\r\nSubject: Daily\r\n"
+        "Date: Mon, 26 Oct 2026 10:00:00 +0000\r\n\r\nbody\r\n"
+    ).encode()
+    monkeypatch.setattr(inbox, "session", _FakeSession(_FakeS3({"emails/m": raw})))
+    monkeypatch.setattr(inbox, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(inbox, "S3_PREFIX", "emails/")
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "")
+    result = await inbox.search_emails_fuzzy(
+        keywords=[keyword], search_fields=["sender"], date_from="2026-10-26", date_to="2026-10-26"
+    )
+    assert bool(result["emails"]) is expected, result
+
+
+@pytest.mark.asyncio
+async def test_fuzzy_subject_keywords_still_match_substrings(monkeypatch):
+    raw = (
+        b"Authentication-Results: amazonses.com; dmarc=pass header.from=ssp.example\r\n"
+        b"From: Reports <reports@ssp.example>\r\nTo: inbox@example.com\r\nSubject: Weekly Streaming Summary\r\n"
+        b"Date: Mon, 26 Oct 2026 10:00:00 +0000\r\n\r\nbody\r\n"
+    )
+    monkeypatch.setattr(inbox, "session", _FakeSession(_FakeS3({"emails/m": raw})))
+    monkeypatch.setattr(inbox, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(inbox, "S3_PREFIX", "emails/")
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "")
+    result = await inbox.search_emails_fuzzy(
+        keywords=["stream"], search_fields=["subject", "sender"], date_from="2026-10-26", date_to="2026-10-26"
+    )
+    assert [e["s3_key"] for e in result["emails"]] == ["emails/m"], result
+
+
+def test_nested_legacy_prefixes_are_not_listed_twice(monkeypatch):
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "emails/%Y/%m/%d/")
+    monkeypatch.setattr(
+        inbox,
+        "EMAIL_TRUSTED_LEGACY_PREFIXES",
+        (
+            "emails/2026/10/26/mailbux-",  # inside today's partition: already listed by it
+            "emails/2024/01/01/mailbux-",  # inside the date tree, outside the window: irrelevant
+            "emails/legacy/",  # outside the date tree: listed
+        ),
+    )
+    prefixes = inbox.build_search_prefixes(
+        datetime(2026, 10, 25, tzinfo=UTC), datetime(2026, 10, 26, 23, 59, tzinfo=UTC)
+    )
+    assert prefixes == ["emails/2026/10/26/", "emails/2026/10/25/", "emails/legacy/"]
+
+
+@pytest.mark.asyncio
+async def test_overlapping_prefixes_never_return_an_object_twice(monkeypatch):
+    authed = "amazonses.com; dmarc=pass header.from=vendor.example"
+    objects = {
+        "emails/2026/10/26/mailbux-1": (
+            _dated_mail("Mon, 26 Oct 2026 08:00:00 +0000", "Nested legacy report", authed),
+            datetime(2026, 10, 26, 8, tzinfo=UTC),
+        ),
+        "emails/legacy/imp-1": (
+            _dated_mail("Mon, 26 Oct 2026 07:00:00 +0000", "Legacy report", None),
+            datetime(2026, 1, 1, tzinfo=UTC),
+        ),
+    }
+    s3 = _DatedS3(objects)
+    _partition_setup(monkeypatch, s3)
+    # An operator list that also overlaps itself (a parent and a child prefix).
+    monkeypatch.setattr(
+        inbox, "EMAIL_TRUSTED_LEGACY_PREFIXES", ("emails/2026/10/26/mailbux-", "emails/legacy/", "emails/legacy/imp")
+    )
+    result = await inbox.search_emails(date_from="2026-10-26", date_to="2026-10-26", max_results=10)
+    keys = [e["s3_key"] for e in result["emails"]]
+    assert sorted(keys) == ["emails/2026/10/26/mailbux-1", "emails/legacy/imp-1"], result
+    assert "emails/2026/10/26/mailbux-" not in s3.listed
+    fuzzy = await inbox.search_emails_fuzzy(
+        keywords=["report"], search_fields=["subject"], date_from="2026-10-26", date_to="2026-10-26"
+    )
+    assert sorted(e["s3_key"] for e in fuzzy["emails"]) == keys and len(fuzzy["emails"]) == 2

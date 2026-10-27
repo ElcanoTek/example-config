@@ -73,9 +73,10 @@ root:root`, written by production-support's email provisioning):
   `EMAIL_AWS_SECRET_ACCESS_KEY` (optional `EMAIL_AWS_REGION`).
   Searches return only mail SES inbound authenticated, read from its own
   `Authentication-Results`. That means a DMARC pass, or (only when DMARC is
-  absent or `none`; a DMARC fail is final) an SPF / DKIM pass for the exact From
-  domain or a subdomain of it; a parent or sibling domain counts only through
-  SES's own `dmarc=pass`. `sender_contains` takes the sender's DOMAIN (matching it
+  absent or `none`; a DMARC fail is final) an SPF / DKIM pass for exactly the From
+  domain; a subdomain, parent or sibling domain counts only through SES's own
+  `dmarc=pass`, so a vendor without DMARC that signs from a subdomain is
+  skipped unless `EMAIL_SENDER_AUTH=off`. `sender_contains` takes the sender's DOMAIN (matching it
   and its subdomains on label boundaries) or a full address, several
   comma-separated, and matches the authenticated mailbox, never the display
   name (fuzzy sender keywords too): a bare vendor name matches nothing. Each result carries
@@ -92,8 +93,10 @@ root:root`, written by production-support's email provisioning):
   `EMAIL_LINK_MAX_COUNT` (20) and `EMAIL_LINK_BATCH_MAX_BYTES` (200 MB) bound
   `download_all_link_attachments`, which fetches 3 links at a time. The debug
   log defaults to a private per-user file (`<tmp>/ses_s3_email-<uid>/debug.log`,
-  0600), and URL userinfo, every query value (keyless components and
-  `#fragment`s included) and credentials are redacted from log lines.
+  0600; refused if another user owns it or it has extra hard links), and URL
+  userinfo, the whole query string and the whole `#fragment` are redacted from
+  log lines. Live fetch, HTML chase and archive fallback share one byte budget
+  per link.
 - Outbound: `SES_OUTBOUND_AWS_ACCESS_KEY_ID`,
   `SES_OUTBOUND_AWS_SECRET_ACCESS_KEY`, `SES_OUTBOUND_AWS_REGION`,
   `SES_OUTBOUND_FROM_EMAIL`, `SES_OUTBOUND_REPLY_TO`,

@@ -239,6 +239,28 @@ def test_a_root_already_a_symlink_at_first_lazy_pin_is_refused(tree, tmp_path):
     assert not (tree["outside"] / "new.txt").exists()
 
 
+@pytest.mark.parametrize("suffix", ["/", "//", "/."])
+def test_a_root_configured_with_a_trailing_separator_swapped_before_first_use_is_refused(tree, tmp_path, suffix):
+    """os.open("root/", O_NOFOLLOW) follows a final symlink on Linux: the root's
+    last component must be opened relative to its parent, trailing "/" or not."""
+    workspace = tmp_path / f"workspace-slash-{len(suffix)}-{suffix.endswith('.')}"
+    workspace.symlink_to(tree["outside"], target_is_directory=True)
+    configured = str(workspace) + suffix
+    assert safe_open.pin_roots([configured]) == []
+    with pytest.raises(safe_open.UnsafePathError):
+        safe_open.read_bytes(str(workspace / "a.txt"), [configured])
+    with pytest.raises(safe_open.UnsafePathError):
+        safe_open.write_new_or_truncate(str(workspace / "new.txt"), [configured], b"x")
+    assert not (tree["outside"] / "new.txt").exists()
+
+
+def test_a_real_root_with_a_trailing_separator_still_works(tree):
+    configured = str(tree["root"]) + "/"
+    assert safe_open.pin_roots([configured]) == [os.path.realpath(tree["root"])]
+    data, _ = safe_open.read_bytes(str(tree["root"] / "sub" / "a.txt"), [configured])
+    assert data == b"inside"
+
+
 def test_a_symlinked_root_pinned_at_startup_still_works(tree, tmp_path):
     """Operator config such as macOS /tmp: pinned at server start, it is trusted."""
     operator_tmp = tmp_path / "operator-tmp"

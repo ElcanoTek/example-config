@@ -333,3 +333,152 @@ async def test_a_batch_has_one_outer_deadline(dest, monkeypatch):
     assert asyncio.get_running_loop().time() - started < 3.5  # not 6 links x 120 s
     assert all(t <= 2 for t in timeouts)
     assert any("Not started" in e["error"] for e in result["errors"])
+
+
+async def test_the_batch_deadline_starts_before_link_extraction(dest, monkeypatch):
+    links = [{"url": f"https://reports.example.com/{i}.csv"} for i in range(3)]
+
+    async def slow_extract(*_a, **_k):
+        await asyncio.sleep(1.5)
+        return {"status": "success", "links": links, "subject": "s", "total_links_found": len(links)}
+
+    called: list[str] = []
+
+    async def one(url, output_dir=None, timeout_seconds=120):
+        called.append(url)
+        return {"status": "error", "error": "x"}
+
+    monkeypatch.setattr(ses_s3_email, "extract_download_links", slow_extract)
+    monkeypatch.setattr(ses_s3_email, "download_link_attachment", one)
+    monkeypatch.setattr(ses_s3_email, "LINK_DOWNLOAD_MAX_SECONDS", 2)
+    result = await ses_s3_email.download_all_link_attachments("emails/k", output_dir=str(dest))
+    assert called == []  # under 1 s left after extraction: nothing starts
+    assert all("Not started" in e["error"] for e in result["errors"])
+
+
+async def test_link_extraction_itself_is_bounded_by_the_batch_deadline(dest, monkeypatch):
+    async def hung_extract(*_a, **_k):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(ses_s3_email, "extract_download_links", hung_extract)
+    monkeypatch.setattr(ses_s3_email, "LINK_DOWNLOAD_MAX_SECONDS", 1)
+    started = asyncio.get_running_loop().time()
+    result = await ses_s3_email.download_all_link_attachments("emails/k", output_dir=str(dest))
+    assert asyncio.get_running_loop().time() - started < 2
+    assert result["status"] == "error" and "deadline" in result["error"]
+
+
+@respx.mock
+async def test_no_write_starts_after_the_batch_deadline(dest):
+    respx.get(URL).mock(return_value=httpx.Response(200, content=b"a,b\n1,2\n", headers={"content-type": "text/csv"}))
+    token = ses_s3_email._BATCH_DEADLINE.set(asyncio.get_running_loop().time() - 1)
+    try:
+        result = await ses_s3_email.download_link_attachment(url=URL, output_dir=str(dest))
+    finally:
+        ses_s3_email._BATCH_DEADLINE.reset(token)
+    assert result["status"] == "error" and "deadline" in result["error"], result
+    assert list(dest.iterdir()) == []  # not even an empty reserved file
+
+
+async def test_no_archive_write_starts_after_the_batch_deadline(dest, monkeypatch):
+    monkeypatch.setattr(ses_s3_email, "session", _archive_session(_ChunkedBody(b"a,b\n1,2\n"), length=8))
+    token = ses_s3_email._BATCH_DEADLINE.set(asyncio.get_running_loop().time() - 1)
+    try:
+        result = await ORIGINAL_ARCHIVE(URL, dest, read_timeout=5)
+    finally:
+        ses_s3_email._BATCH_DEADLINE.reset(token)
+    assert result is None
+    assert list(dest.iterdir()) == []
+
+
+@respx.mock
+async def test_a_write_already_running_at_the_batch_deadline_is_awaited(dest, monkeypatch):
+    respx.get(URL).mock(return_value=httpx.Response(200, content=b"a,b\n1,2\n", headers={"content-type": "text/csv"}))
+    real_write = ses_s3_email.write_reserved
+
+    async def slow_write(reserved, data):
+        # The deadline passes while this write is already running.
+        ses_s3_email._BATCH_DEADLINE.set(asyncio.get_running_loop().time() - 1)
+        await asyncio.sleep(0.1)
+        await real_write(reserved, data)
+
+    monkeypatch.setattr(ses_s3_email, "write_reserved", slow_write)
+    token = ses_s3_email._BATCH_DEADLINE.set(asyncio.get_running_loop().time() + 60)
+    try:
+        result = await ses_s3_email.download_link_attachment(url=URL, output_dir=str(dest))
+    finally:
+        ses_s3_email._BATCH_DEADLINE.reset(token)
+    assert result["status"] == "success", result
+    with open(result["saved_to"], "rb") as fh:
+        assert fh.read() == b"a,b\n1,2\n"
+
+
+def _count_charged(monkeypatch) -> list[int]:
+    charged: list[int] = []
+    real = ses_s3_email._charge_batch_budget
+
+    def counting(n):
+        charged.append(n)
+        real(n)
+
+    monkeypatch.setattr(ses_s3_email, "_charge_batch_budget", counting)
+    return charged
+
+
+@respx.mock
+async def test_live_and_chase_share_one_byte_cap(dest, monkeypatch):
+    """The HTML page and the chased file together may not exceed EMAIL_LINK_MAX_BYTES (1000 here)."""
+    charged = _count_charged(monkeypatch)
+    tracker = "https://click.example.com/ls/click?upn=abc"
+    page = b'<html><a href="https://reports.example.com/report.csv">Download</a></html>'
+    page += b" " * (600 - len(page))
+
+    async def body():
+        for _ in range(6):
+            yield b"x" * 100
+
+    respx.get(tracker).mock(return_value=httpx.Response(200, content=page, headers={"content-type": "text/html"}))
+    respx.get(URL).mock(return_value=httpx.Response(200, content=body()))
+    result = await ses_s3_email.download_link_attachment(url=tracker, output_dir=str(dest))
+    assert result["status"] == "error" and "cap" in result["error"], result
+    assert sum(charged) <= 1000 + 100  # refused on the chunk that crossed the shared cap
+    assert list(dest.iterdir()) == []
+
+
+@respx.mock
+async def test_live_and_archive_share_one_byte_cap(dest, monkeypatch):
+    charged = _count_charged(monkeypatch)
+    monkeypatch.setattr(ses_s3_email, "_fetch_archived_link", ORIGINAL_ARCHIVE)
+    monkeypatch.setattr(ses_s3_email, "session", _archive_session(_ChunkedBody(b"y" * 600, step=100)))
+    respx.get(URL).mock(return_value=httpx.Response(500, content=b"e" * 600))
+    result = await ses_s3_email.download_link_attachment(url=URL, output_dir=str(dest))
+    assert result["status"] == "error", result
+    assert sum(charged) <= 1000 + 100
+    # The archived copy was never saved past the shared cap.
+    assert not any(p.read_bytes().startswith(b"y") for p in dest.iterdir())
+
+
+@respx.mock
+async def test_a_declared_archive_larger_than_what_is_left_is_refused_up_front(dest, monkeypatch):
+    monkeypatch.setattr(ses_s3_email, "_fetch_archived_link", ORIGINAL_ARCHIVE)
+    reads: list[int] = []
+
+    class Body(_ChunkedBody):
+        async def read(self, _amt=None):
+            reads.append(1)
+            return await super().read(_amt)
+
+    monkeypatch.setattr(ses_s3_email, "session", _archive_session(Body(b"y" * 600, step=100), length=600))
+    respx.get(URL).mock(return_value=httpx.Response(500, content=b"e" * 600))
+    result = await ses_s3_email.download_link_attachment(url=URL, output_dir=str(dest))
+    assert result["status"] == "error"
+    assert reads == []  # 600 declared > 400 left: not read at all
+
+
+@respx.mock
+async def test_each_call_gets_a_fresh_budget(dest):
+    respx.get(URL).mock(return_value=httpx.Response(200, content=b"z" * 700, headers={"content-type": "text/csv"}))
+    for _ in range(2):
+        result = await ses_s3_email.download_link_attachment(url=URL, output_dir=str(dest))
+        assert result["status"] == "success", result
+    assert ses_s3_email._CALL_BUDGET.get() is None

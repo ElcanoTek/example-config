@@ -82,6 +82,36 @@ def containing_root(real: str, roots: Iterable[str]) -> str | None:
     return best
 
 
+def _open_dir_last_nofollow(path: str) -> int:
+    """Open directory ``path`` without following a symlink in its LAST component.
+
+    ``os.open("root/", O_NOFOLLOW)`` follows a final symlink on Linux (the
+    trailing separator makes the kernel resolve it), so the path is never opened
+    as one string: trailing separators are stripped and the last component is
+    opened with O_NOFOLLOW|O_DIRECTORY relative to its parent's descriptor. The
+    parent chain is configuration, opened normally."""
+    flags = os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC
+    stripped = str(path)
+    while True:  # "root/", "root//", "root/." and "root/./" all name "root"
+        trimmed = stripped.rstrip(os.sep)
+        if trimmed.endswith(os.sep + ".") or trimmed == ".":
+            trimmed = trimmed[:-1]
+        if trimmed == stripped:
+            break
+        stripped = trimmed
+    if not stripped:
+        return os.open(os.sep if str(path).startswith(os.sep) else os.curdir, flags)
+    parent, name = os.path.split(stripped)
+    if name == "..":
+        # "link/.." is the symlink TARGET's parent: not a pinnable literal root.
+        raise OSError(errno.ELOOP, "root ends in '..'", str(path))
+    parent_fd = os.open(parent or os.curdir, os.O_RDONLY | _O_DIRECTORY | _O_CLOEXEC)
+    try:
+        return os.open(name, flags, dir_fd=parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
 # Configured root (as given) -> its pinned resolution, for the process lifetime.
 _ROOT_PINS: dict[str, _Root] = {}
 
@@ -106,7 +136,7 @@ def _pin_one(root: str, *, trust_symlink: bool = False) -> _Root | None:
     if cached is not None:
         return cached
     try:
-        fd = os.open(root, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC)
+        fd = _open_dir_last_nofollow(root)
     except OSError as exc:
         if exc.errno not in (errno.ELOOP, errno.ENOTDIR, errno.EMLINK):
             return None  # not there yet: nothing to pin, nothing under it to open
@@ -203,7 +233,7 @@ def _walk_dirs(root: str, parts: list[str], *, create: bool, label: str, path: s
     # root could otherwise be swapped for a symlink and every descriptor-relative
     # open below would start outside the tree.
     try:
-        fd = os.open(root, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC)
+        fd = _open_dir_last_nofollow(root)
     except OSError as exc:
         if exc.errno in (errno.ELOOP, errno.ENOTDIR, errno.EMLINK):
             raise UnsafePathError(f"SECURITY: allowed directory {root} changed after {path} was checked") from exc
