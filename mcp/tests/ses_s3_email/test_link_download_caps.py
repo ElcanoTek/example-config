@@ -744,3 +744,19 @@ async def test_an_archive_crossing_the_batch_budget_is_a_structured_refusal(dest
     assert result is not None and result["status"] == "error", result
     assert result["code"] == "link_batch_budget_exceeded" and "batch" in result["error"]
     assert list(dest.iterdir()) == []
+
+
+async def test_batch_errors_carry_the_per_link_code_and_retryable(dest, monkeypatch):
+    links = [{"url": "https://reports.example.com/a.csv"}]
+
+    async def extract(*_a, **_k):
+        return {"status": "success", "links": links, "subject": "s", "total_links_found": 1}
+
+    async def one(url, output_dir=None, timeout_seconds=120):
+        return {"status": "error", "error": "budget spent", "code": "link_batch_budget_exceeded", "retryable": False}
+
+    monkeypatch.setattr(ses_s3_email, "extract_download_links", extract)
+    monkeypatch.setattr(ses_s3_email, "download_link_attachment", one)
+    result = await ses_s3_email.download_all_link_attachments("emails/k", output_dir=str(dest))
+    assert result["errors"][0]["code"] == "link_batch_budget_exceeded"
+    assert result["errors"][0]["retryable"] is False

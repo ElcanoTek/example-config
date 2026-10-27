@@ -1149,6 +1149,11 @@ def test_capability_paths_are_masked_and_tagged_with_a_short_hash():
         # ...and so are the scheme delimiter's slashes (WHATWG accepts any mix).
         ("https:\\\\files.example\\download\\SECRET.csv", "https://files.example/\u2026/***.csv"),
         ("https:/\\files.example\\SECRET", "https://files.example/***"),
+        # One separator, "\\" or "/", is still a URL (WHATWG accepts it).
+        ("https:\\files.example\\download\\SECRET.csv", "https://files.example/\u2026/***.csv"),
+        ("https:/files.example/download/SECRET.csv", "https://files.example/\u2026/***.csv"),
+        ("https:///files.example/SECRET", "https://files.example/***"),
+        ("https:files.example/download/SECRET.csv", "https://files.example/\u2026/***.csv"),  # no separator
     ],
 )
 def test_the_last_path_segment_keeps_only_its_extension(url, shown):
@@ -1313,3 +1318,98 @@ def test_variable_width_partition_formats_parse(monkeypatch, fmt, key, day):
     monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", fmt)
     assert inbox._partition_day(key) == day
     assert inbox._in_date_tree(key) is (day is not None)
+
+
+@pytest.mark.parametrize(
+    ("fmt", "key", "day"),
+    [
+        ("emails/%Y/%m/%d", "emails/2026/10/26message-id", datetime(2026, 10, 26, tzinfo=UTC)),
+        ("emails/%Y/%m/%-d", "emails/2026/10/5abc", datetime(2026, 10, 5, tzinfo=UTC)),
+        ("emails/%Y/%m/%-d", "emails/2026/10/15abc", datetime(2026, 10, 15, tzinfo=UTC)),
+        ("emails/%Y/%m/%d", "emails/2026/10/xyz", None),
+        ("emails/%Y/%m/%d/mail-", "emails/2026/10/26/mail-abc", datetime(2026, 10, 26, tzinfo=UTC)),
+        ("emails/%Y-%m-%d-", "emails/2026-10-26-abc", datetime(2026, 10, 26, tzinfo=UTC)),
+    ],
+)
+def test_formats_without_a_trailing_slash_parse_the_glued_day(monkeypatch, fmt, key, day):
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", fmt)
+    assert inbox._partition_day(key) == day
+
+
+def test_one_separator_userinfo_is_masked():
+    for line in ("https:/user:SECRET@host/x.csv", "https:\\user:SECRET@host\\x.csv"):
+        out = inbox.redact_url_queries(line)
+        assert "SECRET" not in out and out.startswith("https://***@host/"), out
+        assert inbox.redact_url_queries(out) == out
+
+
+class _CountingS3(_FakeS3):
+    def __init__(self, objects):
+        super().__init__(objects)
+        self.full_reads: list[str] = []
+
+    async def get_object(self, Key, **kwargs):  # noqa: N803 - boto3's names
+        if "Range" not in kwargs:
+            self.full_reads.append(Key)
+        return await super().get_object(Key=Key, **kwargs)
+
+
+def _plain_mail(sender, auth):
+    lines = [f"Authentication-Results: {auth}"] if auth else []
+    lines += [f"From: R <{sender}>", "To: inbox@example.com", "Subject: Daily", "Date: Mon, 26 Oct 2026 10:00:00 +0000"]
+    return ("\r\n".join(lines) + "\r\n\r\nbody text\r\n").encode()
+
+
+@pytest.mark.asyncio
+async def test_untrusted_mail_bodies_are_never_fetched_even_with_has_payload(monkeypatch):
+    objects = {
+        "emails/ok": _plain_mail("r@vendor.example", "amazonses.com; dmarc=pass header.from=vendor.example"),
+        "emails/forged": _plain_mail("r@vendor.example", None),
+    }
+    s3 = _CountingS3(objects)
+    monkeypatch.setattr(inbox, "session", _FakeSession(s3))
+    monkeypatch.setattr(inbox, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(inbox, "S3_PREFIX", "emails/")
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "")
+    monkeypatch.setattr(inbox, "EMAIL_SENDER_AUTH", "required")
+    result = await inbox.search_emails(
+        sender_contains="vendor.example", has_payload=False, date_from="2026-10-26", date_to="2026-10-26"
+    )
+    assert "emails/forged" not in s3.full_reads
+    skipped = [w for w in result["search_warnings"] if w["code"] == "unauthenticated_sender_skipped"]
+    assert skipped and skipped[0]["count"] == 1
+
+    s3.full_reads.clear()
+    fuzzy = await inbox.search_emails_fuzzy(
+        keywords=["daily"], search_fields=["subject", "body"], date_from="2026-10-26", date_to="2026-10-26"
+    )
+    assert "emails/forged" not in s3.full_reads and "emails/ok" in s3.full_reads
+    assert [e["s3_key"] for e in fuzzy["emails"]] == ["emails/ok"]
+
+
+@pytest.mark.asyncio
+async def test_one_malformed_trusted_message_never_fails_the_search(monkeypatch):
+    objects = {
+        "emails/ok": _plain_mail("r@vendor.example", "amazonses.com; dmarc=pass header.from=vendor.example"),
+        "emails/bad": _plain_mail("r@vendor.example", "amazonses.com; dmarc=pass header.from=vendor.example"),
+    }
+    real_extract = inbox._extract_email_content
+
+    def flaky_extract(msg, *a, **k):
+        if "bad" in str(msg.get("X-Key", "")) or flaky_extract.calls == 0:
+            flaky_extract.calls += 1
+            raise ValueError("malformed MIME")
+        return real_extract(msg, *a, **k)
+
+    flaky_extract.calls = 0
+    monkeypatch.setattr(inbox, "_extract_email_content", flaky_extract)
+    monkeypatch.setattr(inbox, "session", _FakeSession(_FakeS3(objects)))
+    monkeypatch.setattr(inbox, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(inbox, "S3_PREFIX", "emails/")
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "")
+    monkeypatch.setattr(inbox, "EMAIL_SENDER_AUTH", "required")
+    result = await inbox.search_emails(
+        sender_contains="vendor.example", has_payload=False, date_from="2026-10-26", date_to="2026-10-26"
+    )
+    assert result["status"] == "success", result
+    assert len(result["emails"]) == 1 and result["search_stats"]["parse_errors"] == 1

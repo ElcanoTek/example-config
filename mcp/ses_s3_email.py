@@ -94,7 +94,10 @@ logger = logging.getLogger(__name__)
 # an already-redacted URL is left as it is (no second hash).
 # The two delimiter slashes may be any mix of "/" and "\" (https:\\host\x,
 # https:/\host): WHATWG parsers accept those too.
-_URL_CANDIDATE_RE = re.compile(r"https?:[/\\]{2}[^\s\"<>]+", re.IGNORECASE)
+_URL_CANDIDATE_RE = re.compile(r"https?:[/\\]*[^\s\"<>]+", re.IGNORECASE)
+# The scheme and its WHOLE separator run, of any length including none
+# ("https:host", "https:/", "https:\\", "https:///"), is normalised to "scheme://" first.
+_URL_SCHEME_SEP_RE = re.compile(r"(https?):[/\\]*", re.IGNORECASE)
 _URL_HASH_TAG = " [url-id:"
 # Keyed per process: the tag only correlates links within one process's logs,
 # and an unkeyed hash of a short secret (a six-digit code) could be brute-forced.
@@ -133,6 +136,9 @@ def _redact_one_url(url: str) -> str:
     # Lenient parsers (WHATWG, httpx) read "\\" as "/", so a backslash path
     # (https://host\\download\\SECRET.csv) or delimiter (https:\\host) is
     # masked like a slash one.
+    head = _URL_SCHEME_SEP_RE.match(url)
+    if head:
+        url = f"{head.group(1)}://" + url[head.end() :]
     scheme, sep, rest = url.replace("\\", "/").partition("://")
     if not sep:
         return url
@@ -158,11 +164,11 @@ def _redact_one_url(url: str) -> str:
 # scheme and its delimiter through any non-whitespace characters up to the
 # authority's end ("/", "?" or "#"; a "\\", quote or angle bracket inside the
 # userinfo never ends it), everything before the LAST "@" becomes "***@".
-_USERINFO_PREPASS_RE = re.compile(r"(https?:[/\\]{2})([^\s/?#]*)@", re.IGNORECASE)
+_USERINFO_PREPASS_RE = re.compile(r"(https?):[/\\]*([^\s/?#]*)@", re.IGNORECASE)
 
 
 def _mask_userinfo(text: str) -> str:
-    return _USERINFO_PREPASS_RE.sub(lambda m: m.group(1) + "***@", text)
+    return _USERINFO_PREPASS_RE.sub(lambda m: m.group(1) + "://***@", text)
 
 
 def redact_url_queries(text: str) -> str:
@@ -881,8 +887,15 @@ def _parse_partition(key: str) -> datetime | None:
         pieces = key.split("/")
         if len(pieces) <= depth - (0 if fmt.endswith("/") else 1):
             return None
-        candidate = "/".join(pieces[:depth]) + "/" if fmt.endswith("/") else "/".join(pieces[: depth + 1])
-        candidates = [candidate]
+        if fmt.endswith("/"):
+            candidates = ["/".join(pieces[:depth]) + "/"]
+        else:
+            # No trailing "/": the last date field is glued to the rest of the key
+            # (emails/2026/10/26message-id): try that segment's prefixes, longest
+            # first, and keep the first that round-trips through the format.
+            base = "/".join(pieces[:depth]) + "/" if depth else ""
+            last = pieces[depth]
+            candidates = [base + last[:n] for n in range(len(last), 0, -1)]
     else:
         candidates = [key[:n] for n in range(len(key), 0, -1)]
     for candidate in candidates:
@@ -2541,7 +2554,10 @@ async def search_emails(
 
                         if recipient_lower and recipient_lower not in recipients.lower():
                             continue
-                        if not trusted and has_payload is None:
+                        if not trusted:
+                            # Never fetch or parse an untrusted message's body: only
+                            # the header filters above decide whether it is counted
+                            # (has_payload cannot be reflected in the count).
                             unauthenticated_skipped += 1
                             continue
 
@@ -2554,16 +2570,22 @@ async def search_emails(
                         body_html = ""
 
                         if need_full:
-                            response = await s3_client.get_object(Bucket=S3_BUCKET, Key=obj["Key"])
-                            raw_email = await response["Body"].read()
-                            full_fetches += 1
-                            msg: Message = await asyncio.get_running_loop().run_in_executor(
-                                None, email.message_from_bytes, raw_email
-                            )
-
-                            content = await asyncio.get_running_loop().run_in_executor(
-                                None, _extract_email_content, msg, True
-                            )
+                            # One malformed (or unreadable) message never fails the
+                            # whole search: it is logged and skipped.
+                            try:
+                                response = await s3_client.get_object(Bucket=S3_BUCKET, Key=obj["Key"])
+                                raw_email = await response["Body"].read()
+                                full_fetches += 1
+                                msg: Message = await asyncio.get_running_loop().run_in_executor(
+                                    None, email.message_from_bytes, raw_email
+                                )
+                                content = await asyncio.get_running_loop().run_in_executor(
+                                    None, _extract_email_content, msg, True
+                                )
+                            except Exception as exc:  # noqa: BLE001 - skip this message only
+                                parse_errors += 1
+                                logger.warning(f"Skipped email {obj['Key']}: its body could not be read ({exc})")
+                                continue
 
                             attachments = content["attachments"]
                             download_links = content["download_links"]
@@ -2577,9 +2599,6 @@ async def search_emails(
                                 continue
                             if not has_payload and payload_count > 0:
                                 continue
-                        if not trusted:
-                            unauthenticated_skipped += 1
-                            continue
 
                         email_result = {
                             "s3_key": obj["Key"],
@@ -2894,10 +2913,18 @@ async def search_emails_fuzzy(
                         emails_scanned += 1
 
                         try:
-                            # Fast path: subject/sender-only fuzzy search can be done with header-range read.
-                            if "body" not in search_fields:
+                            # Fast path: subject/sender-only fuzzy search can be done with
+                            # a header-range read. A body search reads the headers first
+                            # too: an untrusted message's body is never fetched or parsed
+                            # (it is matched on its headers only, then counted as skipped).
+                            headers = None
+                            if "body" not in search_fields or not include_unauthenticated():
                                 headers = await fetch_email_headers(s3_client, obj["Key"])
                                 header_fetches += 1
+                            header_trusted = headers is not None and (
+                                sender_authenticated(headers) or trusted_legacy_key(obj["Key"])
+                            )
+                            if headers is not None and ("body" not in search_fields or not header_trusted):
                                 authenticated = sender_authenticated(headers)
                                 subject = headers["subject"]
                                 sender = headers["from"]
@@ -4063,6 +4090,8 @@ async def download_all_link_attachments(
                         "url": link["url"],
                         "link_text": link.get("link_text"),
                         "error": result["error"],
+                        # e.g. link_batch_budget_exceeded: batch callers see why.
+                        **{key: result[key] for key in ("code", "retryable") if key in result},
                     }
                 )
 
