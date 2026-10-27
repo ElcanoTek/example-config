@@ -58,6 +58,57 @@ def test_unauthenticated_from_domain(results):
     assert inbox.authenticated_sender_domain(results, FROM) is None
 
 
+# Real-shaped SES inbound headers (AWS SES receiving: amazonses.com authserv-id,
+# SPF properties as further ";" items, comments in parentheses).
+SES_SPF_ONLY = (
+    "amazonses.com; spf=pass (spf: domain of mail.vendor.example designates 192.0.2.1 as permitted sender) "
+    "client-ip=192.0.2.1; envelope-from=bounce@mail.vendor.example; helo=mail.vendor.example; "
+    "dkim=none; dmarc=none header.from=vendor.example;"
+)
+SES_FULL = (
+    "amazonses.com;\r\n spf=pass (spf: domain of vendor.example designates 192.0.2.1 as permitted sender) "
+    "client-ip=192.0.2.1; envelope-from=reports@vendor.example; helo=mx.vendor.example;\r\n "
+    "dkim=pass header.i=@vendor.example;\r\n dmarc=pass header.from=vendor.example;"
+)
+
+
+def test_real_shaped_ses_headers_authenticate():
+    assert inbox.authenticated_sender_domain([SES_SPF_ONLY], FROM) == "vendor.example"
+    assert inbox.authenticated_sender_domain([SES_FULL], FROM) == "vendor.example"
+    # A comment that looks like a verdict is not one.
+    fake = "amazonses.com; spf=fail (dmarc=pass header.from=vendor.example) envelope-from=x@attacker.example;"
+    assert inbox.authenticated_sender_domain([fake], FROM) is None
+
+
+def test_sibling_subdomains_align_by_organizational_domain():
+    sibling = "amazonses.com; dkim=pass header.d=mail.vendor.example; dmarc=none"
+    assert (
+        inbox.authenticated_sender_domain([sibling], "x <reports@reports.vendor.example>") == "reports.vendor.example"
+    )
+    assert inbox.organizational_domain("a.b.vendor.co.uk") == "vendor.co.uk"
+    assert not inbox._aligned("vendor.example", "notvendor.example")
+    assert not inbox._aligned("attacker.co.uk", "vendor.co.uk")
+
+
+def test_httpx_request_lines_never_carry_a_presigned_query(caplog):
+    import logging as _logging
+
+    with caplog.at_level(_logging.INFO, logger="httpx"):
+        _logging.getLogger("httpx").info('HTTP Request: GET %s "HTTP/1.1 200 OK"', "https://b/x?X-Amz-Signature=s")
+    assert "X-Amz-Signature=s" not in caplog.text
+    assert "https://b/x?X-Amz-Signature=***" in caplog.text
+
+
+def test_a_display_name_cannot_carry_the_vendor_domain():
+    """Authenticated mail from attacker.example named "OpenX openx.com" is not OpenX's."""
+    spoof = {"from": '"OpenX openx.com" <reports@attacker.example>', "authenticated_domain": "attacker.example"}
+    assert inbox.sender_authenticated(spoof)
+    assert not inbox.sender_filter_matches("openx.com", spoof)
+    # The authenticated domain must be the From mailbox's own.
+    mismatched = {"from": "reports@openx.com", "authenticated_domain": "attacker.example"}
+    assert not inbox.sender_filter_matches("openx.com", mismatched)
+
+
 def test_sender_filter_needs_authentication(monkeypatch):
     authed = {"from": FROM, "authenticated_domain": "vendor.example"}
     forged = {"from": FROM, "authenticated_domain": ""}
@@ -154,6 +205,15 @@ async def test_search_emails_skips_a_forged_vendor_sender(monkeypatch):
     codes = {w["code"] for w in result["search_warnings"]}
     assert "unauthenticated_sender_skipped" in codes
 
+    # A BROAD search (no sender_contains) leaves out unauthenticated mail too.
+    broad = await inbox.search_emails(date_from="2026-10-26", date_to="2026-10-26")
+    assert [e["s3_key"] for e in broad["emails"]] == ["emails/genuine"]
+    assert broad["emails"][0]["sender_authenticated"] is True
+    assert "unauthenticated_sender_skipped" in {w["code"] for w in broad["search_warnings"]}
+
+    fuzzy = await inbox.search_emails_fuzzy(keywords=["report"], date_from="2026-10-26", date_to="2026-10-26")
+    assert [e["s3_key"] for e in fuzzy["emails"]] == ["emails/genuine"], fuzzy
+
     monkeypatch.setattr(inbox, "EMAIL_SENDER_AUTH", "off")
     legacy = await inbox.search_emails(sender_contains="vendor.example", date_from="2026-10-26", date_to="2026-10-26")
     assert len(legacy["emails"]) == 3
@@ -168,7 +228,7 @@ def test_url_query_strings_are_redacted_from_logs(caplog):
     with caplog.at_level(logging.INFO, logger=inbox.logger.name):
         inbox.logger.info("downloading %s", url)
     assert "deadbeef" not in caplog.text and "AKIAEXAMPLE" not in caplog.text
-    assert "https://bucket.s3.amazonaws.com/report.csv?<redacted>" in caplog.text
+    assert "https://bucket.s3.amazonaws.com/report.csv?X-Amz-Signature=***&X-Amz-Credential=***" in caplog.text
 
 
 def test_default_debug_log_is_private(monkeypatch, tmp_path):
@@ -178,7 +238,7 @@ def test_default_debug_log_is_private(monkeypatch, tmp_path):
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
     path = inbox._debug_log_path()
     assert path is not None and path.startswith(str(tmp_path))
-    inbox._open_private_log(path)
+    inbox._open_private_log(path).close()
     assert stat.S_IMODE(os.stat(os.path.dirname(path)).st_mode) == 0o700
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
 
@@ -193,3 +253,27 @@ def test_debug_log_refuses_a_planted_symlink_dir(monkeypatch, tmp_path):
     uid = os.getuid()
     (tmp_path / f"ses_s3_email-{uid}").symlink_to(target, target_is_directory=True)
     assert inbox._debug_log_path() is None
+
+
+def test_the_debug_log_stream_is_the_verified_descriptor(tmp_path):
+    """Writes go to the descriptor that was checked, never to a path reopened by name."""
+    path = tmp_path / "debug.log"
+    stream = inbox._open_private_log(str(path))
+    path.rename(tmp_path / "kept.log")
+    path.symlink_to(tmp_path / "elsewhere.log")
+    stream.write("line\n")
+    stream.close()
+    assert (tmp_path / "kept.log").read_text() == "line\n"
+    assert not (tmp_path / "elsewhere.log").exists()
+    with pytest.raises(OSError):
+        inbox._open_private_log(str(path))  # a symlink at open time is refused
+
+
+def test_operator_trusted_legacy_prefix_hook(monkeypatch):
+    """Off by default; when set, only keys under the prefix count as a pre-authenticated archive."""
+    unauth = {"from": FROM, "authenticated_domain": ""}
+    assert not inbox.message_trusted("emails/legacy/mailbux-1", unauth)
+    monkeypatch.setattr(inbox, "EMAIL_TRUSTED_LEGACY_PREFIXES", ("emails/legacy/",))
+    assert inbox.message_trusted("emails/legacy/mailbux-1", unauth)
+    assert inbox.sender_filter_matches("vendor.example", unauth, "emails/legacy/mailbux-1")
+    assert not inbox.message_trusted("emails/2026/10/26/abc", unauth)

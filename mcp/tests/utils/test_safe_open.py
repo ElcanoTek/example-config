@@ -125,3 +125,70 @@ def test_rewrite_same_file_skips_a_replaced_inode(tree):
     _, st2 = safe_open.read_bytes(str(path), [str(tree["root"])])
     assert safe_open.rewrite_same_file(str(path), [str(tree["root"])], st2, b"new") is True
     assert path.read_bytes() == b"new"
+
+
+def test_a_root_swapped_for_a_symlink_after_resolution_is_refused(tree, monkeypatch, tmp_path):
+    """The root's parent may be sandbox-writable: swapping the root itself must not
+    move every descriptor-relative open outside the tree."""
+    root = tree["root"]
+    (tree["outside"] / "sub").mkdir()
+    (tree["outside"] / "sub" / "a.txt").write_bytes(b"secret")
+    real_resolve = safe_open._resolve
+
+    def resolve_then_swap_root(path, roots, label):
+        result = real_resolve(path, roots, label)
+        root.rename(tmp_path / "root.orig")
+        root.symlink_to(tree["outside"], target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(safe_open, "_resolve", resolve_then_swap_root)
+    with pytest.raises(safe_open.UnsafePathError, match="changed|replaced"):
+        safe_open.read_bytes(str(root / "sub" / "a.txt"), [str(root)])
+
+
+def test_a_root_replaced_by_another_directory_is_refused(tree, monkeypatch, tmp_path):
+    root = tree["root"]
+    real_resolve = safe_open._resolve
+
+    def resolve_then_replace_root(path, roots, label):
+        result = real_resolve(path, roots, label)
+        root.rename(tmp_path / "root.orig")
+        root.mkdir()
+        (root / "sub").mkdir()
+        (root / "sub" / "a.txt").write_bytes(b"other")
+        return result
+
+    monkeypatch.setattr(safe_open, "_resolve", resolve_then_replace_root)
+    with pytest.raises(safe_open.UnsafePathError, match="replaced"):
+        safe_open.read_bytes(str(root / "sub" / "a.txt"), [str(root)])
+
+
+def test_a_failed_write_removes_only_the_file_it_created(tree, monkeypatch):
+    import errno as _errno
+
+    real_write = os.write
+
+    def no_space(fd, data):
+        real_write(fd, bytes(data)[:2])
+        raise OSError(_errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(safe_open.os, "write", no_space)
+    with pytest.raises(OSError):
+        safe_open.write_new_or_truncate(str(tree["root"] / "new.txt"), [str(tree["root"])], b"hello")
+    assert not (tree["root"] / "new.txt").exists()
+
+
+def test_remove_created_never_follows_a_swapped_directory(tree, tmp_path):
+    seen = []
+    path = tree["root"] / "sub" / "a2.txt"
+    safe_open.write_new_or_truncate(str(path), [str(tree["root"])], b"x", on_created=seen.append)
+    (tree["outside"] / "a2.txt").write_bytes(b"host file")
+    (tree["root"] / "sub").rename(tmp_path / "sub.orig")
+    (tree["root"] / "sub").symlink_to(tree["outside"], target_is_directory=True)
+    assert safe_open.remove_created(str(path), [str(tree["root"])], seen[0]) is False
+    assert (tree["outside"] / "a2.txt").read_bytes() == b"host file"
+    # Restored: the file it created is removed.
+    (tree["root"] / "sub").unlink()
+    (tmp_path / "sub.orig").rename(tree["root"] / "sub")
+    assert safe_open.remove_created(str(path), [str(tree["root"])], seen[0]) is True
+    assert not path.exists()

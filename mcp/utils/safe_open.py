@@ -34,7 +34,7 @@ import contextlib
 import errno
 import os
 import stat
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
@@ -77,6 +77,12 @@ def containing_root(real: str, roots: Iterable[str]) -> str | None:
     return best
 
 
+class _Root(str):
+    """A resolved root path plus the (device, inode) it had when it was resolved."""
+
+    ident: tuple[int, int] | None = None
+
+
 def _resolve(path: str, roots: Iterable[str], label: str) -> tuple[str, list[str]]:
     """(containing root, components below it) for the realpath of ``path``."""
     if not path or "\x00" in str(path):
@@ -93,13 +99,33 @@ def _resolve(path: str, roots: Iterable[str], label: str) -> tuple[str, list[str
     parts = [] if rel == "." else rel.split(os.sep)
     if any(part in ("", ".", "..") for part in parts):
         raise UnsafePathError(f"SECURITY: {label} path is not a plain path below an allowed directory: {path}")
-    return root, parts
+    pinned = _Root(root)
+    try:
+        st = os.stat(root)
+        pinned.ident = (st.st_dev, st.st_ino)
+    except OSError:
+        pinned.ident = None
+    return pinned, parts
 
 
 def _walk_dirs(root: str, parts: list[str], *, create: bool, label: str, path: str) -> int:
     """Open ``root/parts...`` as a directory descriptor without following any
     symlink below ``root``; with ``create`` missing components are made (like ``os.makedirs``)."""
-    fd = os.open(root, os.O_RDONLY | _O_DIRECTORY | _O_CLOEXEC)
+    # The root itself is opened without following a symlink and must be the very
+    # directory that was resolved: if its parent is writable by the sandbox, the
+    # root could otherwise be swapped for a symlink and every descriptor-relative
+    # open below would start outside the tree.
+    try:
+        fd = os.open(root, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC)
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR, errno.EMLINK):
+            raise UnsafePathError(f"SECURITY: allowed directory {root} changed after {path} was checked") from exc
+        raise
+    ident = getattr(root, "ident", None)
+    st = os.fstat(fd)
+    if ident is not None and (st.st_dev, st.st_ino) != ident:
+        os.close(fd)
+        raise UnsafePathError(f"SECURITY: allowed directory {root} was replaced after {path} was checked")
     try:
         for part in parts:
             if create:
@@ -272,29 +298,88 @@ def write_new_or_truncate(
     mode: int = 0o600,
     create_dirs: bool = False,
     label: str = "file",
+    on_created: Callable[[tuple[int, int]], None] | None = None,
 ) -> bool:
     """Create (or, unless ``exclusive``, truncate) a confined regular file and
     write ``data`` through its descriptor. Returns True when the file was
-    created by this call."""
-    created = True
+    created by this call.
+
+    The helper owns cleanup of what it creates: if the write fails after the
+    file was created (ENOSPC), the file is unlinked relative to its directory
+    descriptor, and only while that name is still the inode it created.
+    ``on_created((dev, ino))`` runs as soon as the file exists, so a caller can
+    later remove it with :func:`remove_created` (e.g. when a sibling write fails)."""
+    root, parts = _resolve(path, roots, label)
+    if not parts:
+        raise UnsafePathError(f"{label} path names an allowed directory itself, not a file: {path}")
+    name = parts[-1]
+    dir_fd = _walk_dirs(root, parts[:-1], create=create_dirs, label=label, path=str(path))
     try:
-        fd = open_file(path, roots, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode, create_dirs=create_dirs, label=label)
-    except FileExistsError:
-        if exclusive:
+        created = True
+        try:
+            fd = _open_leaf(name, dir_fd, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode, label, path)
+        except FileExistsError:
+            if exclusive:
+                raise
+            created = False
+            fd = _open_leaf(name, dir_fd, os.O_WRONLY | _O_NONBLOCK, mode, label, path)
+        try:
+            st = os.fstat(fd)
+            ident = (st.st_dev, st.st_ino)
+            if created and on_created is not None:
+                on_created(ident)
+            if not stat.S_ISREG(st.st_mode):
+                raise UnsafePathError(f"{label} path is not a regular file: {path}")
+            os.set_blocking(fd, True)
+            if not created:
+                os.ftruncate(fd, 0)
+            view = memoryview(data)
+            while view:
+                written = os.write(fd, view)
+                view = view[written:]
+            return created
+        except BaseException:
+            if created:
+                _unlink_if_same(name, dir_fd, ident)
             raise
-        created = False
-        fd = open_file(path, roots, os.O_WRONLY | _O_NONBLOCK, mode, create_dirs=create_dirs, label=label)
-    try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
-            raise UnsafePathError(f"{label} path is not a regular file: {path}")
-        os.set_blocking(fd, True)
-        if not created:
-            os.ftruncate(fd, 0)
-        view = memoryview(data)
-        while view:
-            written = os.write(fd, view)
-            view = view[written:]
-        return created
+        finally:
+            os.close(fd)
     finally:
-        os.close(fd)
+        os.close(dir_fd)
+
+
+def _open_leaf(name: str, dir_fd: int, flags: int, mode: int, label: str, path: str) -> int:
+    try:
+        return os.open(name, flags | _O_NOFOLLOW | _O_CLOEXEC, mode, dir_fd=dir_fd)
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.EMLINK):
+            raise UnsafePathError(f"SECURITY: {label} path changed to a symlink after it was checked: {path}") from exc
+        raise
+
+
+def _unlink_if_same(name: str, dir_fd: int, ident: tuple[int, int]) -> bool:
+    try:
+        st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        if (st.st_dev, st.st_ino) != ident:
+            return False
+        os.unlink(name, dir_fd=dir_fd)
+        return True
+    except OSError:
+        return False
+
+
+def remove_created(path: str, roots: Iterable[str], ident: tuple[int, int], *, label: str = "file") -> bool:
+    """Unlink a file this process created, by a confined walk to its directory and
+    only while the name is still that inode: a directory swapped for a symlink
+    never lets the cleanup delete a same-named file elsewhere."""
+    try:
+        root, parts = _resolve(path, roots, label)
+        if not parts:
+            return False
+        dir_fd = _walk_dirs(root, parts[:-1], create=False, label=label, path=str(path))
+    except (OSError, ValueError):
+        return False
+    try:
+        return _unlink_if_same(parts[-1], dir_fd, ident)
+    finally:
+        os.close(dir_fd)

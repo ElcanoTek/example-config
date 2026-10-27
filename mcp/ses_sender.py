@@ -938,10 +938,10 @@ async def send_email(
                 # Opened ONCE here, without following a swapped symlink; the
                 # size and the bytes both come from that descriptor.
                 try:
-                    raw_data, file_stat = _read_confined(resolved_path, _MAX_ATTACHMENT_BYTES, "Attachment")
+                    raw_data, _file_stat = _read_confined(resolved_path, _MAX_ATTACHMENT_BYTES, "Attachment")
                 except safe_open.FileTooLargeError as exc:
                     return {"error": _too_large_message("Attachment", file_name, exc.size)}
-                file_size = file_stat.st_size
+                file_size = len(raw_data)  # what is actually sent, not the stat before reading
 
                 # Detect MIME type
                 mime_type, _ = mimetypes.guess_type(resolved_path)
@@ -993,10 +993,10 @@ async def send_email(
 
                 file_name = os.path.basename(resolved_path)
                 try:
-                    raw_data, file_stat = _read_confined(resolved_path, _MAX_ATTACHMENT_BYTES, "Inline attachment")
+                    raw_data, _file_stat = _read_confined(resolved_path, _MAX_ATTACHMENT_BYTES, "Inline attachment")
                 except safe_open.FileTooLargeError as exc:
                     return {"error": _too_large_message("Inline attachment", file_name, exc.size)}
-                file_size = file_stat.st_size
+                file_size = len(raw_data)  # what is actually sent, not the stat before reading
 
                 mime_type = str(item.get("mime_type") or "").strip()
                 if not mime_type:
@@ -1246,8 +1246,12 @@ async def render_email(
     if file_arg and not os.path.isdir(directory):
         # Created by a symlink-refusing walk from its allowed root, so a
         # directory swapped for a symlink cannot place new ones elsewhere.
-        with contextlib.suppress(OSError):
+        try:
             safe_open.makedirs(directory, _allowed_dirs(), label="output_dir")
+        except ValueError as exc:  # a confinement refusal (UnsafePathError) is the caller's answer
+            return {"error": str(exc)}
+        except OSError:
+            pass  # reported just below as "not an existing directory"
     if not os.path.isdir(directory):
         return {"error": f"output_dir is not an existing directory: {directory_arg}"}
 
@@ -1270,7 +1274,9 @@ async def render_email(
     stem = os.path.join(directory, f"email-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{secrets.token_hex(3)}")
     path = target_file if target_file else f"{stem}.html"
     inline_attachments: list[dict[str, str]] = []
-    created: list[str] = []  # only files this call made, so cleanup never removes another
+    # Only files this call made, with the inode each was created as: cleanup never
+    # removes another file, nor follows a directory swapped for a symlink.
+    created: list[tuple[str, tuple[int, int]]] = []
     # Every write goes through utils.safe_open: the directory is reached by a
     # walk from its allowed root that never follows a symlink, and the file is
     # opened with O_NOFOLLOW, so neither the file nor a directory above it
@@ -1279,17 +1285,27 @@ async def render_email(
     roots = _allowed_dirs()
     try:
         if target_file:
-            if safe_open.write_new_or_truncate(
-                target_file, roots, html_content.encode("utf-8"), create_dirs=True, label="output_file"
-            ):
-                created.append(target_file)
+            safe_open.write_new_or_truncate(
+                target_file,
+                roots,
+                html_content.encode("utf-8"),
+                create_dirs=True,
+                label="output_file",
+                on_created=lambda ident: created.append((target_file, ident)),
+            )
         else:
             # Create-only and owner-only: never overwrites, and an output_dir in a
             # shared location (the temp dir is a readable root) does not expose
             # the email to other local users. Fleet's approval stager and this
             # server run as the same user.
-            safe_open.write_new_or_truncate(path, roots, html_content.encode("utf-8"), exclusive=True, label="email")
-            created.append(path)
+            safe_open.write_new_or_truncate(
+                path,
+                roots,
+                html_content.encode("utf-8"),
+                exclusive=True,
+                label="email",
+                on_created=lambda ident: created.append((path, ident)),
+            )
         logo = email_render.brand_logo()
         if logo is not None and f"cid:{email_render.LOGO_CID}" in html_content:
             # A copy beside the email, inside the workspace: send_email reads
@@ -1297,14 +1313,19 @@ async def render_email(
             # when it previews the logo.
             logo_path = f"{stem}-{email_render.LOGO_CID}.png"
             logo_bytes = logo[0].read_bytes()
-            safe_open.write_new_or_truncate(logo_path, roots, logo_bytes, exclusive=True, label="logo")
-            created.append(logo_path)
+            safe_open.write_new_or_truncate(
+                logo_path,
+                roots,
+                logo_bytes,
+                exclusive=True,
+                label="logo",
+                on_created=lambda ident: created.append((logo_path, ident)),
+            )
             inline_attachments.append({"path": os.path.abspath(logo_path), "cid": email_render.LOGO_CID})
     except (OSError, ValueError) as exc:
         # Half a rendered email is not handed back, so do not leave it behind.
-        for leftover in created:
-            with contextlib.suppress(OSError):
-                os.unlink(leftover)
+        for leftover, ident in created:
+            safe_open.remove_created(leftover, roots, ident)
         return {"error": f"Could not write the rendered email into {directory_arg}: {exc}"}
 
     findings = validate(html_content, subject=subject, content_type="text/html", require_frame=True)

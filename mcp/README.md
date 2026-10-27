@@ -15,7 +15,10 @@ connectors, dark until their host env is set:
 All are stdio servers built on `mcp.server.fastmcp.FastMCP`. fleet launches
 each as a host-side subprocess with only the environment its manifest entry
 maps (never the whole host env, and never inside the agent's command sandbox); `utils/` holds their shared run ledger, URL guard and
-filesystem helpers. Lens and Pages are remote (http) servers on the client's
+filesystem helpers. The run workspace is shared with the sandbox, so a host-side
+server reads or writes a model-supplied path only through `utils/safe_open.py`:
+one symlink-refusing walk from its allowed root, then that descriptor (never
+the name a second time); files it created are removed only through the helper. Lens and Pages are remote (http) servers on the client's
 own boxes, so they have manifest entries but no code here.
 
 To stand up a client's SES/S3 email tenant (infrastructure, least-privilege

@@ -263,3 +263,66 @@ async def test_fifo_attachment_is_refused_without_blocking(workspace, sent):
 
     assert "error" in result
     assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_combined_size_counts_the_bytes_read_not_the_earlier_stat(workspace, sent, monkeypatch):
+    """A file that grows after fstat (within its own cap) is counted by what is sent."""
+    a = workspace["ws"] / "a.csv"
+    b = workspace["ws"] / "b.csv"
+    a.write_bytes(b"x")
+    b.write_bytes(b"x")
+
+    class TinyStat:
+        st_size = 1
+
+    big = b"x" * (20 * 1024 * 1024)
+    monkeypatch.setattr(ses_sender, "_read_confined", lambda *_a, **_k: (big, TinyStat()))
+
+    result = await ses_sender.send_email(
+        to_email="alice@example.com", subject="Report", content=framed("<p>Hi</p>"), attachments=[str(a), str(b)]
+    )
+
+    assert "Combined attachments are too large" in result.get("error", "")
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_render_write_leaves_no_partial_file(workspace, monkeypatch):
+    """A write that fails after the file was created (ENOSPC) is cleaned up."""
+    import errno
+
+    real_write = os.write
+
+    def no_space(fd, data):
+        real_write(fd, bytes(data)[:10])
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(ses_sender.safe_open.os, "write", no_space)
+    out = workspace["ws"] / "out"
+    out.mkdir()
+    result = await ses_sender.render_email(
+        subject="Weekly delivery review",
+        blocks=[{"type": "text", "paragraphs": ["Hello"]}],
+        output_dir=str(out),
+        client_name="Example",
+    )
+    assert "error" in result
+    assert list(out.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_render_output_dir_refusal_is_a_structured_error(workspace, monkeypatch):
+    target = workspace["ws"] / "new" / "email.html"
+
+    def refuse(*_a, **_k):
+        raise ses_sender.safe_open.UnsafePathError("SECURITY: output_dir path changed")
+
+    monkeypatch.setattr(ses_sender.safe_open, "makedirs", refuse)
+    result = await ses_sender.render_email(
+        subject="Weekly delivery review",
+        blocks=[{"type": "text", "paragraphs": ["Hello"]}],
+        output_file=str(target),
+        client_name="Example",
+    )
+    assert "SECURITY" in result["error"]
