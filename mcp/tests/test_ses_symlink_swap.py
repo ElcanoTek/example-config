@@ -326,3 +326,47 @@ async def test_render_output_dir_refusal_is_a_structured_error(workspace, monkey
         client_name="Example",
     )
     assert "SECURITY" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_root_swapped_between_validation_and_read_is_refused(workspace, sent, monkeypatch, tmp_path):
+    """The allowed roots are pinned once per call: a root replaced by a symlink after
+    the path check does not get its new target resolved and accepted."""
+    ws = workspace["ws"]
+    (ws / "report.csv").write_bytes(b"date,revenue\n")
+    decoy = tmp_path / "decoy"
+    decoy.mkdir()
+    (decoy / "report.csv").write_bytes(SECRET)
+
+    def swap_root():
+        ws.rename(tmp_path / "ws.orig")
+        ws.symlink_to(decoy, target_is_directory=True)
+
+    # CUTLASS_RUN_WORKDIR points at a path that will be the symlink: realpath'd
+    # fresh per call it would accept the decoy; pinned, the swap is refused.
+    _swap_after(monkeypatch, "_locate_attachment", swap_root)
+    result = await ses_sender.send_email(
+        to_email="alice@example.com",
+        subject="Report",
+        content=framed("<p>Hi</p>"),
+        attachments=[str(ws / "report.csv")],
+    )
+
+    assert "error" in result and "SECURITY" in result["error"], result
+    assert sent == []
+
+
+def test_pinned_roots_are_not_re_resolved(tmp_path):
+    from utils import safe_open
+
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "a.txt").write_bytes(b"inside")
+    pinned = safe_open.pin_roots([str(root)])
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "a.txt").write_bytes(SECRET)
+    root.rename(tmp_path / "root.orig")
+    root.symlink_to(other, target_is_directory=True)
+    with pytest.raises(safe_open.UnsafePathError):
+        safe_open.read_bytes(str(root / "a.txt"), pinned)

@@ -474,12 +474,18 @@ mcp_servers:
       EMAIL_AUTHSERV_ID: "${EMAIL_AUTHSERV_ID}"
       EMAIL_LINK_MAX_BYTES: "${EMAIL_LINK_MAX_BYTES}"
       EMAIL_LINK_MAX_SECONDS: "${EMAIL_LINK_MAX_SECONDS}"
+      # download_all_link_attachments: at most this many links (default 20), 3 at a
+      # time, sharing one byte budget (default 200 MB).
+      EMAIL_LINK_MAX_COUNT: "${EMAIL_LINK_MAX_COUNT}"
+      EMAIL_LINK_BATCH_MAX_BYTES: "${EMAIL_LINK_BATCH_MAX_BYTES}"
     optional_env:
       - EMAIL_SENDER_AUTH
       - EMAIL_TRUSTED_LEGACY_PREFIXES
       - EMAIL_AUTHSERV_ID
       - EMAIL_LINK_MAX_BYTES
       - EMAIL_LINK_MAX_SECONDS
+      - EMAIL_LINK_MAX_COUNT
+      - EMAIL_LINK_BATCH_MAX_BYTES
       - AWS_ACCESS_KEY_ID
       - AWS_SECRET_ACCESS_KEY
       - AWS_SESSION_TOKEN

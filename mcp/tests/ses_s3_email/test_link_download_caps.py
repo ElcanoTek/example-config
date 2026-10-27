@@ -154,3 +154,103 @@ async def test_redirect_bodies_are_never_read_and_hops_are_bounded(dest):
     respx.get(loop).mock(return_value=httpx.Response(302, headers={"location": loop}))
     result = await ses_s3_email.download_link_attachment(url=loop, output_dir=str(dest))
     assert result["status"] == "error"
+
+
+class _ChunkedBody:
+    """aiobotocore's StreamReader: read(n) may return fewer bytes than asked."""
+
+    def __init__(self, data: bytes, step: int = 3) -> None:
+        self.data, self.step = data, step
+
+    async def read(self, _amt=None):
+        chunk, self.data = self.data[: self.step], self.data[self.step :]
+        return chunk
+
+
+def _archive_session(body, *, length=None):
+    class S3:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def list_objects_v2(self, **_kwargs):
+            return {"Contents": [{"Key": "emails/attachments/by-url/h/report.csv"}]}
+
+        async def get_object(self, **_kwargs):
+            response = {"Body": body, "Metadata": {}}
+            if length is not None:
+                response["ContentLength"] = length
+            return response
+
+    class Session:
+        def client(self, *_a, **_k):
+            return S3()
+
+    return Session()
+
+
+async def test_the_archive_is_read_to_eof_not_one_short_read(dest, monkeypatch):
+    monkeypatch.setattr(ses_s3_email, "session", _archive_session(_ChunkedBody(b"a,b\n1,2\n"), length=8))
+    result = await ORIGINAL_ARCHIVE(URL, dest)
+    assert result["status"] == "success", result
+    assert result["size_bytes"] == 8
+    # A body that ends before its ContentLength is a truncation, never a success.
+    monkeypatch.setattr(ses_s3_email, "session", _archive_session(_ChunkedBody(b"a,b\n"), length=8))
+    result = await ORIGINAL_ARCHIVE(URL, dest)
+    assert result["status"] == "error" and "truncated" in result["error"]
+
+
+@respx.mock
+async def test_a_stalled_live_fetch_leaves_the_archive_time(dest, monkeypatch):
+    monkeypatch.setattr(ses_s3_email, "LINK_DOWNLOAD_MAX_SECONDS", 2)
+    called: list[float] = []
+
+    async def archive(*_a, **_k):
+        called.append(asyncio.get_running_loop().time())
+        return {"status": "success", "source": "s3_archive", "saved_to": "x"}
+
+    monkeypatch.setattr(ses_s3_email, "_fetch_archived_link", archive)
+
+    async def stall():
+        await asyncio.sleep(60)
+        yield b"x"
+
+    respx.get(URL).mock(return_value=httpx.Response(200, content=stall()))
+    result = await asyncio.wait_for(
+        ses_s3_email.download_link_attachment(url=URL, output_dir=str(dest), timeout_seconds=2), timeout=10
+    )
+    assert called, "the archive fallback never ran"
+    assert result["source"] == "s3_archive"
+
+
+async def test_a_batch_is_bounded_in_count_and_shares_one_byte_budget(dest, monkeypatch):
+    links = [{"url": f"https://reports.example.com/{i}.csv"} for i in range(30)]
+
+    async def extract(*_a, **_k):
+        return {"status": "success", "links": links, "subject": "s", "total_links_found": len(links)}
+
+    running = {"now": 0, "max": 0}
+
+    async def one(url, output_dir=None, timeout_seconds=120):
+        running["now"] += 1
+        running["max"] = max(running["max"], running["now"])
+        await asyncio.sleep(0.01)
+        try:
+            ses_s3_email._charge_batch_budget(400)
+        except ses_s3_email.LinkDownloadTooLarge as exc:
+            return {"status": "error", "error": str(exc)}
+        finally:
+            running["now"] -= 1
+        return {"status": "success", "saved_to": "x", "size_bytes": 400, "content_type": "text/csv"}
+
+    monkeypatch.setattr(ses_s3_email, "extract_download_links", extract)
+    monkeypatch.setattr(ses_s3_email, "download_link_attachment", one)
+    monkeypatch.setattr(ses_s3_email, "LINK_BATCH_MAX_COUNT", 20)
+    monkeypatch.setattr(ses_s3_email, "LINK_BATCH_MAX_BYTES", 2000)
+    result = await ses_s3_email.download_all_link_attachments("emails/k", output_dir=str(dest))
+    assert running["max"] <= ses_s3_email.LINK_BATCH_CONCURRENCY
+    assert result["downloaded_count"] == 5  # 5 x 400 bytes fit the 2000-byte budget
+    assert result["error_count"] == 25  # 15 over budget + 10 over the link count
+    assert sum("at most 20 links" in e["error"] for e in result["errors"]) == 10

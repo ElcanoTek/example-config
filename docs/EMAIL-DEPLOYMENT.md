@@ -71,20 +71,27 @@ root:root`, written by production-support's email provisioning):
 
 - Inbound: `EMAIL_S3_BUCKET`, `EMAIL_AWS_ACCESS_KEY_ID`,
   `EMAIL_AWS_SECRET_ACCESS_KEY` (optional `EMAIL_AWS_REGION`).
-  Searches return only mail SES inbound authenticated (DMARC pass, or an SPF /
-  DKIM pass aligned with the From domain's organizational domain, read from its
-  own `Authentication-Results`), and `sender_contains` matches the
-  authenticated mailbox; each result carries `sender_authenticated`, and
-  skipped mail is reported as an `unauthenticated_sender_skipped` warning.
+  Searches return only mail SES inbound authenticated, read from its own
+  `Authentication-Results`. That means a DMARC pass, or an SPF / DKIM pass for
+  the exact From domain or a subdomain of it; a parent or sibling domain counts
+  only through SES's own `dmarc=pass`. `sender_contains` takes the sender's DOMAIN (matching it
+  and its subdomains on label boundaries) or a full address, several
+  comma-separated, and matches the authenticated mailbox, never the display
+  name: a bare vendor name matches nothing. Each result carries
+  `sender_authenticated`; skipped mail is reported as an
+  `unauthenticated_sender_skipped` warning.
   Optional knobs: `EMAIL_SENDER_AUTH=off` falls back to the forgeable
-  From-substring match; `EMAIL_TRUSTED_LEGACY_PREFIXES` (comma-separated S3 key
-  prefixes, off by default) admits operator-imported legacy mail that has no
+  From-substring match (every search then warns);
+  `EMAIL_TRUSTED_LEGACY_PREFIXES` (comma-separated S3 key prefixes, off by
+  default) admits operator-imported legacy mail that has no
   `Authentication-Results`; `EMAIL_AUTHSERV_ID` (default `amazonses.com`) names
   the receiver; `EMAIL_LINK_MAX_BYTES` / `EMAIL_LINK_MAX_SECONDS` (200 MB /
   240 s) cap each email-link download, every redirect hop and the archive
-  fallback included. The debug log defaults to a private per-user file
-  (`<tmp>/ses_s3_email-<uid>/debug.log`, 0600), and URL query strings and
-  credentials are redacted from every log line.
+  fallback (which gets at most 30 s or a quarter of the deadline) included;
+  `EMAIL_LINK_MAX_COUNT` (20) and `EMAIL_LINK_BATCH_MAX_BYTES` (200 MB) bound
+  `download_all_link_attachments`, which fetches 3 links at a time. The debug
+  log defaults to a private per-user file (`<tmp>/ses_s3_email-<uid>/debug.log`,
+  0600), and every URL query value and credential is redacted from log lines.
 - Outbound: `SES_OUTBOUND_AWS_ACCESS_KEY_ID`,
   `SES_OUTBOUND_AWS_SECRET_ACCESS_KEY`, `SES_OUTBOUND_AWS_REGION`,
   `SES_OUTBOUND_FROM_EMAIL`, `SES_OUTBOUND_REPLY_TO`,

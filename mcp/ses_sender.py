@@ -12,6 +12,8 @@ that deployment's variables in, so this file stays the same across clients.
 from __future__ import annotations
 
 import contextlib
+import contextvars
+import functools
 import logging
 import mimetypes
 import os
@@ -21,6 +23,7 @@ import stat
 import sys
 import tempfile
 import time
+import types
 from collections.abc import Mapping, MutableMapping, Sequence
 from email.utils import parseaddr
 from pathlib import PurePath
@@ -95,7 +98,37 @@ _MAX_CONTENT_FILE_BYTES = 20 * 1024 * 1024
 _BUNDLE_ROOT = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
 
 
+# The allowed roots of ONE tool call, resolved once and pinned (device, inode)
+# when the call starts: the path checks and the reads/writes that follow all
+# use these, so a root swapped for a symlink in between is refused rather than
+# re-resolved to its new target (utils.safe_open.pin_roots).
+_CALL_ROOTS: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar("ses_call_roots", default=None)
+
+
+def _pinned_call(fn):
+    """Run a tool body with its allowed roots pinned for the whole call."""
+
+    async def wrapper(*args, **kwargs):
+        token = _CALL_ROOTS.set(safe_open.pin_roots(_configured_dirs()))
+        try:
+            return await fn(*args, **kwargs)
+        finally:
+            _CALL_ROOTS.reset(token)
+
+    rebuilt = types.FunctionType(
+        wrapper.__code__, fn.__globals__, fn.__name__, wrapper.__defaults__, wrapper.__closure__
+    )
+    functools.update_wrapper(rebuilt, fn)
+    return rebuilt
+
+
 def _allowed_dirs() -> list[str]:
+    """This call's pinned roots when a tool call is running, else freshly configured ones."""
+    pinned = _CALL_ROOTS.get()
+    return list(pinned) if pinned is not None else _configured_dirs()
+
+
+def _configured_dirs() -> list[str]:
     """Host-side roots this server may read attachments from.
 
     Shared by the security check and the diagnostics so a refused/missing path
@@ -653,6 +686,7 @@ def _missing_cid_message(problem: str, missing: list[str]) -> str:
 
 
 @mcp.tool()
+@_pinned_call
 async def send_email(
     to_email: str,
     subject: str,
@@ -1092,6 +1126,7 @@ async def send_email(
 
 
 @mcp.tool()
+@_pinned_call
 async def validate_email_content(
     content: str = "",
     content_file: str = "",
@@ -1157,6 +1192,7 @@ async def validate_email_content(
 
 
 @mcp.tool()
+@_pinned_call
 async def render_email(
     subject: str,
     blocks: list[dict[str, Any]],

@@ -192,3 +192,16 @@ def test_remove_created_never_follows_a_swapped_directory(tree, tmp_path):
     (tmp_path / "sub.orig").rename(tree["root"] / "sub")
     assert safe_open.remove_created(str(path), [str(tree["root"])], seen[0]) is True
     assert not path.exists()
+
+
+def test_a_root_swapped_before_resolve_is_not_adopted(tree, tmp_path):
+    """Once a configured root has been used, a later swap of that root for a
+    symlink (before _resolve even runs) is refused, never re-resolved."""
+    root = tree["root"]
+    assert safe_open.read_bytes(str(root / "sub" / "a.txt"), [str(root)])[0] == b"inside"  # first use pins it
+    (tree["outside"] / "sub").mkdir()
+    (tree["outside"] / "sub" / "a.txt").write_bytes(b"secret")
+    root.rename(tmp_path / "root.orig")
+    root.symlink_to(tree["outside"], target_is_directory=True)
+    with pytest.raises(safe_open.UnsafePathError):
+        safe_open.read_bytes(str(root / "sub" / "a.txt"), [str(root)])

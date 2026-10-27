@@ -66,15 +66,57 @@ def is_within(path: str, root: str) -> bool:
 
 
 def containing_root(real: str, roots: Iterable[str]) -> str | None:
-    """The deepest (longest) real root that contains ``real``, or None."""
+    """The deepest (longest) pinned root that contains ``real``, or None.
+
+    Every root is used as pinned (:func:`pin_roots`): a configured root is
+    resolved the FIRST time this process uses it and that resolution, with its
+    (device, inode), is kept; it is never realpath()ed again at call time, so a
+    root swapped for a symlink later is refused instead of adopted."""
     best: str | None = None
+    for root in pin_roots(roots):
+        if is_within(real, root) and (best is None or len(root) > len(best)):
+            best = root
+    return best
+
+
+# Configured root (as given) -> its pinned resolution, for the process lifetime.
+_ROOT_PINS: dict[str, _Root] = {}
+
+
+def _pin_one(root: str) -> _Root | None:
+    if isinstance(root, _Root) and root.ident is not None:
+        return root
+    cached = _ROOT_PINS.get(root)
+    if cached is not None:
+        return cached
+    real = _Root(os.path.realpath(root))
+    try:
+        st = os.stat(real)
+    except OSError:
+        return None  # not there yet: nothing to pin, nothing under it to open
+    if not stat.S_ISDIR(st.st_mode):
+        return None
+    real.ident = (st.st_dev, st.st_ino)
+    _ROOT_PINS[root] = real
+    return real
+
+
+def pin_roots(roots: Iterable[str]) -> list[str]:
+    """The allowed roots, each resolved ONCE per process and pinned by (device, inode).
+
+    Validation and the read/write that follows then check against the same
+    identities, so a root swapped for a symlink at any point after its first use
+    is refused (it is opened O_NOFOLLOW and its dev/ino must match) instead of
+    having its new target resolved and accepted. Roots that do not exist yet are
+    left out (and pinned when they first exist)."""
+    pinned: list[str] = []
     for root in roots:
         if not root:
             continue
-        real_root = os.path.realpath(root)
-        if is_within(real, real_root) and (best is None or len(real_root) > len(best)):
-            best = real_root
-    return best
+        one = _pin_one(root)
+        if one is not None and one not in pinned:
+            pinned.append(one)
+    return pinned
 
 
 class _Root(str):
@@ -99,13 +141,7 @@ def _resolve(path: str, roots: Iterable[str], label: str) -> tuple[str, list[str
     parts = [] if rel == "." else rel.split(os.sep)
     if any(part in ("", ".", "..") for part in parts):
         raise UnsafePathError(f"SECURITY: {label} path is not a plain path below an allowed directory: {path}")
-    pinned = _Root(root)
-    try:
-        st = os.stat(root)
-        pinned.ident = (st.st_dev, st.st_ino)
-    except OSError:
-        pinned.ident = None
-    return pinned, parts
+    return root, parts
 
 
 def _walk_dirs(root: str, parts: list[str], *, create: bool, label: str, path: str) -> int:

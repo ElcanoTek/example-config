@@ -80,33 +80,95 @@ def test_real_shaped_ses_headers_authenticate():
     assert inbox.authenticated_sender_domain([fake], FROM) is None
 
 
-def test_sibling_subdomains_align_by_organizational_domain():
-    sibling = "amazonses.com; dkim=pass header.d=mail.vendor.example; dmarc=none"
+def test_spf_dkim_alignment_is_strict_and_siblings_need_dmarc():
+    sibling_dkim_only = "amazonses.com; dkim=pass header.d=mail.vendor.example; dmarc=none"
+    reports = "x <reports@reports.vendor.example>"
+    # No guessed organizational domain: siblings do not align on DKIM/SPF alone...
+    assert inbox.authenticated_sender_domain([sibling_dkim_only], reports) is None
+    # ...only through the receiver's own dmarc=pass (it has the real public-suffix list).
     assert (
-        inbox.authenticated_sender_domain([sibling], "x <reports@reports.vendor.example>") == "reports.vendor.example"
+        inbox.authenticated_sender_domain(
+            ["amazonses.com; dkim=pass header.d=mail.vendor.example; dmarc=pass header.from=reports.vendor.example"],
+            reports,
+        )
+        == "reports.vendor.example"
     )
-    assert inbox.organizational_domain("a.b.vendor.co.uk") == "vendor.co.uk"
+    # A subdomain of the From domain aligns; a parent never does on SPF/DKIM alone
+    # (it could be a public / shared-hosting suffix): that needs dmarc=pass.
+    assert inbox._aligned("bounce.vendor.example", "vendor.example")
+    assert not inbox._aligned("vendor.example", "reports.vendor.example")
+    # Never across a public suffix, a lookalike, or a sibling.
+    assert not inbox._aligned("evil.co.id", "vendor.co.id")
     assert not inbox._aligned("vendor.example", "notvendor.example")
-    assert not inbox._aligned("attacker.co.uk", "vendor.co.uk")
+    assert not inbox._aligned("mail.vendor.example", "reports.vendor.example")
+    assert (
+        inbox.authenticated_sender_domain(["amazonses.com; dkim=pass header.d=evil.co.id"], "r <r@vendor.co.id>")
+        is None
+    )
 
 
-def test_httpx_request_lines_never_carry_a_presigned_query(caplog):
+def test_sender_filter_is_a_domain_or_a_full_mailbox():
+    def headers(addr):
+        domain = addr.rpartition("@")[2]
+        return {"from": f"Reports <{addr}>", "authenticated_domain": domain}
+
+    match = inbox.sender_filter_matches
+    assert match("vendor.example", headers("reports@vendor.example"))
+    assert match("vendor.example", headers("do_not_reply.reporting@mail.vendor.example"))
+    assert match("@vendor.example", headers("reports@vendor.example"))
+    assert match("reports@vendor.example", headers("Reports@Vendor.example"))
+    assert match("vendor.onmicrosoft.com,vendor.example", headers("reporting@vendor.onmicrosoft.com"))
+    assert not match("vendor.example", headers("reports@notvendor.example"))
+    assert not match("vendor.example", headers('"vendor.example"@attacker.example'))
+    assert not match("reports@vendor.example", headers("other@vendor.example"))
+    assert not match("vendor", headers("reports@vendor.example"))  # a bare name is not a domain
+
+
+def test_httpx_request_lines_never_carry_a_query_value():
+    """Root handlers redact records from any logger (httpx logs full URLs at INFO)."""
+    import io
     import logging as _logging
 
-    with caplog.at_level(_logging.INFO, logger="httpx"):
-        _logging.getLogger("httpx").info('HTTP Request: GET %s "HTTP/1.1 200 OK"', "https://b/x?X-Amz-Signature=s")
-    assert "X-Amz-Signature=s" not in caplog.text
-    assert "https://b/x?X-Amz-Signature=***" in caplog.text
+    stream = io.StringIO()
+    handler = _logging.StreamHandler(stream)
+    root = _logging.getLogger()
+    root.addHandler(handler)
+    httpx_logger = _logging.getLogger("httpx")
+    old_level = httpx_logger.level
+    httpx_logger.setLevel(_logging.INFO)
+    try:
+        inbox.install_root_redaction([handler])
+        httpx_logger.info('HTTP Request: GET %s "HTTP/1.1 200 OK"', "https://b/x?upn=SECRET1&ticket=SECRET2&page=2")
+    finally:
+        root.removeHandler(handler)
+        httpx_logger.setLevel(old_level)
+    text = stream.getvalue()
+    assert "SECRET1" not in text and "SECRET2" not in text
+    assert "https://b/x?upn=***&ticket=***&page=***" in text
+    # Idempotent over already-masked values.
+    assert inbox.redact_url_queries("https://b/x?apiKey=***&page=1") == "https://b/x?apiKey=***&page=***"
+
+
+def test_a_quoted_mail_from_cannot_inject_a_verdict():
+    payload = (
+        'amazonses.com; spf=pass smtp.mailfrom="x;dmarc=pass;header.from=vendor.example"@attacker.example; '
+        "dkim=none; dmarc=fail header.from=vendor.example"
+    )
+    assert inbox.authenticated_sender_domain([payload], FROM) is None
+    comment = "amazonses.com; spf=fail (dmarc=pass; header.from=vendor.example) smtp.mailfrom=a@attacker.example"
+    assert inbox.authenticated_sender_domain([comment], FROM) is None
+    escaped = 'amazonses.com; spf=pass smtp.mailfrom="a\\";dmarc=pass;header.from=vendor.example"@attacker.example'
+    assert inbox.authenticated_sender_domain([escaped], FROM) is None
 
 
 def test_a_display_name_cannot_carry_the_vendor_domain():
-    """Authenticated mail from attacker.example named "OpenX openx.com" is not OpenX's."""
-    spoof = {"from": '"OpenX openx.com" <reports@attacker.example>', "authenticated_domain": "attacker.example"}
+    """Authenticated mail from attacker.example named "Vendor vendor.example" is not Vendor's."""
+    spoof = {"from": '"Vendor vendor.example" <reports@attacker.example>', "authenticated_domain": "attacker.example"}
     assert inbox.sender_authenticated(spoof)
-    assert not inbox.sender_filter_matches("openx.com", spoof)
+    assert not inbox.sender_filter_matches("vendor.example", spoof)
     # The authenticated domain must be the From mailbox's own.
-    mismatched = {"from": "reports@openx.com", "authenticated_domain": "attacker.example"}
-    assert not inbox.sender_filter_matches("openx.com", mismatched)
+    mismatched = {"from": "reports@vendor.example", "authenticated_domain": "attacker.example"}
+    assert not inbox.sender_filter_matches("vendor.example", mismatched)
 
 
 def test_sender_filter_needs_authentication(monkeypatch):
@@ -213,11 +275,16 @@ async def test_search_emails_skips_a_forged_vendor_sender(monkeypatch):
 
     fuzzy = await inbox.search_emails_fuzzy(keywords=["report"], date_from="2026-10-26", date_to="2026-10-26")
     assert [e["s3_key"] for e in fuzzy["emails"]] == ["emails/genuine"], fuzzy
+    assert fuzzy["emails"][0]["sender_authenticated"] is True
+    assert fuzzy["emails"][0]["trusted_legacy_archive"] is False
 
     monkeypatch.setattr(inbox, "EMAIL_SENDER_AUTH", "off")
     legacy = await inbox.search_emails(sender_contains="vendor.example", date_from="2026-10-26", date_to="2026-10-26")
     assert len(legacy["emails"]) == 3
     assert "unauthenticated_sender_match" in {w["code"] for w in legacy["search_warnings"]}
+    fuzzy_off = await inbox.search_emails_fuzzy(keywords=["report"], date_from="2026-10-26", date_to="2026-10-26")
+    assert len(fuzzy_off["emails"]) == 3
+    assert "unauthenticated_sender_match" in {w["code"] for w in fuzzy_off["search_warnings"]}
 
 
 # -- logs -----------------------------------------------------------------------------
@@ -277,3 +344,13 @@ def test_operator_trusted_legacy_prefix_hook(monkeypatch):
     assert inbox.message_trusted("emails/legacy/mailbux-1", unauth)
     assert inbox.sender_filter_matches("vendor.example", unauth, "emails/legacy/mailbux-1")
     assert not inbox.message_trusted("emails/2026/10/26/abc", unauth)
+
+
+def test_shared_hosting_suffixes_never_align_tenants():
+    """vendor.onmicrosoft.com and evil.onmicrosoft.com are different senders."""
+    ix = "Reports <reporting@vendor.onmicrosoft.com>"
+    forged = "amazonses.com; spf=pass smtp.mailfrom=x@evil.onmicrosoft.com; dkim=pass header.d=onmicrosoft.com"
+    assert inbox.authenticated_sender_domain([forged], ix) is None
+    assert not inbox._aligned("evil.onmicrosoft.com", "vendor.onmicrosoft.com")
+    genuine = "amazonses.com; dkim=pass header.d=vendor.onmicrosoft.com; dmarc=none"
+    assert inbox.authenticated_sender_domain([genuine], ix) == "vendor.onmicrosoft.com"

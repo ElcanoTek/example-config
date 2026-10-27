@@ -27,6 +27,7 @@ Environment Variables:
 
 import asyncio
 import contextlib
+import contextvars
 import email
 import hashlib
 import json
@@ -69,17 +70,14 @@ logger = logging.getLogger(__name__)
 _URL_QUERY_RE = re.compile(r"(https?://[^\s?#'\"<>]+)\?[^\s'\"<>]*", re.IGNORECASE)
 
 
-# Query parameters whose VALUE is a credential (presigned S3 X-Amz-*, generic
-# sig / token / key / secret / auth / session / password / code). Other values
-# (page=2) stay readable; a credential value becomes "***".
-_SECRET_PARAM_RE = re.compile(r"(?i)(x-amz-|sig|token|key|secret|auth|session|pass|code|credential)")
-
-
+# Every query VALUE is masked (keys kept: ?upn=***&ticket=***): bearer links put
+# their credential under arbitrary names, so guessing which ones are secret is
+# not safe. Idempotent: an already-masked value stays "***".
 def _mask_query(query: str) -> str:
     parts = []
     for pair in query.split("&"):
         name, sep, _value = pair.partition("=")
-        parts.append(f"{name}=***" if sep and _SECRET_PARAM_RE.search(name) else pair)
+        parts.append(f"{name}=***" if sep else pair)
     return "&".join(parts)
 
 
@@ -102,13 +100,32 @@ class _RedactUrlQueries(logging.Filter):
 
 
 logger.addFilter(_RedactUrlQueries())
-# httpx / httpcore log every request line ("HTTP Request: GET <full url>") at
-# INFO on their own loggers, which this logger's filter never sees: redact on
-# those loggers and on every root handler too.
-for _noisy in ("httpx", "httpcore"):
-    logging.getLogger(_noisy).addFilter(_RedactUrlQueries())
-for _handler in logging.getLogger().handlers:
-    _handler.addFilter(_RedactUrlQueries())
+
+
+class _RedactingFormatter(logging.Formatter):
+    """Wraps a handler's formatter: the TEXT it writes loses query values, and the
+    shared LogRecord is never modified (other handlers see it unchanged)."""
+
+    def __init__(self, inner: logging.Formatter | None) -> None:
+        super().__init__()
+        self._inner = inner or logging.Formatter()
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact_url_queries(self._inner.format(record))
+
+
+def install_root_redaction(handlers: list[logging.Handler] | None = None) -> None:
+    """Redact what the root handlers write, so records from ANY logger this
+    process emits (httpx / httpcore log "HTTP Request: GET <full url>" at INFO on
+    their own loggers, which this module's logger filter never sees) lose their
+    query values. Formatter-level, so another module's own logger-level masking
+    (e.g. an SSP server's) and other handlers are untouched."""
+    for handler in logging.getLogger().handlers if handlers is None else handlers:
+        if not isinstance(handler.formatter, _RedactingFormatter):
+            handler.setFormatter(_RedactingFormatter(handler.formatter))
+
+
+install_root_redaction()
 
 
 def _debug_log_path() -> str | None:
@@ -543,7 +560,7 @@ def _build_search_warnings(
                 "code": "sender_filter_not_meaningful",
                 "severity": "high",
                 "message": "sender_contains has no letters or digits and will not narrow results reliably.",
-                "suggestion": "Use a sender domain/name fragment like 'thetradedesk.com' or remove sender_contains.",
+                "suggestion": "Use a sender domain like 'thetradedesk.com' or a full address, or remove sender_contains.",
             }
         )
 
@@ -727,36 +744,57 @@ EMAIL_SENDER_AUTH = os.environ.get("EMAIL_SENDER_AUTH", "required").strip().lowe
 
 _AUTH_METHOD_RE = re.compile(r"^(dmarc|dkim|spf)\s*=\s*([a-z]+)\b(.*)$", re.IGNORECASE | re.DOTALL)
 _AUTH_PROP_RE = re.compile(
-    r"\b(header\.from|header\.d|header\.i|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*\"?([^\s;\"]+)",
+    r"\b(header\.from|header\.d|header\.i|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*"
+    r'((?:"(?:[^"\\]|\\.)*"|[^\s;"])+)',
     re.IGNORECASE,
 )
-# Multi-label public suffixes common in mail domains. Without a public-suffix
-# library in the requirements (none is), the organizational domain is the last
-# two labels, or three under one of these. DMARC's own verdict (dmarc=pass,
-# computed by the receiver with the real PSL) is preferred and accepted first;
-# this only decides SPF / DKIM alignment when no dmarc=pass is present.
-_MULTI_LABEL_SUFFIXES = frozenset(
-    {
-        "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "ltd.uk", "plc.uk",
-        "com.au", "net.au", "org.au", "edu.au", "gov.au",
-        "co.nz", "org.nz", "co.jp", "ne.jp", "or.jp", "co.kr", "co.in", "co.za",
-        "com.br", "com.mx", "com.ar", "com.cn", "com.hk", "com.sg", "com.tr", "com.tw",
-    }
-)  # fmt: skip
 
 
-def _strip_comments(text: str) -> str:
-    """Remove RFC 5322 (comments), which may nest and contain '=' or ';'."""
-    out: list[str] = []
+def _split_resinfo(text: str) -> list[str]:
+    """Split an Authentication-Results value on ';' the RFC 8601 / 5322 way:
+    never inside a "quoted-string" (backslash escapes honoured) or a (comment),
+    which may nest; comments are dropped. A quoted MAIL FROM local part such as
+    "x;dmarc=pass;header.from=vendor.example"@attacker.example therefore stays
+    one value and cannot inject a verdict."""
+    items: list[str] = []
+    current: list[str] = []
     depth = 0
+    in_quote = False
+    escaped = False
     for ch in text:
+        if escaped:
+            if not depth:
+                current.append(ch)
+            escaped = False
+            continue
+        if ch == "\\" and (in_quote or depth):
+            escaped = True
+            if not depth:
+                current.append(ch)
+            continue
+        if in_quote:
+            current.append(ch)
+            if ch == '"':
+                in_quote = False
+            continue
         if ch == "(":
             depth += 1
-        elif ch == ")" and depth:
+            continue
+        if ch == ")" and depth:
             depth -= 1
-        elif not depth:
-            out.append(ch)
-    return "".join(out)
+            continue
+        if depth:
+            continue
+        if ch == '"':
+            in_quote = True
+            current.append(ch)
+        elif ch == ";":
+            items.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    items.append("".join(current))
+    return items
 
 
 def _address_domain(value: str) -> str:
@@ -764,20 +802,17 @@ def _address_domain(value: str) -> str:
     return address.rpartition("@")[2].strip().strip(".").lower()
 
 
-def organizational_domain(domain: str) -> str:
-    labels = [label for label in domain.lower().strip(".").split(".") if label]
-    if len(labels) >= 3 and ".".join(labels[-2:]) in _MULTI_LABEL_SUFFIXES:
-        return ".".join(labels[-3:])
-    return ".".join(labels[-2:])
-
-
 def _aligned(auth_domain: str, from_domain: str) -> bool:
-    """Relaxed DMARC alignment: the same organizational domain (so
-    reports.vendor.com and mail.vendor.com align; vendor.com and
-    notvendor.com do not)."""
+    """SPF / DKIM alignment without a public-suffix list: the authenticated domain
+    is the From domain itself or a SUBDOMAIN of it (bounce.vendor.com proves
+    vendor.com). Never a parent: a parent may be a public or shared-hosting
+    suffix (onmicrosoft.com, co.id) that any tenant can authenticate as. Parent
+    and sibling relations (vendor.com for reports.vendor.com; mail. vs reports.)
+    align only through the receiver's own dmarc=pass, which SES computes with the
+    real public-suffix list; this module never guesses an organizational domain."""
     if not auth_domain or not from_domain:
         return False
-    return organizational_domain(auth_domain) == organizational_domain(from_domain)
+    return auth_domain == from_domain or auth_domain.endswith("." + from_domain)
 
 
 def _auth_results(text: str) -> list[tuple[str, str, list[str]]]:
@@ -788,7 +823,7 @@ def _auth_results(text: str) -> list[tuple[str, str, list[str]]]:
     helo=...``), so an item that does not start a new method belongs to the
     one before it."""
     found: list[tuple[str, str, list[str]]] = []
-    for item in _strip_comments(text).split(";")[1:]:
+    for item in _split_resinfo(text)[1:]:
         item = item.strip()
         match = _AUTH_METHOD_RE.match(item)
         if match:
@@ -805,14 +840,15 @@ def authenticated_sender_domain(auth_results: list[str], from_header: str) -> st
     """The From domain when the receiver authenticated it, else None.
 
     Reads only the topmost Authentication-Results whose authserv-id is
-    EMAIL_AUTHSERV_ID. Accepted: dmarc=pass for the From domain, or dkim=pass /
-    spf=pass for a domain aligned (same organizational domain) with it."""
+    EMAIL_AUTHSERV_ID. Accepted: dmarc=pass for the From domain (relaxed
+    alignment, decided by the receiver), or dkim=pass / spf=pass for the From
+    domain itself or a subdomain of it."""
     from_domain = _address_domain(str(from_header or ""))
     if not from_domain:
         return None
     for header in auth_results:
         text = " ".join(str(header or "").split())
-        authserv = _strip_comments(text).split(";", 1)[0].strip().split()
+        authserv = _split_resinfo(text)[0].strip().split()
         if not authserv or authserv[0].lower() != EMAIL_AUTHSERV_ID:
             continue
         for method, result, domains in _auth_results(text):
@@ -853,18 +889,45 @@ def message_trusted(s3_key: str, headers: dict[str, str]) -> bool:
     return sender_authenticated(headers) or trusted_legacy_key(s3_key)
 
 
+def _sender_needles(sender_filter: str) -> list[str]:
+    """Comma-separated items, lowercased; "@vendor.com" is the domain "vendor.com"."""
+    needles = []
+    for item in sender_filter.split(","):
+        item = item.strip().lower()
+        if item.startswith("@") and item.count("@") == 1:
+            item = item[1:]
+        if item:
+            needles.append(item)
+    return needles
+
+
+def mailbox_matches(needle: str, mailbox: str) -> bool:
+    """One sender filter item against a parsed mailbox: an item with "@" must be
+    the whole mailbox; anything else is a DOMAIN, matched as the mailbox domain
+    or a subdomain of it (so "vendor.example" matches reports@mail.vendor.example, never
+    notvendor.example or vendor.example@attacker.example)."""
+    mailbox = mailbox.lower()
+    if "@" in needle:
+        return mailbox == needle
+    domain = mailbox.rpartition("@")[2]
+    return bool(domain) and (domain == needle or domain.endswith("." + needle))
+
+
 def sender_filter_matches(sender_filter: str, headers: dict[str, str], s3_key: str = "") -> bool:
     """Does ``sender_filter`` select this mail?
 
-    Under EMAIL_SENDER_AUTH=required the filter is matched against the parsed
-    From MAILBOX only (never the display name, which anyone can set to
-    "OpenX openx.com"), and that mailbox's domain must be the one the receiver
-    authenticated. Under "off" it is the old substring match on the header."""
-    needle = sender_filter.lower()
+    ``sender_filter`` is one or more comma-separated items, each a sender DOMAIN
+    ("vendor.example") or a full mailbox ("reports@vendor.example"); see
+    :func:`mailbox_matches`. Under EMAIL_SENDER_AUTH=required the item is matched
+    against the parsed From MAILBOX only (never the display name), and that
+    mailbox's domain must be the one the receiver authenticated. Under "off" it is
+    the old case-insensitive substring match on the whole header."""
+    needles = _sender_needles(sender_filter)
     if EMAIL_SENDER_AUTH == "off":
-        return needle in str(headers.get("from", "")).lower()
+        header = str(headers.get("from", "")).lower()
+        return any(n in header for n in needles)
     mailbox = parseaddr(str(headers.get("from", "")))[1].lower()
-    return bool(mailbox) and needle in mailbox and message_trusted(s3_key, headers)
+    return bool(mailbox) and any(mailbox_matches(n, mailbox) for n in needles) and message_trusted(s3_key, headers)
 
 
 def include_unauthenticated() -> bool:
@@ -1808,7 +1871,11 @@ async def search_emails(
     Args:
         subject_contains: Case-insensitive substring match in subject line
         subject_keywords: Case-insensitive list of keywords to find in subject (matches any by default)
-        sender_contains: Case-insensitive substring match in sender email/name
+        sender_contains: The sender's DOMAIN ("vendor.example", also matching its
+            subdomains) or full mailbox ("reports@vendor.example"); several as a comma-separated
+            list ("vendor.onmicrosoft.com,vendor.example"). Matched against the
+            authenticated From mailbox, never the display name; a bare name like
+            "vendor" matches nothing.
         recipient_contains: Case-insensitive substring match in To recipients
         date_from: Only emails received on or after this date (ISO format: "2026-01-20")
         date_to: Only emails received on or before this date (ISO format: "2026-01-27")
@@ -1840,7 +1907,7 @@ async def search_emails(
 
         # Prior-week target day query (run separately from current-day query)
         search_emails(
-            sender_contains="<part of that sender's name>",
+            sender_contains="<that sender's domain, or its full address>",
             has_payload=True,
             date_from="2026-03-16",
             date_to="2026-03-16",
@@ -2498,6 +2565,8 @@ async def search_emails_fuzzy(
                                     "attachment_names": attachments,
                                     "match_score": match_score,
                                     "matched_keywords": matches,
+                                    "sender_authenticated": authenticated,
+                                    "trusted_legacy_archive": trusted_legacy_key(obj["Key"]),
                                 }
                             )
 
@@ -2537,6 +2606,16 @@ async def search_emails_fuzzy(
                     "message": f"{unauthenticated_skipped} email(s) were left out: the receiving server did not "
                     "authenticate their sender, so their From header may be forged.",
                     "suggestion": "Only an operator can include them (EMAIL_SENDER_AUTH=off).",
+                }
+            )
+        if EMAIL_SENDER_AUTH == "off":
+            search_warnings.append(
+                {
+                    "code": "unauthenticated_sender_match",
+                    "severity": "medium",
+                    "message": "EMAIL_SENDER_AUTH=off: results include mail whose sender was not authenticated, "
+                    "and the sender text searched can be forged.",
+                    "suggestion": "Check each result's sender_authenticated before trusting it as a vendor's report.",
                 }
             )
 
@@ -2793,9 +2872,28 @@ async def _fetch_archived_link(
             declared = response.get("ContentLength")
             if isinstance(declared, int) and declared > LINK_DOWNLOAD_MAX_BYTES:
                 return _archive_too_large(url, declared)
-            content = await response["Body"].read(LINK_DOWNLOAD_MAX_BYTES + 1)
-            if len(content) > LINK_DOWNLOAD_MAX_BYTES:
-                return _archive_too_large(url, len(content))
+            # StreamingBody.read(n) may return fewer bytes than asked before EOF:
+            # read until EOF under a cumulative cap, then check it is complete.
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = await response["Body"].read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > LINK_DOWNLOAD_MAX_BYTES:
+                    return _archive_too_large(url, total)
+                _charge_batch_budget(len(chunk))
+                chunks.append(chunk)
+            content = b"".join(chunks)
+            if isinstance(declared, int) and len(content) != declared:
+                return {
+                    "status": "error",
+                    "source": "s3_archive",
+                    "url": url,
+                    "error": f"The archived copy was truncated ({len(content)} of {declared} bytes); not saved.",
+                    "retryable": True,
+                }
             metadata = response.get("Metadata", {})
 
         reserved = reserve_output_file(download_dir, filename or archived_name, f"archive:{url}")
@@ -2834,9 +2932,31 @@ LINK_DOWNLOAD_MAX_SECONDS = int(os.environ.get("EMAIL_LINK_MAX_SECONDS", "") or 
 LINK_DOWNLOAD_MAX_REDIRECTS = 10
 
 
+# A batch (download_all_link_attachments) shares ONE byte budget across its
+# downloads; None outside a batch. A list so concurrent downloads of the batch
+# charge the same counter.
+LINK_BATCH_MAX_COUNT = int(os.environ.get("EMAIL_LINK_MAX_COUNT", "") or 20)
+LINK_BATCH_CONCURRENCY = 3
+LINK_BATCH_MAX_BYTES = int(os.environ.get("EMAIL_LINK_BATCH_MAX_BYTES", "") or 200 * 1024 * 1024)
+_BATCH_BUDGET: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar("link_batch_budget", default=None)
+
+
+def _charge_batch_budget(n: int) -> None:
+    budget = _BATCH_BUDGET.get()
+    if budget is None:
+        return
+    budget[0] -= n
+    if budget[0] < 0:
+        raise LinkDownloadTooLarge(LINK_BATCH_MAX_BYTES - budget[0], batch=True)
+
+
 class LinkDownloadTooLarge(Exception):
-    def __init__(self, size: int) -> None:
-        super().__init__(f"The download is larger than the {LINK_DOWNLOAD_MAX_BYTES}-byte cap ({size}+ bytes).")
+    def __init__(self, size: int, *, batch: bool = False) -> None:
+        if batch:
+            message = f"The batch's downloads together exceed the {LINK_BATCH_MAX_BYTES}-byte batch budget."
+        else:
+            message = f"The download is larger than the {LINK_DOWNLOAD_MAX_BYTES}-byte cap ({size}+ bytes)."
+        super().__init__(message)
         self.size = size
 
 
@@ -2905,8 +3025,13 @@ async def download_link_attachment(
 
     classification = classify_url(url)
     effective_timeout = max(1, min(int(timeout_seconds or LINK_DOWNLOAD_MAX_SECONDS), LINK_DOWNLOAD_MAX_SECONDS))
-    # ONE deadline for the whole call: the HTML-chase fetch gets only what is left.
-    deadline = asyncio.get_running_loop().time() + effective_timeout
+    # ONE deadline for the whole call: the HTML-chase fetch gets only what is
+    # left. The live fetch stops early enough to leave the archive fallback a
+    # slice (25% of the budget, at most 30 s), so a stalled live link cannot
+    # starve the fallback that exists for exactly that case.
+    started = asyncio.get_running_loop().time()
+    deadline = started + effective_timeout
+    live_deadline = deadline - min(30.0, effective_timeout * 0.25)
 
     async def _fetch(target_url: str) -> httpx.Response:
         # SSRF guard: the request event hook vets the host of EVERY hop
@@ -2921,7 +3046,7 @@ async def download_link_attachment(
         # and the whole fetch, redirects included, must finish within the
         # clamped timeout; httpx's own timeout is per read, so a server that
         # drips bytes could otherwise hold the call (and memory) open forever.
-        remaining = deadline - asyncio.get_running_loop().time()
+        remaining = live_deadline - asyncio.get_running_loop().time()
         if remaining <= 0:
             raise httpx.TimeoutException(f"no time left of the {effective_timeout}s deadline")
 
@@ -2954,6 +3079,7 @@ async def download_link_attachment(
                             total += len(chunk)
                             if total > LINK_DOWNLOAD_MAX_BYTES:
                                 raise LinkDownloadTooLarge(total)
+                            _charge_batch_budget(len(chunk))
                             chunks.append(chunk)
                         streamed._content = b"".join(chunks)  # what Response.aread() stores
                         streamed.history = history
@@ -3167,22 +3293,37 @@ async def download_all_link_attachments(
         downloaded = []
         errors = []
 
-        # Create tasks for all downloads
-        download_tasks = []
-        for link in links_result["links"]:
-            download_tasks.append(
-                download_link_attachment(
+        # Bounded batch: at most LINK_BATCH_MAX_COUNT links, LINK_BATCH_CONCURRENCY
+        # at a time, all charging one LINK_BATCH_MAX_BYTES budget, so one email
+        # with many links cannot make the server buffer N x the per-file cap.
+        links = links_result["links"][:LINK_BATCH_MAX_COUNT]
+        skipped_links = links_result["links"][LINK_BATCH_MAX_COUNT:]
+        gate = asyncio.Semaphore(LINK_BATCH_CONCURRENCY)
+        budget_token = _BATCH_BUDGET.set([LINK_BATCH_MAX_BYTES])
+
+        async def _one(link: dict[str, Any]) -> dict[str, Any]:
+            async with gate:
+                return await download_link_attachment(
                     url=link["url"],
                     output_dir=download_dir,
                     timeout_seconds=timeout_seconds,
                 )
+
+        try:
+            results = await asyncio.gather(*(_one(link) for link in links))
+        finally:
+            _BATCH_BUDGET.reset(budget_token)
+        for link in skipped_links:
+            errors.append(
+                {
+                    "url": link["url"],
+                    "link_text": link.get("link_text"),
+                    "error": f"Not downloaded: a batch fetches at most {LINK_BATCH_MAX_COUNT} links.",
+                }
             )
 
-        # Execute downloads concurrently
-        results = await asyncio.gather(*download_tasks)
-
         # Process results
-        for link, result in zip(links_result["links"], results, strict=True):
+        for link, result in zip(links, results, strict=True):
             if result["status"] == "success":
                 downloaded.append(
                     {
@@ -3243,7 +3384,11 @@ async def find_latest_report(
     number of scanned days is capped at `lookback_days` (hard max 60).
 
     Args:
-        sender_contains: Case-insensitive substring match on sender.
+        sender_contains: The sender's DOMAIN ("vendor.example", also matching its
+            subdomains) or full mailbox ("reports@vendor.example"); several as a comma-separated
+            list ("vendor.onmicrosoft.com,vendor.example"). Matched against the
+            authenticated From mailbox, never the display name; a bare name like
+            "vendor" matches nothing.
         subject_contains: Case-insensitive substring match on subject.
         subject_keywords: Case-insensitive list of keywords to find in subject.
         recipient_contains: Case-insensitive substring match on recipient.
