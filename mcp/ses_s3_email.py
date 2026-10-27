@@ -131,6 +131,9 @@ def _redact_one_url(url: str) -> str:
     scheme, sep, rest = url.partition("://")
     if not sep:
         return url
+    # Lenient parsers (WHATWG, httpx) read "\\" as "/", so a backslash path
+    # (https://host\\download\\SECRET.csv) is masked like a slash path.
+    rest = rest.replace("\\", "/")
     cut = len(rest)
     for delimiter in "/?#":
         index = rest.find(delimiter)

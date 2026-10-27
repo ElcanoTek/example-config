@@ -1143,12 +1143,16 @@ def test_capability_paths_are_masked_and_tagged_with_a_short_hash():
         ("https://files.example/a/archive.tar.gz", "https://files.example/\u2026/***.gz"),
         ("https://files.example/a/x.123", "https://files.example/\u2026/***"),
         ("https://files.example/", "https://files.example/"),
+        # Backslashes are path separators too.
+        ("https://files.example\\download\\SECRET.csv", "https://files.example/\u2026/***.csv"),
+        ("https://files.example\\SECRET", "https://files.example/***"),
     ],
 )
 def test_the_last_path_segment_keeps_only_its_extension(url, shown):
     out = inbox.redact_url_queries(url)
     assert _redacted(url) == shown, out
-    secret = url.rsplit("/", 1)[-1].rpartition(".")[0] or url.rsplit("/", 1)[-1]
+    last = url.replace("\\", "/").rsplit("/", 1)[-1]
+    secret = last.rpartition(".")[0] or last
     if len(secret) >= 3:
         assert secret not in out and "[url-id:" in out  # any path segment: masked and tagged
     assert inbox.redact_url_queries(out) == out  # idempotent
