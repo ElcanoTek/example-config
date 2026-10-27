@@ -54,6 +54,11 @@ from mcp.server.fastmcp import FastMCP
 from utils import safe_open, url_guard
 from utils.fsutil import ensure_dir
 
+try:  # IDNA 2008 / UTS 46 (a dependency of httpx); see idna_domain
+    import idna as _idna_pkg
+except ImportError:  # pragma: no cover - fail closed without it
+    _idna_pkg = None
+
 _LINE_CONT_RE = re.compile(r"=[\r\n]+")
 _SPACE_RE = re.compile(r"\s+")
 _ALNUM_RE = re.compile(r"[A-Za-z0-9]")
@@ -66,19 +71,75 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# URLs in log lines lose their query string and fragment ENTIRELY (?*** / #***):
-# presigned S3 / report links carry their credential (X-Amz-Signature,
-# token=...) there, under arbitrary names, no name at all, or AS the name
-# (?eyJhbGciOi...=), so no part of either is kept. Only scheme://host/path
-# survives, with any userinfo masked too.
+# URLs in log lines keep only what identifies them, never what grants access:
+# capability links carry their credential in the query (X-Amz-Signature,
+# token=..., or the token AS a parameter name), in the fragment, in the
+# userinfo, or as a PATH segment (https://files.example/download/<secret>/x.csv).
+# So a logged URL keeps its scheme and host, and its LAST path segment only
+# when that is an ordinary filename (report.csv; a token-like segment becomes
+# ***); every earlier segment, the whole query, the whole fragment and any
+# userinfo are masked (https://***@host/…/report.csv?***#***), followed by a
+# short sha256 of the full original URL ([url-sha256:…]) so operators can
+# still tell links apart.
 #
 # Structural, not one regex per part: each URL candidate (scheme to the next
 # whitespace, quote-mark " or angle bracket) is split by the URL grammar
 # itself. The authority ends at the first "/", "?" or "#"; everything before
 # its LAST "@" is userinfo (any characters: non-ASCII, apostrophes, ...); the
 # query / fragment start at the first "?" / "#" after it. An apostrophe ends
-# nothing: over-redacting a closing quote beats leaking a token.
+# nothing: over-redacting a closing quote beats leaking a token. Idempotent:
+# an already-redacted URL is left as it is (no second hash).
 _URL_CANDIDATE_RE = re.compile(r"https?://[^\s\"<>]+", re.IGNORECASE)
+_URL_HASH_TAG = " [url-sha256:"
+_MASKED_SEGMENT = "\u2026"  # "…"
+
+
+_FILENAME_RE = re.compile(r"(?P<stem>[^/]{1,59})\.(?P<ext>[A-Za-z][A-Za-z0-9]{0,4})")
+_TOKEN_RUN_RE = re.compile(r"[A-Za-z0-9+/=]{24,}")
+
+
+def _looks_random(stem: str) -> bool:
+    """A stem that reads like a token: mostly letters-and-digits soup (many
+    digit/letter switches, or long with no separator and mixed case)."""
+    alnum = [c for c in stem if c.isalnum()]
+    if len(alnum) < 12:
+        return False
+    switches = sum(1 for a, b in zip(alnum, alnum[1:], strict=False) if a.isdigit() != b.isdigit())
+    if switches >= len(alnum) // 3:
+        return True
+    mixed = any(c.isupper() for c in alnum) and any(c.islower() for c in alnum) and any(c.isdigit() for c in alnum)
+    return mixed and not any(c in "_- .%" for c in stem) and len(alnum) >= 16
+
+
+def _keepable_last_segment(segment: str) -> bool:
+    """An ordinary filename may stay in a log line: at most 64 characters, a
+    short alphabetic extension (.csv, .xlsx, .zip, .pdf, .json, ...), and a
+    stem with no token-like run (24+ base64 / hex characters) that is not
+    mostly random characters. Anything else may be a bearer token."""
+    if not segment or len(segment) > 64 or segment == _MASKED_SEGMENT:
+        return False
+    match = _FILENAME_RE.fullmatch(segment)
+    if not match:
+        return False
+    stem = match.group("stem")
+    return not _TOKEN_RUN_RE.search(stem) and not _looks_random(stem)
+
+
+def _mask_path(path: str) -> str:
+    """ "/a/b/report.csv" -> "/…/report.csv": every segment but the last masked,
+    and the last kept only when it is an ordinary filename ("/…/***" when it
+    may be a token: /download/<token>, /<token>)."""
+    if path in ("", "/"):
+        return path
+    segments = path.split("/")  # path starts with "/"
+    last = segments[-1]
+    earlier = segments[1:-1]
+    if earlier == [_MASKED_SEGMENT] and (last == "***" or _keepable_last_segment(last)):
+        return path  # already redacted
+    shown = last if _keepable_last_segment(last) else ("" if last == "" else "***")
+    if not earlier:
+        return "/" + shown
+    return "/" + _MASKED_SEGMENT + "/" + shown
 
 
 def _redact_one_url(url: str) -> str:
@@ -94,19 +155,29 @@ def _redact_one_url(url: str) -> str:
     if "@" in authority:
         authority = "***@" + authority.rpartition("@")[2]
     query_at = min((i for i in (tail.find("?"), tail.find("#")) if i != -1), default=-1)
-    if query_at != -1:
-        path, rest_q = tail[:query_at], tail[query_at:]
+    path, rest_q = (tail[:query_at], tail[query_at:]) if query_at != -1 else (tail, "")
+    masked = ""
+    if rest_q:
         masked = "?***" if rest_q.startswith("?") else ""
         if "#" in rest_q:
             masked += "#***"
-        tail = path + masked
-    return f"{scheme}://{authority}{tail}"
+    return f"{scheme}://{authority}{_mask_path(path)}{masked}"
 
 
 def redact_url_queries(text: str) -> str:
     """Mask URL credentials in a log line: userinfo (https://user:pass@host ->
-    https://***@host), the whole query and the whole fragment."""
-    return _URL_CANDIDATE_RE.sub(lambda m: _redact_one_url(m.group(0)), text)
+    https://***@host), every path segment but the last, the whole query and the
+    whole fragment; a changed URL is tagged with a short sha256 of the original."""
+
+    def _sub(match: re.Match[str]) -> str:
+        url = match.group(0)
+        redacted = _redact_one_url(url)
+        if redacted == url or text.startswith(_URL_HASH_TAG, match.end()):
+            return redacted
+        digest = hashlib.sha256(url.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+        return f"{redacted}{_URL_HASH_TAG}{digest}]"
+
+    return _URL_CANDIDATE_RE.sub(_sub, text)
 
 
 class _RedactUrlQueries(logging.Filter):
@@ -578,18 +649,55 @@ def _write_fd(fd: int, data: Any) -> None:
             fh.write(data)
 
 
+def _discard_reserved(reserved: ReservedFile) -> None:
+    """Remove a reserved file whose write did not complete, through a confined
+    directory descriptor and only while the name is still the inode reserved."""
+    try:
+        dir_fd = _open_confined_dir(reserved.path.parent)
+    except (OSError, ValueError):
+        return
+    try:
+        st = os.stat(reserved.path.name, dir_fd=dir_fd, follow_symlinks=False)
+        if (st.st_dev, st.st_ino) == reserved.ident:
+            os.unlink(reserved.path.name, dir_fd=dir_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
+
+
 async def write_reserved(reserved: ReservedFile, data: Any) -> None:
     """Write through the reserved descriptor (closed afterwards), never by path.
 
-    The descriptor is handed to a worker thread; if that hand-off itself
-    fails, it is closed here, so no error path leaks it.
+    The descriptor (and ``data``, possibly a spool file) is handed to a worker
+    thread; if that hand-off itself fails, it is closed here, so no error path
+    leaks it. A cancelled caller (tool timeout, client cancel) still WAITS for
+    the running copy: the thread cannot be stopped, and the caller's cleanup
+    must not close the spool under it. The partial file is then removed and
+    the cancellation re-raised.
     """
     try:
-        fut = asyncio.to_thread(_write_fd, reserved.fd, data)
+        task = asyncio.ensure_future(asyncio.to_thread(_write_fd, reserved.fd, data))
     except BaseException:
         os.close(reserved.fd)
         raise
-    await fut
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue  # cancelled again: keep waiting for the thread
+            except Exception:  # noqa: BLE001 - the write failed anyway; cleanup below
+                break
+        if task.done() and not task.cancelled():
+            task.exception()  # retrieved: the cancellation is what propagates
+        _discard_reserved(reserved)
+        raise
+    except BaseException:
+        _discard_reserved(reserved)
+        raise
 
 
 def attachment_name_matches(part_filename: str, requested_filename: str) -> bool:
@@ -784,14 +892,21 @@ def _legacy_outside_window(
     """For a key under a trusted legacy prefix (whose LastModified is the import
     time, not the mail's), True when it lies outside the window.
 
-    A legacy object INSIDE the date tree is windowed by its partition (the
-    received date): a missing, malformed or timezone-shifted Date header must
-    not make it undiscoverable. Only legacy objects outside the date tree are
+    A legacy object INSIDE the date tree is windowed by its Date header when
+    that falls on its partition day (sub-day bounds hold), else by the
+    partition day (the received date): a missing, malformed or
+    timezone-shifted Date header must not make it undiscoverable. Only legacy objects outside the date tree are
     windowed by their Date header (and dropped when it cannot be read)."""
     if not trusted_legacy_key(s3_key) or (date_from_dt is None and date_to_dt is None):
         return False
     day = _partition_day(s3_key)
     if day is not None:
+        # A valid Date header on the partition's own day gives the sub-day
+        # position (a 12:00-13:00 window); a missing, unreadable or off-day
+        # header falls back to the day overlapping the window.
+        sent = _message_sent_at(message_date)
+        if sent is not None and day <= sent < day + timedelta(days=1):
+            return bool((date_from_dt and sent < date_from_dt) or (date_to_dt and sent > date_to_dt))
         day_end = day + timedelta(days=1) - timedelta(microseconds=1)
         return bool((date_from_dt and day_end < date_from_dt) or (date_to_dt and day > date_to_dt))
     sent = _message_sent_at(message_date)
@@ -964,9 +1079,37 @@ def _split_resinfo(text: str) -> list[str]:
     return items
 
 
+def idna_domain(domain: str) -> str:
+    """``domain`` in its canonical ASCII (IDNA A-label) form, lower-cased:
+    "bücher.example" and "xn--bcher-kva.example" compare equal.
+
+    Encoded with the ``idna`` package (IDNA 2008 / UTS 46, NON-transitional:
+    "faß.de" is xn--fa-hia.de, never fass.de), a dependency of httpx. Python's
+    built-in codec (IDNA 2003) is never used: it maps "ß" to "ss" and would let
+    faß.de align with fass.de. When the package is missing, or the domain
+    cannot be encoded, a non-ASCII domain is only lower-cased: it then equals
+    no A-label, so it fails closed (no SPF/DKIM alignment and no keyword match;
+    a receiver's dmarc=pass still counts)."""
+    domain = str(domain or "").strip().strip(".")
+    if domain.isascii():
+        return domain.lower()
+    if _idna_pkg is not None:
+        try:
+            return _idna_pkg.encode(domain, uts46=True, transitional=False).decode("ascii").lower()
+        except (_idna_pkg.IDNAError, UnicodeError, ValueError):
+            pass
+    return domain.lower()
+
+
+def _canonical_mailbox(mailbox: str) -> str:
+    """local@domain with the domain IDNA-canonicalised (local part lower-cased)."""
+    local, at, domain = str(mailbox or "").strip().lower().rpartition("@")
+    return f"{local}@{idna_domain(domain)}" if at else idna_domain(domain)
+
+
 def _address_domain(value: str) -> str:
     address = parseaddr(value)[1] if "<" in value or " " in value.strip() else value.strip()
-    return address.rpartition("@")[2].strip().strip(".").lower()
+    return idna_domain(address.rpartition("@")[2])
 
 
 def _aligned(auth_domain: str, from_domain: str) -> bool:
@@ -1097,9 +1240,8 @@ def sender_shaped(keyword: str) -> bool:
     domain = k.rpartition("@")[2] if "@" in k else k
     if not domain or "@" in domain:
         return False
-    try:
-        ascii_domain = domain.encode("idna").decode("ascii").lower()
-    except (UnicodeError, ValueError):
+    ascii_domain = idna_domain(domain)
+    if not ascii_domain.isascii():
         return False
     labels = ascii_domain.split(".")
     if len(labels) < 2 or not all(_LDH_LABEL_RE.fullmatch(label) for label in labels):
@@ -1112,11 +1254,14 @@ def mailbox_matches(needle: str, mailbox: str) -> bool:
     the whole mailbox; anything else is a DOMAIN, matched as the mailbox domain
     or a subdomain of it (so "ssp.example" matches reports@mail.ssp.example, never
     notssp.example, ssp.example.evil.example or ssp.example@attacker.example)."""
-    mailbox = mailbox.lower()
+    # Both sides IDNA-canonicalised: a Unicode keyword ("bücher.example")
+    # matches an A-label header (xn--bcher-kva.example) and the reverse.
+    mailbox = _canonical_mailbox(mailbox)
     if "@" in needle:
-        return mailbox == needle
+        return mailbox == _canonical_mailbox(needle)
+    needle = idna_domain(needle)
     domain = mailbox.rpartition("@")[2]
-    return bool(domain) and (domain == needle or domain.endswith("." + needle))
+    return bool(domain) and bool(needle) and (domain == needle or domain.endswith("." + needle))
 
 
 def sender_filter_matches(sender_filter: str, headers: dict[str, str], s3_key: str = "") -> bool:
@@ -3230,10 +3375,10 @@ async def _read_archived(url: str) -> dict[str, Any] | None:
                 if not chunk:
                     break
                 total += len(chunk)
+                _charge_batch_budget(len(chunk))  # charged before the per-file cap
                 if total > LINK_DOWNLOAD_MAX_BYTES:
                     spool.close()
                     return _archive_too_large(url, total)
-                _charge_batch_budget(len(chunk))
                 spool.write(chunk)
         except BaseException:
             spool.close()
@@ -3528,9 +3673,12 @@ async def _download_link_attachment(
                         total = 0
                         async for chunk in streamed.aiter_bytes():
                             total += len(chunk)
+                            # Charge the received chunk to the call AND batch
+                            # budgets first, then enforce the per-file cap: the
+                            # chunk that crosses it still counts against the batch.
+                            _charge_batch_budget(len(chunk))
                             if total > LINK_DOWNLOAD_MAX_BYTES:
                                 raise LinkDownloadTooLarge(total)
-                            _charge_batch_budget(len(chunk))
                             spool.write(chunk)
                         _spooled_body(streamed, spool, total)
                         streamed.history = history

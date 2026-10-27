@@ -102,9 +102,7 @@ root:root`, written by production-support's email provisioning):
   240 s deadline and one `EMAIL_LINK_BATCH_MAX_BYTES` budget (1 GB, each file
   still under 200 MB). The debug
   log defaults to a private per-user file (`<tmp>/ses_s3_email-<uid>/debug.log`,
-  0600; refused if another user owns it or it has extra hard links), and URL
-  userinfo, the whole query string and the whole `#fragment` are redacted from
-  log lines. Live fetch, HTML chase and archive fallback share one byte budget
+  0600; refused if another user owns it or it has extra hard links), and in log lines a URL keeps only its scheme, host and last path segment (only when it is an ordinary filename such as report.csv; a token-like segment becomes `***`): earlier path segments become `…`, userinfo (up to the last `@` in the authority) becomes `***@`, and the whole query and fragment become `?***` and `#***` (no query keys are kept), so presigned signatures, tokens and capability paths (`/download/<secret>/report.csv`) never reach a log. A masked URL is followed by `[url-sha256:<12 hex>]`, a short hash of the full original URL, so operators can still tell links apart. Live fetch, HTML chase and archive fallback share one byte budget
   per link.
 - Outbound: `SES_OUTBOUND_AWS_ACCESS_KEY_ID`,
   `SES_OUTBOUND_AWS_SECRET_ACCESS_KEY`, `SES_OUTBOUND_AWS_REGION`,

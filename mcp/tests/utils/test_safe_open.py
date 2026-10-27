@@ -458,3 +458,46 @@ def test_a_symlinked_ancestor_of_an_absent_root_is_never_pinned(tmp_path):
     assert safe_open.pin_roots([str(root)]) == []
     with pytest.raises(safe_open.UnsafePathError):
         safe_open.read_bytes(str(root / "a.txt"), [str(root)])
+
+
+def test_a_startup_root_link_owned_by_this_user_in_a_private_dir_is_followed(tree, tmp_path):
+    parent = tmp_path / "private-parent"
+    parent.mkdir(mode=0o755)
+    os.chmod(parent, 0o755)
+    link = parent / "workdir"
+    link.symlink_to(tree["root"], target_is_directory=True)
+    assert safe_open.pin_at_startup([str(link)]) == [os.path.realpath(tree["root"])]
+
+
+@pytest.mark.parametrize("case", ["foreign-link", "foreign-parent", "group-writable", "other-writable"])
+def test_an_untrusted_startup_root_link_is_refused(tree, tmp_path, monkeypatch, caplog, case):
+    import logging
+    from types import SimpleNamespace
+
+    parent = tmp_path / f"parent-{case}"
+    parent.mkdir()
+    link = parent / "workdir"
+    link.symlink_to(tree["root"], target_is_directory=True)
+    real_lstat, real_stat = os.lstat, os.stat
+    me = os.geteuid()
+    other = me + 4242
+
+    def lstat(path, *a, **k):
+        st = real_lstat(path, *a, **k)
+        if str(path) == str(link) and case == "foreign-link":
+            return SimpleNamespace(st_mode=st.st_mode, st_uid=other)
+        return st
+
+    def stat_(path, *a, **k):
+        st = real_stat(path, *a, **k)
+        if str(path) == str(parent):
+            mode = {"group-writable": 0o40775, "other-writable": 0o41777}.get(case, 0o40755)
+            uid = other if case == "foreign-parent" else st.st_uid
+            return SimpleNamespace(st_mode=mode, st_uid=uid, st_dev=st.st_dev, st_ino=st.st_ino)
+        return st
+
+    monkeypatch.setattr(safe_open.os, "lstat", lstat)
+    monkeypatch.setattr(safe_open.os, "stat", stat_)
+    with caplog.at_level(logging.WARNING, logger=safe_open.logger.name):
+        assert safe_open.pin_at_startup([str(link)]) == []
+    assert "not trusted" in caplog.text

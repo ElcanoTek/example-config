@@ -276,6 +276,10 @@ def _pin_one(root: str, *, trust_symlink: bool = False) -> _Root | None:
         if not trust_symlink:
             logger.warning("allowed root %s is a symlink and was not pinned at startup: refused", root)
             return None
+        reason = _untrusted_root_link_reason(root)
+        if reason is not None:
+            logger.warning("allowed root %s is a symlink that is not trusted (%s): refused", root, reason)
+            return None
         fd = None  # an operator-configured symlink root, pinned at startup: resolved once, now
     try:
         real = _Root(os.path.realpath(root))
@@ -296,10 +300,36 @@ def _pin_one(root: str, *, trust_symlink: bool = False) -> _Root | None:
     return real
 
 
+def _untrusted_root_link_reason(root: str) -> str | None:
+    """Why a root whose own final component is a symlink must NOT be followed
+    at startup, or None when it may be.
+
+    Followed only when the link is owned by root or by this process's user AND
+    its directory is owned by root or this user and writable by neither group
+    nor others: then only the operator (or root) could have placed it. A stale
+    link left in a shared or sandbox-writable workspace is refused."""
+    path = str(root).rstrip(os.sep) or os.sep
+    euid = os.geteuid() if hasattr(os, "geteuid") else None
+    trusted_uids = {0} if euid is None else {0, euid}
+    try:
+        link = os.lstat(path)
+        parent = os.stat(os.path.dirname(os.path.abspath(path)) or os.sep)
+    except OSError as exc:
+        return f"cannot inspect it: {exc}"
+    if link.st_uid not in trusted_uids:
+        return f"the link is owned by uid {link.st_uid}"
+    if parent.st_uid not in trusted_uids:
+        return f"its directory is owned by uid {parent.st_uid}"
+    if parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return "its directory is writable by group or others"
+    return None
+
+
 def pin_at_startup(roots: Iterable[str]) -> list[str]:
     """Pin the configured roots when a server STARTS, before any tool call (and
     so before sandbox code can swap anything): the one moment a root that is
-    itself an operator-configured symlink (macOS /tmp) is resolved and trusted.
+    itself an operator-configured symlink (macOS /tmp) is resolved and trusted,
+    and only when the link and its directory pass _untrusted_root_link_reason.
     Roots that do not exist yet are left for lazy pinning, which refuses a
     symlinked root. Never raises: a server must start even if a root is odd."""
     pinned: list[str] = []

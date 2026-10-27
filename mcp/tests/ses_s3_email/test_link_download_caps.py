@@ -540,7 +540,7 @@ async def test_skipped_links_are_a_count_and_a_small_redacted_sample(dest, monke
     result = await ses_s3_email.download_all_link_attachments("emails/k", output_dir=str(dest))
     assert result["skipped_count"] == 4997
     assert len(result["skipped_sample"]) == 5
-    assert all(u.endswith("?***") for u in result["skipped_sample"])
+    assert all(u.split(" [url-sha256:")[0].endswith("?***") for u in result["skipped_sample"])
     assert len(result["errors"]) == 3  # only the attempted links
     assert "secret" not in str(result["skipped_sample"])
 
@@ -623,3 +623,78 @@ def test_default_caps_fit_several_large_reports_per_batch():
             ses_s3_email._charge_batch_budget(150 * 1024 * 1024)
     finally:
         ses_s3_email._BATCH_BUDGET.reset(token)
+
+
+async def test_a_cancelled_write_waits_for_the_copy_then_removes_the_partial_file(dest, monkeypatch):
+    """The spool is never closed under the running copy thread, and a cancelled
+    call leaves no partial file behind."""
+    import tempfile
+    import threading
+
+    started = threading.Event()
+    release = threading.Event()
+    real_write_fd = ses_s3_email._write_fd
+    copy_saw_closed: list = []
+
+    def slow_write_fd(fd, data):
+        started.set()
+        release.wait(5)
+        copy_saw_closed.append(data.closed)
+        real_write_fd(fd, data)
+
+    monkeypatch.setattr(ses_s3_email, "_write_fd", slow_write_fd)
+    spool = tempfile.TemporaryFile()  # noqa: SIM115 - closed by call() below, like the wrapper
+    spool.write(b"x" * 1024)
+    spool.seek(0)
+    reserved = ses_s3_email.reserve_output_file(dest, "report.csv", "src")
+
+    async def call():
+        try:
+            await ses_s3_email.write_reserved(reserved, spool)
+        finally:
+            spool.close()  # the call wrapper's cleanup
+
+    task = asyncio.create_task(call())
+    while not started.is_set():
+        await asyncio.sleep(0.01)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not task.done()  # still waiting for the copy thread
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert copy_saw_closed == [False]  # the spool was open for the whole copy
+    assert not reserved.path.exists()  # no partial attachment
+
+
+@respx.mock
+async def test_an_unknown_length_body_crossing_the_file_cap_is_charged_to_the_batch(dest, monkeypatch):
+    """No Content-Length: the chunk that crosses the per-file cap still counts."""
+    monkeypatch.setattr(ses_s3_email, "LINK_DOWNLOAD_MAX_BYTES", 1000)
+
+    async def body():
+        for _ in range(3):
+            yield b"x" * 600  # crosses 1000 on the second chunk
+
+    respx.get(URL).mock(return_value=httpx.Response(200, content=body()))
+    batch = [10_000]
+    token = ses_s3_email._BATCH_BUDGET.set(batch)
+    try:
+        result = await ses_s3_email.download_link_attachment(url=URL, output_dir=str(dest))
+    finally:
+        ses_s3_email._BATCH_BUDGET.reset(token)
+    assert result["status"] == "error"
+    assert batch == [10_000 - 1200]  # both received chunks charged, including the crossing one
+
+
+async def test_an_archive_crossing_the_file_cap_is_charged_to_the_batch(dest, monkeypatch):
+    monkeypatch.setattr(ses_s3_email, "LINK_DOWNLOAD_MAX_BYTES", 1000)
+    monkeypatch.setattr(ses_s3_email, "session", _archive_session(_ChunkedBody(b"y" * 1800, step=600)))
+    batch = [10_000]
+    token = ses_s3_email._BATCH_BUDGET.set(batch)
+    try:
+        result = await ORIGINAL_ARCHIVE(URL, dest)
+    finally:
+        ses_s3_email._BATCH_BUDGET.reset(token)
+    assert result["status"] == "error"
+    assert batch == [10_000 - 1200]

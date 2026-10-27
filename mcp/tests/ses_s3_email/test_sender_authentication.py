@@ -21,6 +21,13 @@ import ses_s3_email as inbox
 
 FROM = "Vendor Reports <reports@vendor.example>"
 
+_URL_HASH_RE = __import__("re").compile(r" \[url-sha256:[0-9a-f]{12}\]")
+
+
+def _redacted(text: str) -> str:
+    """redact_url_queries without the per-URL hash tags (tested separately)."""
+    return _URL_HASH_RE.sub("", inbox.redact_url_queries(text))
+
 
 @pytest.mark.parametrize(
     "results",
@@ -147,15 +154,15 @@ def test_httpx_request_lines_never_carry_a_query_value():
     httpx_logger.setLevel(_logging.INFO)
     try:
         inbox.install_root_redaction([handler])
-        httpx_logger.info('HTTP Request: GET %s "HTTP/1.1 200 OK"', "https://b/x?upn=SECRET1&ticket=SECRET2&page=2")
+        httpx_logger.info('HTTP Request: GET %s "HTTP/1.1 200 OK"', "https://b/x.csv?upn=SECRET1&ticket=SECRET2&page=2")
     finally:
         root.removeHandler(handler)
         httpx_logger.setLevel(old_level)
     text = stream.getvalue()
     assert "SECRET1" not in text and "SECRET2" not in text
-    assert "https://b/x?***" in text and "upn" not in text
+    assert "https://b/x.csv?***" in text and "upn" not in text
     # Idempotent over already-masked values.
-    assert inbox.redact_url_queries("https://b/x?***") == "https://b/x?***"
+    assert _redacted("https://b/x.csv?***") == "https://b/x.csv?***"
 
 
 def test_a_quoted_mail_from_cannot_inject_a_verdict():
@@ -385,14 +392,14 @@ def test_shared_hosting_suffixes_never_align_tenants():
 
 
 def test_redaction_masks_keyless_components_and_fragments():
-    assert inbox.redact_url_queries("https://b/x?eyJhbGciOi") == "https://b/x?***"
-    assert inbox.redact_url_queries("https://b/x?a=1&eyJ#token=z") == "https://b/x?***#***"
+    assert _redacted("https://b/x.csv?eyJhbGciOi") == "https://b/x.csv?***"
+    assert _redacted("https://b/x.csv?a=1&eyJ#token=z") == "https://b/x.csv?***#***"
     # A credential used as the parameter NAME (empty value) is not kept either.
-    assert inbox.redact_url_queries("https://b/x?eyJhbGciOiJIUzI1NiJ9.e30.sig=") == "https://b/x?***"
+    assert _redacted("https://b/x.csv?eyJhbGciOiJIUzI1NiJ9.e30.sig=") == "https://b/x.csv?***"
     # An apostrophe inside the query does not end the redaction.
-    assert inbox.redact_url_queries("https://b/x?t=ab'cd") == "https://b/x?***"
-    assert inbox.redact_url_queries("https://b/x#frag") == "https://b/x#***"
-    assert inbox.redact_url_queries("see https://b/x now") == "see https://b/x now"
+    assert _redacted("https://b/x.csv?t=ab'cd") == "https://b/x.csv?***"
+    assert _redacted("https://b/x.csv#frag") == "https://b/x.csv#***"
+    assert _redacted("see https://b/x.csv now") == "see https://b/x.csv now"
 
 
 @pytest.mark.asyncio
@@ -438,16 +445,14 @@ async def test_find_latest_report_carries_the_day_searches_warnings(monkeypatch)
 
 
 def test_url_userinfo_is_masked_with_or_without_a_query():
-    assert inbox.redact_url_queries("GET https://user:pa55@example.com/report.csv done") == (
+    assert _redacted("GET https://user:pa55@example.com/report.csv done") == (
         "GET https://***@example.com/report.csv done"
     )
-    assert inbox.redact_url_queries("https://user:pa55@example.com/r.csv?sig=1#t=2") == (
-        "https://***@example.com/r.csv?***#***"
-    )
+    assert _redacted("https://user:pa55@example.com/r.csv?sig=1#t=2") == ("https://***@example.com/r.csv?***#***")
     # Every RFC 3986 userinfo character, apostrophe and sub-delims included.
     for userinfo in ("user:pa'ss", "u(s)er:p*a+s,s;=!$&~", "us%40er:p.a_s-s"):
-        assert inbox.redact_url_queries(f"https://{userinfo}@example.com/x") == "https://***@example.com/x", userinfo
-    assert inbox.redact_url_queries("mail me at reports@example.com") == "mail me at reports@example.com"
+        assert _redacted(f"https://{userinfo}@example.com/x.csv") == "https://***@example.com/x.csv", userinfo
+    assert _redacted("mail me at reports@example.com") == "mail me at reports@example.com"
 
 
 def test_a_dmarc_failure_is_final():
@@ -799,10 +804,8 @@ async def test_the_newest_match_in_a_partition_wins_even_when_its_key_sorts_last
 
 
 def test_a_query_after_an_apostrophe_in_the_path_is_redacted():
-    assert inbox.redact_url_queries("https://example.com/o'clock?token=secret") == "https://example.com/o'clock?***"
-    assert (
-        inbox.redact_url_queries("GET https://example.com/a'b/c#t=1 done") == "GET https://example.com/a'b/c#*** done"
-    )
+    assert _redacted("https://example.com/o'clock.csv?token=secret") == "https://example.com/o'clock.csv?***"
+    assert _redacted("GET https://example.com/a'b/c.csv#t=1 done") == "GET https://example.com/\u2026/c.csv#*** done"
 
 
 @pytest.mark.asyncio
@@ -939,16 +942,20 @@ async def test_non_sender_keywords_with_dots_or_at_still_match_the_subject(monke
     ("line", "expected"),
     [
         ("https://josé:sécret@example.com/r.csv", "https://***@example.com/r.csv"),
-        ("https://us'er:pa'ss@example.com/o'clock?token=s3cr3t#frag", "https://***@example.com/o'clock?***#***"),
-        ("GET https://ü:p@exämple.com/a;b=c?x=1 done", "GET https://***@exämple.com/a;b=c?*** done"),
-        ("https://a@b@example.com/x", "https://***@example.com/x"),  # the LAST '@' ends userinfo
-        ("https://example.com/path@not-userinfo?t=1", "https://example.com/path@not-userinfo?***"),
-        ("https://***@example.com/x?***#***", "https://***@example.com/x?***#***"),  # idempotent
+        (
+            "https://us'er:pa'ss@example.com/o'clock.csv?token=s3cr3t#frag",
+            "https://***@example.com/o'clock.csv?***#***",
+        ),
+        ("GET https://ü:p@exämple.com/a;b=c.csv?x=1 done", "GET https://***@exämple.com/a;b=c.csv?*** done"),
+        ("https://a@b@example.com/x.csv", "https://***@example.com/x.csv"),  # the LAST '@' ends userinfo
+        ("https://example.com/path@not-userinfo.csv?t=1", "https://example.com/path@not-userinfo.csv?***"),
+        ("https://files.example/download/SECRET/report.csv", "https://files.example/\u2026/report.csv"),
+        ("https://***@example.com/\u2026/x.csv?***#***", "https://***@example.com/\u2026/x.csv?***#***"),  # idempotent
         ("plain reports@example.com text", "plain reports@example.com text"),
     ],
 )
 def test_structural_url_redaction(line, expected):
-    assert inbox.redact_url_queries(line) == expected
+    assert _redacted(line) == expected
     assert "s3cr3t" not in inbox.redact_url_queries(line) and "sécret" not in inbox.redact_url_queries(line)
 
 
@@ -1048,3 +1055,125 @@ def test_debug_dir_swapped_for_a_symlink_is_never_chmodded(monkeypatch, tmp_path
     (tmp_path / f"ses_s3_email-{os.getuid()}").symlink_to(victim, target_is_directory=True)
     assert inbox._debug_log_path() is None
     assert stat.S_IMODE(os.stat(victim).st_mode) == 0o755
+
+
+def test_in_tree_legacy_mail_keeps_sub_day_bounds(monkeypatch):
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "emails/%Y/%m/%d/")
+    monkeypatch.setattr(inbox, "EMAIL_TRUSTED_LEGACY_PREFIXES", ("emails/2026/10/26/mailbux-",))
+    window = (datetime(2026, 10, 26, 12, tzinfo=UTC), datetime(2026, 10, 26, 13, tzinfo=UTC))
+    key = "emails/2026/10/26/mailbux-x"
+    assert inbox._legacy_outside_window(key, "Mon, 26 Oct 2026 12:30:00 +0000", *window) is False
+    assert inbox._legacy_outside_window(key, "Mon, 26 Oct 2026 08:00:00 +0000", *window) is True
+    assert inbox._legacy_outside_window(key, "Mon, 26 Oct 2026 18:00:00 +0000", *window) is True
+    # Missing, unreadable or off-day headers fall back to the partition day.
+    for header in ("", "garbage", "Wed, 28 Oct 2026 10:00:00 +0000", "Mon, 01 Jan 2024 10:00:00 +0000"):
+        assert inbox._legacy_outside_window(key, header, *window) is False, header
+
+
+@pytest.mark.parametrize(
+    ("needle", "from_addr", "expected"),
+    [
+        ("bücher.example", "reports@xn--bcher-kva.example", True),  # Unicode keyword, A-label header
+        ("xn--bcher-kva.example", "reports@bücher.example", True),  # A-label keyword, Unicode header
+        ("reports@bücher.example", "Reports@XN--BCHER-KVA.example", True),
+        ("bücher.example", "reports@mail.xn--bcher-kva.example", True),
+        ("bücher.example", "reports@xn--bcher-kva.example.evil.example", False),
+        ("reports@bücher.example", "other@xn--bcher-kva.example", False),
+    ],
+)
+def test_idn_sender_keywords_match_a_label_and_unicode_headers(needle, from_addr, expected):
+    assert inbox.mailbox_matches(needle, from_addr) is expected
+    headers = {"from": f"Reports <{from_addr}>", "authenticated_domain": inbox._address_domain(from_addr)}
+    assert inbox.sender_filter_matches(needle, headers) is expected
+
+
+def test_a_unicode_from_header_is_authenticated_against_its_a_label():
+    auth = "amazonses.com; dmarc=pass header.from=xn--bcher-kva.example"
+    assert inbox.authenticated_sender_domain([auth], "R <r@bücher.example>") == "xn--bcher-kva.example"
+    headers = {"from": "R <r@bücher.example>", "authenticated_domain": "xn--bcher-kva.example"}
+    assert inbox.sender_authenticated(headers)
+
+
+@pytest.mark.asyncio
+async def test_fuzzy_idn_keyword_matches_an_a_label_sender(monkeypatch):
+    raw = (
+        b"Authentication-Results: amazonses.com; dmarc=pass header.from=xn--bcher-kva.example\r\n"
+        b"From: Reports <reports@xn--bcher-kva.example>\r\nTo: inbox@example.com\r\nSubject: Daily\r\n"
+        b"Date: Mon, 26 Oct 2026 10:00:00 +0000\r\n\r\nbody\r\n"
+    )
+    monkeypatch.setattr(inbox, "session", _FakeSession(_FakeS3({"emails/m": raw})))
+    monkeypatch.setattr(inbox, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(inbox, "S3_PREFIX", "emails/")
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "")
+    monkeypatch.setattr(inbox, "EMAIL_SENDER_AUTH", "required")
+    result = await inbox.search_emails_fuzzy(keywords=["bücher.example"], date_from="2026-10-26", date_to="2026-10-26")
+    assert [e["s3_key"] for e in result["emails"]] == ["emails/m"], result
+
+
+def test_capability_paths_are_masked_and_tagged_with_a_short_hash():
+    url = "https://files.example/download/SECRET-TOKEN/report.csv?sig=abc"
+    out = inbox.redact_url_queries(f"GET {url} done")
+    assert "SECRET-TOKEN" not in out and "abc" not in out
+    digest = __import__("hashlib").sha256(url.encode()).hexdigest()[:12]
+    assert out == f"GET https://files.example/\u2026/report.csv?*** [url-sha256:{digest}] done"
+    # Idempotent: a second pass (logger filter + root handler) adds nothing.
+    assert inbox.redact_url_queries(out) == out
+    # Two different secret paths stay distinguishable.
+    other = inbox.redact_url_queries("https://files.example/download/OTHER/report.csv?sig=abc")
+    assert other.split(" [")[0] == out.split(" ")[1]  # same visible form...
+    assert other.split("url-sha256:")[1] != out.split("url-sha256:")[1]  # ...different hash
+    # Nothing to mask: no tag.
+    assert inbox.redact_url_queries("https://files.example/report.csv") == "https://files.example/report.csv"
+
+
+@pytest.mark.parametrize(
+    ("url", "shown"),
+    [
+        # Token-only and single-segment paths: the token never survives.
+        ("https://files.example/download/eyJhbGciOiJIUzI1NiJ9.e30.abcdef", "https://files.example/…/***"),
+        ("https://files.example/AbC9dEf8GhI7jKl6MnO5pQ4", "https://files.example/***"),
+        ("https://files.example/s/9f86d081884c7d659a2feaa0c55ad015.csv", "https://files.example/…/***"),
+        ("https://files.example/s/x9Y2z8W1v7U3t6S5.pdf", "https://files.example/…/***"),
+        ("https://files.example/s/" + "a" * 70 + ".csv", "https://files.example/…/***"),
+        # Ordinary filenames stay.
+        ("https://files.example/download/SECRET/report.csv", "https://files.example/…/report.csv"),
+        (
+            "https://files.example/a/Weekly_Report_2026-10-26.xlsx",
+            "https://files.example/…/Weekly_Report_2026-10-26.xlsx",
+        ),
+        ("https://files.example/a/Daily%20Report.zip", "https://files.example/…/Daily%20Report.zip"),
+        ("https://files.example/export.json", "https://files.example/export.json"),
+    ],
+)
+def test_last_path_segment_is_kept_only_when_it_is_an_ordinary_filename(url, shown):
+    out = inbox.redact_url_queries(url)
+    assert _redacted(url) == shown, out
+    secret = url.rsplit("/", 1)[-1]
+    if shown.endswith("***"):
+        assert secret not in out and "[url-sha256:" in out
+    assert inbox.redact_url_queries(out) == out  # idempotent
+
+
+def test_ss_and_sharp_s_domains_never_align():
+    """IDNA 2008 (non-transitional): faß.de is xn--fa-hia.de, never fass.de."""
+    assert inbox.idna_domain("faß.de") == "xn--fa-hia.de"
+    from_hdr = "R <r@faß.de>"
+    for auth in (
+        "amazonses.com; dkim=pass header.d=fass.de; dmarc=none",
+        "amazonses.com; spf=pass smtp.mailfrom=x@fass.de",
+    ):
+        assert inbox.authenticated_sender_domain([auth], from_hdr) is None
+    assert not inbox.mailbox_matches("fass.de", "r@faß.de")
+    assert not inbox.mailbox_matches("faß.de", "r@fass.de")
+    # A receiver's DMARC pass still counts.
+    assert inbox.authenticated_sender_domain(["amazonses.com; dmarc=pass header.from=xn--fa-hia.de"], from_hdr) == (
+        "xn--fa-hia.de"
+    )
+
+
+def test_without_the_idna_package_non_ascii_domains_fail_closed(monkeypatch):
+    monkeypatch.setattr(inbox, "_idna_pkg", None)
+    assert inbox.idna_domain("faß.de") == "faß.de"  # never IDNA 2003's fass.de
+    assert inbox.authenticated_sender_domain(["amazonses.com; dkim=pass header.d=fass.de"], "R <r@faß.de>") is None
+    assert not inbox.mailbox_matches("fass.de", "r@faß.de")
+    assert inbox.idna_domain("Vendor.Example") == "vendor.example"

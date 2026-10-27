@@ -39,6 +39,15 @@ use the canonical
 Record real identifiers in the forked client bundle's `docs/EMAIL-DEPLOYMENT.md`,
 not in this generic template.
 
+`ses_s3_email.py` log redaction. In every log line (stderr and the debug log) a
+URL keeps only its scheme, host and last path segment (only when it is an ordinary filename such as report.csv; a token-like segment becomes `***`): earlier path segments
+become `…`, userinfo (up to the last `@` in the authority) becomes `***@`, and
+the whole query and fragment become `?***` and `#***` (no query keys are kept),
+so presigned signatures, tokens and capability paths
+(`/download/<secret>/report.csv`) never reach a log. A masked URL is followed by
+`[url-sha256:<12 hex>]`, a short hash of the full original URL, so operators can
+still tell links apart.
+
 ## `knowledge_base.py` — always-on, no credentials
 
 A tiny "team knowledge base" over a bundled JSON handbook
