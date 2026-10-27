@@ -885,7 +885,7 @@ def _parse_partition(key: str) -> datetime | None:
     if "/" in fmt.rstrip("/") or fmt.endswith("/"):
         depth = fmt.count("/")
         pieces = key.split("/")
-        if len(pieces) <= depth - (0 if fmt.endswith("/") else 1):
+        if len(pieces) <= depth:  # both branches index pieces[depth - 1] / pieces[depth]
             return None
         if fmt.endswith("/"):
             candidates = ["/".join(pieces[:depth]) + "/"]

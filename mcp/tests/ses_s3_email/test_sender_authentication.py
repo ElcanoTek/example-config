@@ -1413,3 +1413,12 @@ async def test_one_malformed_trusted_message_never_fails_the_search(monkeypatch)
     )
     assert result["status"] == "success", result
     assert len(result["emails"]) == 1 and result["search_stats"]["parse_errors"] == 1
+
+
+def test_short_keys_under_a_format_without_trailing_slash_do_not_crash(monkeypatch):
+    """A key with exactly as many segments as the format's "/" count is not a
+    partition (and must not raise IndexError while searches build prefixes)."""
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "emails/%Y/%m/%d")
+    assert inbox._parse_partition("emails/legacy/x") is None
+    assert inbox._in_date_tree("emails/legacy/") is False
+    assert inbox._parse_partition("emails/2026/10/26abc") is not None
