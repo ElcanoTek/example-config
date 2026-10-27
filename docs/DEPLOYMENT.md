@@ -44,8 +44,8 @@ Tick each with its evidence (command and result, date).
 - [ ] Client domain bought, auto-renew on, DNSSEC on
 - [ ] Pages content domain bought, auto-renew on, DNSSEC on
 - [ ] Zone-scoped Cloudflare token created (stored in: )
-- [ ] `ElcanoTek/<client>-config` created from example-config, rebranded, starter persona PR open
-- [ ] Read-only fine-grained bundle PAT(s) created (names: )
+- [ ] `ElcanoTek/<client>-config` created from example-config (no sibling-bundle copies); fork pass PR open (branding + palette, mark + share card, persona, handoff)
+- [ ] Read-only SSH deploy key(s) registered on `ElcanoTek/<client>-config` (`fleet.<domain>`, and `auth.<domain>` if using bundle branding)
 
 ### Boxes and DNS
 - [ ] 5 boxes created: key-only startup script, all team keys, FQDN hostnames
@@ -55,11 +55,13 @@ Tick each with its evidence (command and result, date).
 
 ### Services
 - [ ] auth: password mode, `auth doctor` clean, `/healthz` ok
-- [ ] auth: apps registered (fleet, lens, explorer, pages) with back-channel logout
+- [ ] auth: apps registered (fleet, lens, explorer, pages) with back-channel logout,
+  via `scripts/register-auth-apps.sh` (no secret shown or stored)
 - [ ] auth: first admin created, admin MFA policy on, granted fleet, lens, explorer, pages
 - [ ] lens: central auth, `lens doctor` clean, fleet token minted
 - [ ] explorer: central auth, email bucket wired, `explorer doctor` clean
-- [ ] pages: both hosts, central auth, host split verified, agent token stored
+- [ ] pages: both hosts, central auth, host split verified, fleet's token installed
+  box to box, the unseen `initial` token revoked
 - [ ] fleet: bundle cloned, OpenRouter key with spend limit, OIDC wired
 - [ ] fleet: `fleet doctor --check` 0 advisories, `fleet mcp test --all` passes
 - [ ] fleet: brand assets byte-identical to the bundle
@@ -71,11 +73,17 @@ Tick each with its evidence (command and result, date).
 - [ ] MX cut over with approval; external test message found in fleet
 
 ### Handover
+- [ ] `scripts/verify-client.sh` passes; its table is pasted below as evidence
 - [ ] All hosts answer `http_check` with 200/3xx
 - [ ] End-to-end sign-in as the first admin to every app
 - [ ] `estate.json` + README updated in production-support (PR: )
 - [ ] `ses-s3/README.md` rollout table updated
 - [ ] Solution engineer handed the client (protocols, users)
+
+## Verification
+
+`scripts/verify-client.sh <domain> <content domain>` from production-support
+(read-only), <YYYY-MM-DD>. Paste its table here.
 
 ## Open questions
 
