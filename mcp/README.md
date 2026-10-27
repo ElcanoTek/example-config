@@ -22,10 +22,14 @@ pinned (`O_NOFOLLOW|O_DIRECTORY`, by device and inode) when the server starts,
 before any tool call, and never re-resolved; each path is then one
 symlink-refusing walk from its root and that descriptor (never the name a
 second time), and files it created are removed only through the helper. The
-inbound server (`ses_s3_email.py`) does not use `safe_open`: it confines a
-model-supplied `output_dir` to its own allowed roots (`resolve_download_dir`),
-walks to it without following a symlink and creates each download fresh
-(`O_CREAT|O_EXCL|O_NOFOLLOW`), but its roots are resolved per call, not pinned. Lens and Pages are remote (http) servers on the client's
+inbound server (`ses_s3_email.py`) uses `safe_open` only to reach its private
+debug-log directory (`walk_trusted`, which follows nothing but trusted system
+symlinks such as macOS `/tmp`); it confines a model-supplied `output_dir` to
+its own allowed roots (`resolve_download_dir`), walks to it without following
+a symlink and creates each download fresh (`O_CREAT|O_EXCL|O_NOFOLLOW`), but
+those roots are resolved per call, not pinned. Only symlinks directly under
+`/`, owned by root in a root-owned directory nobody else can write (macOS
+`/tmp`, `/var`), are trusted as system symlinks. Lens and Pages are remote (http) servers on the client's
 own boxes, so they have manifest entries but no code here.
 
 To stand up a client's SES/S3 email tenant (infrastructure, least-privilege
@@ -34,6 +38,13 @@ use the canonical
 [new-client email-report runbook](https://github.com/ElcanoTek/production-support/blob/main/ses-s3/docs/NEW-CLIENT-EMAIL-SETUP.md).
 Record real identifiers in the forked client bundle's `docs/EMAIL-DEPLOYMENT.md`,
 not in this generic template.
+
+`ses_s3_email.py` log redaction. In every log line (stderr and the debug log) a
+URL keeps only its scheme and host: the path collapses to `…` and its last segment keeps only a short alphabetic extension (`/…/***.csv`, else `***`; even a filename-shaped segment can be a token), userinfo (up to the last `@` in the authority) becomes `***@`, and
+the whole query and fragment become `?***` and `#***` (no query keys are kept),
+so presigned signatures, tokens and capability paths
+(`/download/<secret>.csv`) never reach a log. A masked URL is followed by
+`[url-id:<12 hex>]`, an HMAC-SHA256 of the full original URL under a random per-process key (so a short secret cannot be brute-forced back out of it), so operators can still tell links apart within one process's logs.
 
 ## `knowledge_base.py` — always-on, no credentials
 

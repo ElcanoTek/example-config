@@ -261,10 +261,39 @@ def test_a_real_root_with_a_trailing_separator_still_works(tree):
     assert data == b"inside"
 
 
-def test_a_symlinked_root_pinned_at_startup_still_works(tree, tmp_path):
-    """Operator config such as macOS /tmp: pinned at server start, it is trusted."""
+def _link_owners(monkeypatch, link, parent, *, link_uid, parent_uid, parent_mode=0o755):
+    """Simulate who owns a root symlink and its directory (root ownership
+    cannot be created reliably in tests; other paths are untouched)."""
+    import stat as _stat
+    from types import SimpleNamespace
+
+    real_lstat, real_stat = os.lstat, os.stat
+
+    def lstat(path, *a, **k):
+        st = real_lstat(path, *a, **k)
+        if not a and not k and str(path) == str(link):
+            return SimpleNamespace(st_mode=st.st_mode, st_uid=link_uid)
+        return st
+
+    def stat_(path, *a, **k):
+        st = real_stat(path, *a, **k)
+        if not a and not k and str(path) == str(parent):
+            return SimpleNamespace(
+                st_mode=_stat.S_IFDIR | parent_mode, st_uid=parent_uid, st_dev=st.st_dev, st_ino=st.st_ino
+            )
+        return st
+
+    monkeypatch.setattr(safe_open.os, "lstat", lstat)
+    monkeypatch.setattr(safe_open.os, "stat", stat_)
+
+
+def test_a_symlinked_root_pinned_at_startup_still_works(tree, tmp_path, monkeypatch):
+    """Operator config such as macOS /tmp (a root-owned link in a root-owned,
+    non-writable directory): pinned at server start, it is trusted."""
     operator_tmp = tmp_path / "operator-tmp"
     operator_tmp.symlink_to(tree["root"], target_is_directory=True)
+    _link_owners(monkeypatch, operator_tmp, tmp_path, link_uid=0, parent_uid=0)
+    monkeypatch.setattr(safe_open, "_FS_ROOT", str(tmp_path))  # as if tmp_path were "/"
     assert safe_open.pin_at_startup([str(operator_tmp)]) == [os.path.realpath(tree["root"])]
     data, _ = safe_open.read_bytes(str(operator_tmp / "sub" / "a.txt"), [str(operator_tmp)])
     assert data == b"inside"
@@ -282,22 +311,238 @@ def test_servers_pin_their_roots_at_import():
             assert "safe_open.pin_at_startup(" in handle.read(), module.__name__
 
 
-def test_an_fstat_failure_after_create_removes_the_empty_file(tree, monkeypatch):
+def test_a_transient_fstat_failure_after_create_removes_the_file_by_its_identity(tree, monkeypatch):
+    """fstat fails once on the new leaf: the retry on the same descriptor proves
+    its identity, and only then is the entry removed."""
     import stat as _stat
 
     real_fstat = os.fstat
     hit = []
 
-    def failing_fstat(fd):
+    def failing_once(fd):
         st = real_fstat(fd)
-        if _stat.S_ISREG(st.st_mode):  # the freshly created leaf, not a directory
+        if _stat.S_ISREG(st.st_mode) and not hit:  # the freshly created leaf, first call only
             hit.append(fd)
             raise OSError(5, "I/O error")
         return st
 
-    monkeypatch.setattr(safe_open.os, "fstat", failing_fstat)
+    monkeypatch.setattr(safe_open.os, "fstat", failing_once)
     with pytest.raises(OSError, match="I/O error"):
         safe_open.write_new_or_truncate(str(tree["root"] / "fresh.txt"), [str(tree["root"])], b"x")
     monkeypatch.setattr(safe_open.os, "fstat", real_fstat)
     assert hit, "the leaf fstat was never reached"
     assert not (tree["root"] / "fresh.txt").exists()
+
+
+def test_a_persistent_fstat_failure_never_removes_an_entry_by_name(tree, monkeypatch):
+    """Without the descriptor's identity the entry is left alone: a file another
+    writer swapped in under the same name must never be deleted."""
+    import stat as _stat
+
+    real_fstat = os.fstat
+    target = tree["root"] / "fresh.txt"
+
+    def failing_fstat(fd):
+        st = real_fstat(fd)
+        if _stat.S_ISREG(st.st_mode):
+            # Another writer replaces the entry between our create and cleanup.
+            target.unlink()
+            target.write_bytes(b"")
+            raise OSError(5, "I/O error")
+        return st
+
+    monkeypatch.setattr(safe_open.os, "fstat", failing_fstat)
+    with pytest.raises(OSError, match="I/O error"):
+        safe_open.write_new_or_truncate(str(target), [str(tree["root"])], b"x")
+    monkeypatch.setattr(safe_open.os, "fstat", real_fstat)
+    assert target.exists()  # the swapped-in file survives
+
+
+def test_an_ancestor_swapped_for_a_symlink_after_startup_is_never_followed(tree, tmp_path):
+    """A root absent at startup is reached from its ancestor pinned THEN: swapping
+    an intermediate directory for a symlink later cannot authorize another tree."""
+    workspace = tmp_path / "ws-anc"
+    workspace.mkdir()
+    root = workspace / "run" / "out"  # does not exist yet
+    assert safe_open.pin_at_startup([str(root)]) == []
+
+    # Attacker: /ws-anc/run becomes a symlink to a tree that has an "out" dir.
+    evil = tmp_path / "evil"
+    (evil / "out").mkdir(parents=True)
+    (evil / "out" / "a.txt").write_bytes(b"secret")
+    (workspace / "run").symlink_to(evil, target_is_directory=True)
+
+    assert safe_open.pin_roots([str(root)]) == []
+    with pytest.raises(safe_open.UnsafePathError):
+        safe_open.read_bytes(str(root / "a.txt"), [str(root)])
+
+
+def test_a_pinned_ancestor_replaced_after_startup_is_refused(tree, tmp_path):
+    workspace = tmp_path / "ws-repl"
+    workspace.mkdir()
+    root = workspace / "out"
+    safe_open.pin_at_startup([str(root)])
+    workspace.rename(tmp_path / "ws-repl.orig")
+    elsewhere = tmp_path / "elsewhere-repl"
+    (elsewhere / "out").mkdir(parents=True)
+    workspace.symlink_to(elsewhere, target_is_directory=True)
+    assert safe_open.pin_roots([str(root)]) == []
+
+
+def test_a_root_created_after_startup_under_its_pinned_ancestor_works(tree, tmp_path):
+    workspace = tmp_path / "ws-late"
+    workspace.mkdir()
+    root = workspace / "run" / "out"
+    safe_open.pin_at_startup([str(root)])
+    root.mkdir(parents=True)
+    (root / "a.txt").write_bytes(b"ok")
+    data, _ = safe_open.read_bytes(str(root / "a.txt"), [str(root)])
+    assert data == b"ok"
+
+
+def test_a_root_never_seen_at_startup_refuses_a_symlinked_ancestor(tree, tmp_path):
+    link = tmp_path / "anc-link"
+    link.symlink_to(tree["root"], target_is_directory=True)
+    assert safe_open.pin_roots([str(link / "sub")]) == []
+
+
+def _fake_ownership(monkeypatch, *, link_uid, parent_uid, parent_mode=0o755):
+    """Simulate who owns symlinks and their directory (root ownership cannot be
+    created reliably in tests): every symlink lstat reports ``link_uid``, every
+    directory fstat ``parent_uid`` / ``parent_mode``."""
+    import stat as _stat
+    from types import SimpleNamespace
+
+    real_lstat, real_fstat = os.lstat, os.fstat
+
+    def lstat(name, *, dir_fd=None):
+        st = real_lstat(name, dir_fd=dir_fd)
+        if _stat.S_ISLNK(st.st_mode):
+            return SimpleNamespace(st_mode=st.st_mode, st_uid=link_uid)
+        return st
+
+    def fstat(fd):
+        st = real_fstat(fd)
+        if _stat.S_ISDIR(st.st_mode):
+            return SimpleNamespace(
+                st_mode=_stat.S_IFDIR | parent_mode, st_uid=parent_uid, st_dev=st.st_dev, st_ino=st.st_ino
+            )
+        return st
+
+    monkeypatch.setattr(safe_open.os, "lstat", lstat)
+    monkeypatch.setattr(safe_open.os, "fstat", fstat)
+
+
+def _top_with_system_link(tmp_path):
+    top = tmp_path / "fsroot"
+    (top / "private" / "var" / "folders").mkdir(parents=True)
+    (top / "var").symlink_to("private/var", target_is_directory=True)
+    return top
+
+
+def test_a_root_owned_top_level_system_link_is_followed(tmp_path, monkeypatch):
+    top = _top_with_system_link(tmp_path)
+    _fake_ownership(monkeypatch, link_uid=0, parent_uid=0)
+    fd = safe_open.walk_trusted("/var/folders", _top=str(top))
+    try:
+        assert os.path.samestat(os.fstat(fd), os.stat(top / "private" / "var" / "folders"))
+    finally:
+        os.close(fd)
+
+
+@pytest.mark.parametrize(
+    ("link_uid", "parent_uid", "parent_mode"),
+    [(1000, 0, 0o755), (0, 1000, 0o755), (0, 0, 0o777), (0, 0, 0o775)],
+)
+def test_an_untrusted_system_link_is_refused(tmp_path, monkeypatch, link_uid, parent_uid, parent_mode):
+    top = _top_with_system_link(tmp_path)
+    _fake_ownership(monkeypatch, link_uid=link_uid, parent_uid=parent_uid, parent_mode=parent_mode)
+    with pytest.raises(OSError):
+        os.close(safe_open.walk_trusted("/var/folders", _top=str(top)))
+
+
+def test_a_root_owned_link_below_the_top_level_is_refused(tmp_path, monkeypatch):
+    """Ownership alone never vouches for a deeper link (a root sandbox owns its links)."""
+    top = tmp_path / "fsroot2"
+    (top / "work" / "real").mkdir(parents=True)
+    (top / "work" / "run").symlink_to("real", target_is_directory=True)
+    _fake_ownership(monkeypatch, link_uid=0, parent_uid=0)
+    with pytest.raises(OSError):
+        os.close(safe_open.walk_trusted("/work/run", _top=str(top)))
+
+
+def test_a_symlinked_ancestor_of_an_absent_root_is_never_pinned(tmp_path):
+    """A stale attacker symlink above an absent root: nothing is pinned at
+    startup, and the root stays refused once the target tree appears."""
+    workspace = tmp_path / "ws-stale"
+    workspace.mkdir()
+    elsewhere = tmp_path / "elsewhere-stale"
+    elsewhere.mkdir()
+    (workspace / "run").symlink_to(elsewhere, target_is_directory=True)
+    root = workspace / "run" / "out"  # absent; its parent is the planted link
+    assert safe_open.pin_at_startup([str(root)]) == []
+    assert str(root) not in safe_open._PENDING_ROOTS
+    (elsewhere / "out").mkdir()
+    (elsewhere / "out" / "a.txt").write_bytes(b"secret")
+    assert safe_open.pin_roots([str(root)]) == []
+    with pytest.raises(safe_open.UnsafePathError):
+        safe_open.read_bytes(str(root / "a.txt"), [str(root)])
+
+
+def test_a_top_level_root_owned_startup_root_link_is_followed(tree, tmp_path, monkeypatch):
+    parent = tmp_path / "private-parent"
+    parent.mkdir()
+    link = parent / "workdir"
+    link.symlink_to(tree["root"], target_is_directory=True)
+    _link_owners(monkeypatch, link, parent, link_uid=0, parent_uid=0)
+    monkeypatch.setattr(safe_open, "_FS_ROOT", str(parent))  # as if parent were "/"
+    assert safe_open.pin_at_startup([str(link)]) == [os.path.realpath(tree["root"])]
+
+
+@pytest.mark.parametrize(
+    ("case", "link_uid", "parent_uid", "parent_mode"),
+    [
+        ("user-owned link in a user-owned dir", 1000, 1000, 0o755),  # sandbox may share the uid
+        ("user-owned link in a root-owned dir", 1000, 0, 0o755),
+        ("root-owned link in a user-owned dir", 0, 1000, 0o755),
+        ("group-writable dir", 0, 0, 0o775),
+        ("other-writable dir", 0, 0, 0o1777),
+        ("root-owned link below the top level", 0, 0, 0o755),
+    ],
+)
+def test_an_untrusted_startup_root_link_is_refused(
+    tree, tmp_path, monkeypatch, caplog, case, link_uid, parent_uid, parent_mode
+):
+    import logging
+
+    parent = tmp_path / f"parent-{abs(hash(case))}"
+    parent.mkdir()
+    link = parent / "workdir"
+    link.symlink_to(tree["root"], target_is_directory=True)
+    _link_owners(monkeypatch, link, parent, link_uid=link_uid, parent_uid=parent_uid, parent_mode=parent_mode)
+    if case != "root-owned link below the top level":
+        monkeypatch.setattr(safe_open, "_FS_ROOT", str(parent))  # top level: only ownership decides
+    with caplog.at_level(logging.WARNING, logger=safe_open.logger.name):
+        assert safe_open.pin_at_startup([str(link)]) == [], case
+    assert "not trusted" in caplog.text
+    assert "resolved real path" in caplog.text and os.path.realpath(tree["root"]) in caplog.text
+
+
+def test_an_existing_startup_root_under_a_symlinked_ancestor_is_refused(tree, tmp_path, caplog):
+    """/workspace/link/run: the ancestor link is never followed at startup either."""
+    import logging
+
+    real_parent = tmp_path / "real-parent"
+    (real_parent / "run").mkdir(parents=True)
+    workspace = tmp_path / "ws-ancestor"
+    workspace.mkdir()
+    (workspace / "link").symlink_to(real_parent, target_is_directory=True)
+    root = workspace / "link" / "run"  # exists, through the link
+    with caplog.at_level(logging.WARNING, logger=safe_open.logger.name):
+        assert safe_open.pin_at_startup([str(root)]) == []
+    assert "symlinked ancestor" in caplog.text and str(real_parent / "run") in caplog.text
+    assert safe_open.pin_roots([str(root)]) == []
+
+
+def test_an_existing_startup_root_with_plain_ancestors_is_pinned(tree):
+    assert safe_open.pin_at_startup([str(tree["root"])]) == [os.path.realpath(tree["root"])]

@@ -31,10 +31,13 @@ import contextvars
 import email
 import email.utils
 import hashlib
+import hmac
 import json
 import logging
 import os
 import re
+import secrets
+import shutil
 import stat
 import tempfile
 from datetime import UTC, datetime, timedelta
@@ -50,8 +53,13 @@ import aioboto3
 import aiofiles
 import httpx
 from mcp.server.fastmcp import FastMCP
-from utils import url_guard
+from utils import safe_open, url_guard
 from utils.fsutil import ensure_dir
+
+try:  # IDNA 2008 / UTS 46 (a dependency of httpx); see idna_domain
+    import idna as _idna_pkg
+except ImportError:  # pragma: no cover - fail closed without it
+    _idna_pkg = None
 
 _LINE_CONT_RE = re.compile(r"=[\r\n]+")
 _SPACE_RE = re.compile(r"\s+")
@@ -65,34 +73,99 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# URLs in log lines lose their query string and fragment ENTIRELY (?*** / #***):
-# presigned S3 / report links carry their credential (X-Amz-Signature,
-# token=...) there, under arbitrary names, no name at all, or AS the name
-# (?eyJhbGciOi...=), so no part of either is kept. Only scheme://host/path
-# survives, with any userinfo masked too. An apostrophe does not end the
-# query: over-redacting a closing quote beats leaking a token that holds one.
-_URL_QUERY_RE = re.compile(r"(https?://[^\s?#'\"<>]+)([?#][^\s\"<>]*)", re.IGNORECASE)
+# URLs in log lines keep only what identifies them, never what grants access:
+# capability links carry their credential in the query (X-Amz-Signature,
+# token=..., or the token AS a parameter name), in the fragment, in the
+# userinfo, or as a PATH segment (https://files.example/download/<secret>/x.csv).
+# So a logged URL keeps only its scheme and host: the path collapses to "…"
+# and its last segment keeps only a short alphabetic extension ("***.csv",
+# else "***"; even a filename-shaped segment can be a token), and the whole
+# query, the whole fragment and any userinfo are masked
+# (https://***@host/…/***.csv?***#***), followed by a per-process keyed
+# HMAC-SHA256 tag of the full original URL ([url-id:…]) so operators can
+# still tell links apart within one process's logs.
+#
+# Structural, not one regex per part: each URL candidate (scheme to the next
+# whitespace, quote-mark " or angle bracket) is split by the URL grammar
+# itself. The authority ends at the first "/", "?" or "#"; everything before
+# its LAST "@" is userinfo (any characters: non-ASCII, apostrophes, ...); the
+# query / fragment start at the first "?" / "#" after it. An apostrophe ends
+# nothing: over-redacting a closing quote beats leaking a token. Idempotent:
+# an already-redacted URL is left as it is (no second hash).
+_URL_CANDIDATE_RE = re.compile(r"https?://[^\s\"<>]+", re.IGNORECASE)
+_URL_HASH_TAG = " [url-id:"
+# Keyed per process: the tag only correlates links within one process's logs,
+# and an unkeyed hash of a short secret (a six-digit code) could be brute-forced.
+_URL_TAG_KEY = secrets.token_bytes(32)
+_MASKED_SEGMENT = "\u2026"  # "…"
 
 
-def _mask_query(rest: str) -> str:
-    """``rest`` starts with "?" or "#": the query, then the fragment, each fully masked."""
-    out = "?***" if rest.startswith("?") else ""
-    if "#" in rest:
-        out += "#***"
-    return out
+_LOG_SEGMENT_EXT_RE = re.compile(r"\.([A-Za-z]{1,5})")
 
 
-# RFC 3986 userinfo: unreserved / pct-encoded / sub-delims (incl. ' ( ) * + , ; =)
-# / ":", up to the "@" that ends it. None of those characters is "/", "?" or "#",
-# so the match never leaves the authority.
-_URL_USERINFO_RE = re.compile(r"(https?://)[A-Za-z0-9\-._~%!$&'()*+,;=:]+@", re.IGNORECASE)
+def _masked_last_segment(segment: str) -> str:
+    """The last path segment as logged: never its stem (a filename-shaped
+    segment can still be a token: /download/deadbeef1234.csv), only a short
+    alphabetic extension: "report.csv" -> "***.csv", anything else -> "***"."""
+    if segment in ("", "***") or (segment.startswith("***.") and _LOG_SEGMENT_EXT_RE.fullmatch(segment[3:])):
+        return segment
+    stem, dot, ext = segment.rpartition(".")
+    if dot and stem and _LOG_SEGMENT_EXT_RE.fullmatch("." + ext):
+        return "***." + ext
+    return "***"
+
+
+def _mask_path(path: str) -> str:
+    """ "/a/b/report.csv" -> "/…/***.csv": every earlier segment collapses to
+    "…" and the last keeps only its extension ("/token" -> "/***")."""
+    if path in ("", "/"):
+        return path
+    segments = path.split("/")  # path starts with "/"
+    last = _masked_last_segment(segments[-1])
+    if len(segments) == 2:
+        return "/" + last
+    return "/" + _MASKED_SEGMENT + "/" + last
+
+
+def _redact_one_url(url: str) -> str:
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        return url
+    # Lenient parsers (WHATWG, httpx) read "\\" as "/", so a backslash path
+    # (https://host\\download\\SECRET.csv) is masked like a slash path.
+    rest = rest.replace("\\", "/")
+    cut = len(rest)
+    for delimiter in "/?#":
+        index = rest.find(delimiter)
+        if index != -1:
+            cut = min(cut, index)
+    authority, tail = rest[:cut], rest[cut:]
+    if "@" in authority:
+        authority = "***@" + authority.rpartition("@")[2]
+    query_at = min((i for i in (tail.find("?"), tail.find("#")) if i != -1), default=-1)
+    path, rest_q = (tail[:query_at], tail[query_at:]) if query_at != -1 else (tail, "")
+    masked = ""
+    if rest_q:
+        masked = "?***" if rest_q.startswith("?") else ""
+        if "#" in rest_q:
+            masked += "#***"
+    return f"{scheme}://{authority}{_mask_path(path)}{masked}"
 
 
 def redact_url_queries(text: str) -> str:
     """Mask URL credentials in a log line: userinfo (https://user:pass@host ->
-    https://***@host), every query component and every fragment component."""
-    text = _URL_USERINFO_RE.sub(r"\1***@", text)
-    return _URL_QUERY_RE.sub(lambda m: m.group(1) + _mask_query(m.group(2)), text)
+    https://***@host), every path segment but the last, the whole query and the
+    whole fragment; a changed URL is tagged with a keyed HMAC of the original."""
+
+    def _sub(match: re.Match[str]) -> str:
+        url = match.group(0)
+        redacted = _redact_one_url(url)
+        if redacted == url or text.startswith(_URL_HASH_TAG, match.end()):
+            return redacted
+        digest = hmac.new(_URL_TAG_KEY, url.encode("utf-8", "surrogatepass"), hashlib.sha256).hexdigest()[:12]
+        return f"{redacted}{_URL_HASH_TAG}{digest}]"
+
+    return _URL_CANDIDATE_RE.sub(_sub, text)
 
 
 class _RedactUrlQueries(logging.Filter):
@@ -151,30 +224,35 @@ def _debug_log_path() -> str | None:
     try:
         with contextlib.suppress(FileExistsError):
             os.mkdir(base, 0o700)
-        st = os.lstat(base)
-        if not stat.S_ISDIR(st.st_mode) or (uid is not None and st.st_uid != uid):
-            return None  # a planted symlink or someone else's directory: do not log there
-        os.chmod(base, 0o700)
+        # Verify and chmod THROUGH a no-follow descriptor: a path-based chmod
+        # after an lstat could follow a symlink swapped in between and chmod
+        # an arbitrary directory. (The log itself is later opened by another
+        # no-follow walk that re-checks the directory's owner.)
+        fd = os.open(
+            base,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        )
+        try:
+            st = os.fstat(fd)
+            euid = os.geteuid() if hasattr(os, "geteuid") else uid
+            if not stat.S_ISDIR(st.st_mode) or (euid is not None and st.st_uid != euid):
+                return None  # someone else's directory: do not log there
+            os.fchmod(fd, 0o700)
+        finally:
+            os.close(fd)
     except OSError:
-        return None
+        return None  # a planted symlink (ELOOP / ENOTDIR) or unusable directory
     return os.path.join(base, "debug.log")
 
 
 def _open_dir_nofollow(real_dir: str) -> int:
-    """A descriptor for the already-resolved directory ``real_dir``, reached from
-    "/" one component at a time with O_NOFOLLOW|O_DIRECTORY: a component swapped
-    for a symlink after it was resolved is refused (OSError), never followed."""
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-    fd = os.open(os.sep, flags)
-    try:
-        for part in [p for p in real_dir.split(os.sep) if p]:
-            child = os.open(part, flags, dir_fd=fd)
-            os.close(fd)
-            fd = child
-        return fd
-    except BaseException:
-        os.close(fd)
-        raise
+    """A descriptor for directory ``real_dir``, reached from "/" one component
+    at a time with O_NOFOLLOW|O_DIRECTORY (safe_open.walk_trusted): a symlink
+    is followed only when it is a trusted system symlink (root-owned, in a
+    root-owned directory nobody else can write: macOS /var, /tmp); any other
+    symlink, such as one planted in a shared or sandbox-writable directory, is
+    refused (OSError), never followed."""
+    return safe_open.walk_trusted(real_dir)
 
 
 def _open_private_log(path: str, *, parent_real: str | None = None) -> IO[str]:
@@ -182,11 +260,13 @@ def _open_private_log(path: str, *, parent_real: str | None = None) -> IO[str]:
     nor any directory above it — and return a stream on THAT descriptor: the
     handler writes to it and never reopens the path by name.
 
-    The parent is resolved once (operator config, at startup; ``parent_real``)
-    and then reached by a no-follow walk; the file is opened relative to that
-    directory descriptor. A parent owned by another user is refused, and so is
-    an existing log file owned by another user or hard-linked elsewhere."""
-    parent = parent_real or os.path.realpath(os.path.dirname(os.path.abspath(path)))
+    The configured parent is never realpath()ed: it is reached from "/" one
+    component at a time without following any symlink (a planted parent
+    symlink is refused, not resolved), unless the caller passes an already
+    resolved ``parent_real``; the file is opened relative to that directory
+    descriptor. A parent owned by another user is refused, and so is an
+    existing log file owned by another user or hard-linked elsewhere."""
+    parent = parent_real or os.path.dirname(os.path.abspath(path))
     dir_fd = _open_dir_nofollow(parent)
     try:
         dst = os.fstat(dir_fd)
@@ -547,23 +627,65 @@ def build_collision_safe_output_path(download_dir: str | Path, filename: str, so
     return reserved.path
 
 
-def _write_fd(fd: int, data: bytes) -> None:
+def _write_fd(fd: int, data: Any) -> None:
+    """Write ``data`` (bytes, or a binary file object copied from its current
+    position in 1 MiB chunks) to ``fd``, which this takes ownership of."""
     with os.fdopen(fd, "wb") as fh:  # takes ownership: closes fd on exit
-        fh.write(data)
+        if hasattr(data, "read"):
+            shutil.copyfileobj(data, fh, 1024 * 1024)
+        else:
+            fh.write(data)
 
 
-async def write_reserved(reserved: ReservedFile, data: bytes) -> None:
+def _discard_reserved(reserved: ReservedFile) -> None:
+    """Remove a reserved file whose write did not complete, through a confined
+    directory descriptor and only while the name is still the inode reserved."""
+    try:
+        dir_fd = _open_confined_dir(reserved.path.parent)
+    except (OSError, ValueError):
+        return
+    try:
+        st = os.stat(reserved.path.name, dir_fd=dir_fd, follow_symlinks=False)
+        if (st.st_dev, st.st_ino) == reserved.ident:
+            os.unlink(reserved.path.name, dir_fd=dir_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
+
+
+async def write_reserved(reserved: ReservedFile, data: Any) -> None:
     """Write through the reserved descriptor (closed afterwards), never by path.
 
-    The descriptor is handed to a worker thread; if that hand-off itself
-    fails, it is closed here, so no error path leaks it.
+    The descriptor (and ``data``, possibly a spool file) is handed to a worker
+    thread; if that hand-off itself fails, it is closed here, so no error path
+    leaks it. A cancelled caller (tool timeout, client cancel) still WAITS for
+    the running copy: the thread cannot be stopped, and the caller's cleanup
+    must not close the spool under it. The partial file is then removed and
+    the cancellation re-raised.
     """
     try:
-        fut = asyncio.to_thread(_write_fd, reserved.fd, data)
+        task = asyncio.ensure_future(asyncio.to_thread(_write_fd, reserved.fd, data))
     except BaseException:
         os.close(reserved.fd)
         raise
-    await fut
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue  # cancelled again: keep waiting for the thread
+            except Exception:  # noqa: BLE001 - the write failed anyway; cleanup below
+                break
+        if task.done() and not task.cancelled():
+            task.exception()  # retrieved: the cancellation is what propagates
+        _discard_reserved(reserved)
+        raise
+    except BaseException:
+        _discard_reserved(reserved)
+        raise
 
 
 def attachment_name_matches(part_filename: str, requested_filename: str) -> bool:
@@ -741,14 +863,40 @@ def _message_sent_at(message_date: str) -> datetime | None:
     return sent.replace(tzinfo=UTC) if sent.tzinfo is None else sent
 
 
+def _partition_day(s3_key: str) -> datetime | None:
+    """The received day a key's date partition names (emails/2026/10/26/...), or None."""
+    if not DATE_PREFIX_FORMAT or not _in_date_tree(s3_key):
+        return None
+    width = len(datetime(2000, 1, 1, tzinfo=UTC).strftime(DATE_PREFIX_FORMAT))
+    try:
+        return datetime.strptime(s3_key[:width], DATE_PREFIX_FORMAT).replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
 def _legacy_outside_window(
     s3_key: str, message_date: str, date_from_dt: datetime | None, date_to_dt: datetime | None
 ) -> bool:
     """For a key under a trusted legacy prefix (whose LastModified is the import
-    time, not the mail's), True when its Date header lies outside the window
-    (or cannot be read while a window is set)."""
+    time, not the mail's), True when it lies outside the window.
+
+    A legacy object INSIDE the date tree is windowed by its Date header when
+    that falls on its partition day (sub-day bounds hold), else by the
+    partition day (the received date): a missing, malformed or
+    timezone-shifted Date header must not make it undiscoverable. Only legacy objects outside the date tree are
+    windowed by their Date header (and dropped when it cannot be read)."""
     if not trusted_legacy_key(s3_key) or (date_from_dt is None and date_to_dt is None):
         return False
+    day = _partition_day(s3_key)
+    if day is not None:
+        # A valid Date header on the partition's own day gives the sub-day
+        # position (a 12:00-13:00 window); a missing, unreadable or off-day
+        # header falls back to the day overlapping the window.
+        sent = _message_sent_at(message_date)
+        if sent is not None and day <= sent < day + timedelta(days=1):
+            return bool((date_from_dt and sent < date_from_dt) or (date_to_dt and sent > date_to_dt))
+        day_end = day + timedelta(days=1) - timedelta(microseconds=1)
+        return bool((date_from_dt and day_end < date_from_dt) or (date_to_dt and day > date_to_dt))
     sent = _message_sent_at(message_date)
     if sent is None:
         return True
@@ -757,11 +905,18 @@ def _legacy_outside_window(
 
 def _effective_received(s3_key: str, message_date: str, last_modified: datetime) -> datetime:
     """When a message arrived, for ordering results: LastModified for SES-delivered
-    mail; the Date header for a trusted legacy import (its LastModified is the
-    import time). An unreadable legacy Date sorts as the oldest possible."""
+    mail; for a trusted legacy import (its LastModified is the import time) the
+    Date header, bounded by its received-date partition when it is in the date
+    tree. An unreadable legacy Date outside the tree sorts as the oldest."""
     if not trusted_legacy_key(s3_key):
         return last_modified
-    return _message_sent_at(message_date) or datetime.min.replace(tzinfo=UTC)
+    sent = _message_sent_at(message_date)
+    day = _partition_day(s3_key)
+    if day is not None:
+        # In the date tree the partition is the received day: the Date header
+        # orders messages within it only when it agrees with that day.
+        return sent if sent is not None and day <= sent < day + timedelta(days=1) else day
+    return sent or datetime.min.replace(tzinfo=UTC)
 
 
 def _is_legacy_prefix(prefix: str) -> bool:
@@ -912,9 +1067,37 @@ def _split_resinfo(text: str) -> list[str]:
     return items
 
 
+def idna_domain(domain: str) -> str:
+    """``domain`` in its canonical ASCII (IDNA A-label) form, lower-cased:
+    "bücher.example" and "xn--bcher-kva.example" compare equal.
+
+    Encoded with the ``idna`` package (IDNA 2008 / UTS 46, NON-transitional:
+    "faß.de" is xn--fa-hia.de, never fass.de), a dependency of httpx. Python's
+    built-in codec (IDNA 2003) is never used: it maps "ß" to "ss" and would let
+    faß.de align with fass.de. When the package is missing, or the domain
+    cannot be encoded, a non-ASCII domain is only lower-cased: it then equals
+    no A-label, so it fails closed (no SPF/DKIM alignment and no keyword match;
+    a receiver's dmarc=pass still counts)."""
+    domain = str(domain or "").strip().strip(".")
+    if domain.isascii():
+        return domain.lower()
+    if _idna_pkg is not None:
+        try:
+            return _idna_pkg.encode(domain, uts46=True, transitional=False).decode("ascii").lower()
+        except (_idna_pkg.IDNAError, UnicodeError, ValueError):
+            pass
+    return domain.lower()
+
+
+def _canonical_mailbox(mailbox: str) -> str:
+    """local@domain with the domain IDNA-canonicalised (local part lower-cased)."""
+    local, at, domain = str(mailbox or "").strip().lower().rpartition("@")
+    return f"{local}@{idna_domain(domain)}" if at else idna_domain(domain)
+
+
 def _address_domain(value: str) -> str:
     address = parseaddr(value)[1] if "<" in value or " " in value.strip() else value.strip()
-    return address.rpartition("@")[2].strip().strip(".").lower()
+    return idna_domain(address.rpartition("@")[2])
 
 
 def _aligned(auth_domain: str, from_domain: str) -> bool:
@@ -1025,16 +1208,48 @@ def _sender_needles(sender_filter: str) -> list[str]:
     return needles
 
 
+# A fuzzy keyword shaped like a sender: the WHOLE keyword is a mailbox
+# ("reports@vendor.example", "@vendor.example") or a domain name (two or more
+# LDH labels, alphabetic TLD: "vendor.example"). "version 2.0", "2.0" or
+# "report @ 10am" are not, and keep matching subject / body text.
+_LDH_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+_TLD_RE = re.compile(r"[a-z]{2,63}|xn--[a-z0-9-]{1,59}")
+
+
+def sender_shaped(keyword: str) -> bool:
+    """True when the WHOLE keyword is a mailbox ("reports@vendor.example",
+    "@vendor.example") or a domain name: two or more LDH labels whose last is
+    alphabetic or a punycode ("xn--") label. Unicode domains are IDNA-encoded
+    first ("bücher.example", "отчёты.рф"). Version-like or numeric keywords
+    ("2.0", "v1.2.3") and anything with spaces ("report @ 10am") are not."""
+    k = str(keyword or "").strip()
+    if not k or any(ch.isspace() for ch in k):
+        return False
+    domain = k.rpartition("@")[2] if "@" in k else k
+    if not domain or "@" in domain:
+        return False
+    ascii_domain = idna_domain(domain)
+    if not ascii_domain.isascii():
+        return False
+    labels = ascii_domain.split(".")
+    if len(labels) < 2 or not all(_LDH_LABEL_RE.fullmatch(label) for label in labels):
+        return False
+    return bool(_TLD_RE.fullmatch(labels[-1]))
+
+
 def mailbox_matches(needle: str, mailbox: str) -> bool:
     """One sender filter item against a parsed mailbox: an item with "@" must be
     the whole mailbox; anything else is a DOMAIN, matched as the mailbox domain
     or a subdomain of it (so "ssp.example" matches reports@mail.ssp.example, never
     notssp.example, ssp.example.evil.example or ssp.example@attacker.example)."""
-    mailbox = mailbox.lower()
+    # Both sides IDNA-canonicalised: a Unicode keyword ("bücher.example")
+    # matches an A-label header (xn--bcher-kva.example) and the reverse.
+    mailbox = _canonical_mailbox(mailbox)
     if "@" in needle:
-        return mailbox == needle
+        return mailbox == _canonical_mailbox(needle)
+    needle = idna_domain(needle)
     domain = mailbox.rpartition("@")[2]
-    return bool(domain) and (domain == needle or domain.endswith("." + needle))
+    return bool(domain) and bool(needle) and (domain == needle or domain.endswith("." + needle))
 
 
 def sender_filter_matches(sender_filter: str, headers: dict[str, str], s3_key: str = "") -> bool:
@@ -2168,10 +2383,13 @@ async def search_emails(
         async with session.client("s3", region_name=AWS_REGION) as s3_client:
             paginator = s3_client.get_paginator("list_objects_v2")
 
-            # Date partitions are listed newest day first, so once they fill
-            # max_results the older days can be skipped. Trusted legacy
-            # prefixes are NOT time-ordered (and come last): they are always
-            # scanned in full, and the limit is applied after a global sort.
+            # Date partitions are listed newest day first. A partition is always
+            # scanned in FULL (its keys are not in time order), keeping the
+            # newest max_results; once the limit is reached, only the older
+            # partitions after it are skipped. Trusted legacy prefixes are not
+            # time-ordered either (and come last): always scanned in full. The
+            # limit is applied after one global sort. Without partitions (an
+            # unbounded or very wide window) the scan still stops at the limit.
             stop_search = False
             seen_keys: set[str] = set()  # overlapping prefixes never yield one object twice
             for prefix in search_prefixes:
@@ -2330,13 +2548,13 @@ async def search_emails(
 
                         if len(matching_emails) >= max_results:
                             stop_search = True
-                            if not legacy_scan:
+                            if not using_partition_prefixes:
                                 break
                             if len(matching_emails) > max_results:
                                 matching_emails.sort(key=lambda x: x["_sort_at"], reverse=True)
                                 del matching_emails[max_results:]
 
-                    if stop_search and not legacy_scan:
+                    if stop_search and not using_partition_prefixes:
                         break
 
         matching_emails.sort(key=lambda x: x["_sort_at"], reverse=True)
@@ -2463,7 +2681,9 @@ async def search_emails_fuzzy(
                       name, and is matched like sender_contains: a keyword must be
                       the whole mailbox or a domain ("ssp.example", which also
                       matches its subdomains); a bare company name never matches a
-                      sender, so search it ("Example SSP") in the subject.
+                      sender, so search it ("Example SSP") in the subject. While
+                      "sender" is searched, a domain- or address-shaped keyword
+                      matches the sender only, never subject or body text.
         match_all: If True, all keywords must match (AND). If False, any keyword (OR)
         date_from: Only emails received on or after this date (ISO format)
         date_to: Only emails received on or before this date (ISO format)
@@ -2568,10 +2788,13 @@ async def search_emails_fuzzy(
         async with session.client("s3", region_name=AWS_REGION) as s3_client:
             paginator = s3_client.get_paginator("list_objects_v2")
 
-            # Date partitions are listed newest day first, so once they fill
-            # max_results the older days can be skipped. Trusted legacy
-            # prefixes are NOT time-ordered (and come last): they are always
-            # scanned in full, and the limit is applied after a global sort.
+            # Date partitions are listed newest day first. A partition is always
+            # scanned in FULL (its keys are not in time order), keeping the
+            # newest max_results; once the limit is reached, only the older
+            # partitions after it are skipped. Trusted legacy prefixes are not
+            # time-ordered either (and come last): always scanned in full. The
+            # limit is applied after one global sort. Without partitions (an
+            # unbounded or very wide window) the scan still stops at the limit.
             stop_search = False
             seen_keys: set[str] = set()  # overlapping prefixes never yield one object twice
             for prefix in search_prefixes:
@@ -2694,21 +2917,38 @@ async def search_emails_fuzzy(
                             # a whole mailbox or a domain on a label boundary, never a
                             # substring (vendor.example must not match
                             # reports@vendor.example.evil.example).
+                            # EMAIL_SENDER_AUTH=off keeps the documented legacy match: a
+                            # substring of the WHOLE From header, display name included.
                             sender_mailbox = parseaddr(sender)[1].lower() if "sender" in search_fields else ""
+                            sender_header = str(sender).lower() if "sender" in search_fields else ""
 
-                            def _sender_hit(normalized: str, mailbox: str = sender_mailbox) -> bool:
+                            def _sender_hit(
+                                normalized: str, mailbox: str = sender_mailbox, header: str = sender_header
+                            ) -> bool:
+                                if include_unauthenticated():
+                                    return bool(header) and normalized in header
                                 if not mailbox:
                                     return False
-                                if include_unauthenticated():
-                                    return normalized in mailbox  # EMAIL_SENDER_AUTH=off: legacy substring
                                 return mailbox_matches(normalized.strip().lstrip("@"), mailbox)
 
-                            # Check keyword matches
-                            matches = [
-                                original
-                                for original, normalized in keyword_pairs
-                                if normalized in searchable_text or _sender_hit(normalized)
-                            ]
+                            # Check keyword matches. With sender authentication required
+                            # and "sender" searched, a domain- or address-shaped keyword
+                            # ("vendor.example", "reports@vendor.example") is a SENDER
+                            # constraint only: a subject saying "vendor.example" on mail
+                            # from attacker@evil.example must not select it.
+                            # Conversely a plain word ("media") never matches a sender:
+                            # mailbox_matches would read it as a domain suffix
+                            # (reports@foo.media). Off mode keeps the whole-From substring.
+                            sender_bound = "sender" in search_fields and not include_unauthenticated()
+                            matches = []
+                            for original, normalized in keyword_pairs:
+                                if sender_bound:
+                                    shaped = sender_shaped(normalized)
+                                    hit = _sender_hit(normalized) if shaped else normalized in searchable_text
+                                else:
+                                    hit = _sender_hit(normalized) or normalized in searchable_text
+                                if hit:
+                                    matches.append(original)
 
                             if match_all:
                                 # All keywords must match
@@ -2744,7 +2984,7 @@ async def search_emails_fuzzy(
 
                             if len(matching_emails) >= max_results:
                                 stop_search = True
-                                if not legacy_scan:
+                                if not using_partition_prefixes:
                                     break
                                 if len(matching_emails) > max_results:
                                     matching_emails.sort(key=lambda x: (x["match_score"], x["_sort_at"]), reverse=True)
@@ -2755,7 +2995,7 @@ async def search_emails_fuzzy(
                             logger.warning(f"Failed to parse email {obj['Key']}: {e}")
                             continue
 
-                    if stop_search and not legacy_scan:
+                    if stop_search and not using_partition_prefixes:
                         break
 
         # Sort by match score (highest first), then by date (newest first);
@@ -3057,6 +3297,7 @@ async def _fetch_archived_link(
         read["response"],
         read["metadata"],
     )
+    size = read.get("size", 0)
     try:
         _check_batch_deadline()
         reserved = reserve_output_file(download_dir, filename or archived_name, f"archive:{url}")
@@ -3070,7 +3311,7 @@ async def _fetch_archived_link(
             "url": url,
             "filename": output_path.name,
             "saved_to": str(output_path),
-            "size_bytes": len(content),
+            "size_bytes": size,
             "content_type": response.get("ContentType", "unknown"),
             "archive_key": archive_key,
             "archived_at": metadata.get("archived-at"),
@@ -3085,6 +3326,9 @@ async def _fetch_archived_link(
     except Exception as e:
         logger.warning(f"Archive fallback write failed for {url}: {e}")
         return None
+    finally:
+        with contextlib.suppress(Exception):
+            content.close()
 
 
 async def _read_archived(url: str) -> dict[str, Any] | None:
@@ -3109,25 +3353,39 @@ async def _read_archived(url: str) -> dict[str, Any] | None:
             return _archive_too_large(url, declared)
         # StreamingBody.read(n) may return fewer bytes than asked before EOF:
         # read until EOF under a cumulative cap, then check it is complete.
-        with tempfile.SpooledTemporaryFile(max_size=1024 * 1024) as spool:
-            total = 0
+        # Spooled to disk and never read back whole: the caller copies the
+        # spool into the reserved file in chunks (write_reserved).
+        spool = _new_call_spool()
+        total = 0
+        try:
             while True:
                 chunk = await response["Body"].read(1024 * 1024)
                 if not chunk:
                     break
                 total += len(chunk)
-                if total > LINK_DOWNLOAD_MAX_BYTES:
+                try:
+                    _charge_batch_budget(len(chunk))  # charged before the per-file cap
+                except LinkDownloadTooLarge as exc:
+                    spool.close()
+                    if exc.batch:
+                        raise  # the BATCH budget is spent: not this copy's size
                     return _archive_too_large(url, total)
-                _charge_batch_budget(len(chunk))
+                if total > LINK_DOWNLOAD_MAX_BYTES:
+                    spool.close()
+                    return _archive_too_large(url, total)
                 spool.write(chunk)
-            spool.seek(0)
-            content = spool.read()  # held once
-        if isinstance(declared, int) and len(content) != declared:
+        except BaseException:
+            spool.close()
+            raise
+        spool.seek(0)
+        content = spool
+        if isinstance(declared, int) and total != declared:
+            spool.close()
             return {
                 "status": "error",
                 "source": "s3_archive",
                 "url": url,
-                "error": f"The archived copy was truncated ({len(content)} of {declared} bytes); not saved.",
+                "error": f"The archived copy was truncated ({total} of {declared} bytes); not saved.",
                 "retryable": True,
             }
         metadata = response.get("Metadata", {})
@@ -3135,6 +3393,7 @@ async def _read_archived(url: str) -> dict[str, Any] | None:
         "key": archive_key,
         "name": archived_name,
         "content": content,
+        "size": total,
         "response": response,
         "metadata": metadata,
     }
@@ -3146,6 +3405,10 @@ async def _read_archived(url: str) -> dict[str, Any] | None:
 LINK_DOWNLOAD_MAX_BYTES = int(os.environ.get("EMAIL_LINK_MAX_BYTES", "") or 200 * 1024 * 1024)
 LINK_DOWNLOAD_MAX_SECONDS = int(os.environ.get("EMAIL_LINK_MAX_SECONDS", "") or 240)
 LINK_DOWNLOAD_MAX_REDIRECTS = 10
+# How much of an HTML response is decoded and scanned for a chase target: the
+# first 10 MB by default. It never limits a download: with no link found in
+# that prefix, the response is saved as the file, under EMAIL_LINK_MAX_BYTES.
+LINK_HTML_SCAN_MAX_BYTES = int(os.environ.get("EMAIL_LINK_HTML_SCAN_MAX_BYTES", "") or 10 * 1024 * 1024)
 
 
 # A batch (download_all_link_attachments) shares ONE byte budget across its
@@ -3153,7 +3416,10 @@ LINK_DOWNLOAD_MAX_REDIRECTS = 10
 # charge the same counter.
 LINK_BATCH_MAX_COUNT = int(os.environ.get("EMAIL_LINK_MAX_COUNT", "") or 20)
 LINK_BATCH_CONCURRENCY = 3
-LINK_BATCH_MAX_BYTES = int(os.environ.get("EMAIL_LINK_BATCH_MAX_BYTES", "") or 200 * 1024 * 1024)
+LINK_BATCH_SKIPPED_SAMPLE = 5
+# Default 1 GiB: several large reports (e.g. 3 x 150 MB) fit one batch; each
+# file stays under LINK_DOWNLOAD_MAX_BYTES (200 MB).
+LINK_BATCH_MAX_BYTES = int(os.environ.get("EMAIL_LINK_BATCH_MAX_BYTES", "") or 1024 * 1024 * 1024)
 _BATCH_BUDGET: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar("link_batch_budget", default=None)
 
 
@@ -3175,6 +3441,50 @@ def _check_batch_deadline() -> None:
         )
 
 
+# Temp files holding this download_link_attachment call's response bodies;
+# closed (deleted) when the call returns. None outside such a call.
+_CALL_SPOOLS: contextvars.ContextVar[list[Any] | None] = contextvars.ContextVar("link_call_spools", default=None)
+# How much of a body is kept in memory on the response: enough to sniff for
+# HTML, and for an HTML page, the part the chase scan reads.
+_SNIFF_BYTES = 512
+
+
+def _new_call_spool() -> Any:
+    spool = tempfile.TemporaryFile()  # noqa: SIM115 - closed by the call wrapper / archive reader
+    spools = _CALL_SPOOLS.get()
+    if spools is not None:
+        spools.append(spool)
+    return spool
+
+
+def _spooled_body(response: httpx.Response, spool: Any, size: int) -> None:
+    """Attach a spooled body to ``response``: ``response.content`` becomes only a
+    bounded head (512 bytes; for an HTML page up to EMAIL_LINK_HTML_SCAN_MAX_BYTES),
+    and the full body stays on disk for _body_of / write_reserved."""
+    spool.seek(0)
+    head = spool.read(_SNIFF_BYTES)
+    content_type = (response.headers.get("content-type") or "").lower()
+    sniffed = head.lstrip().lower()
+    if (
+        "text/html" in content_type
+        or "application/xhtml" in content_type
+        or sniffed.startswith((b"<!doctype html", b"<html"))
+    ):
+        head += spool.read(max(0, LINK_HTML_SCAN_MAX_BYTES - len(head)))
+    response._content = head  # what Response.aread() stores (bounded head only)
+    response.extensions = {**response.extensions, "spooled_body": (spool, size)}
+
+
+def _body_of(response: httpx.Response) -> tuple[Any, int]:
+    """(file-or-bytes positioned at the start, size) for the response's full body."""
+    spooled = response.extensions.get("spooled_body")
+    if spooled is None:
+        return response.content, len(response.content)
+    spool, size = spooled
+    spool.seek(0)
+    return spool, size
+
+
 # One download_link_attachment call's remaining bytes across ALL its phases
 # (live fetch, HTML chase, archive fallback); None outside such a call.
 _CALL_BUDGET: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar("link_call_budget", default=None)
@@ -3187,16 +3497,17 @@ def _call_budget_left() -> int:
 
 def _charge_batch_budget(n: int) -> None:
     """Charge ``n`` received bytes to this call's budget and to the batch's."""
+    # Both counters are debited for the bytes received BEFORE either limit is
+    # raised: a chunk that crosses the per-call cap still counts against the batch.
     call = _CALL_BUDGET.get()
+    budget = _BATCH_BUDGET.get()
     if call is not None:
         call[0] -= n
-        if call[0] < 0:
-            raise LinkDownloadTooLarge(LINK_DOWNLOAD_MAX_BYTES - call[0])
-    budget = _BATCH_BUDGET.get()
-    if budget is None:
-        return
-    budget[0] -= n
-    if budget[0] < 0:
+    if budget is not None:
+        budget[0] -= n
+    if call is not None and call[0] < 0:
+        raise LinkDownloadTooLarge(LINK_DOWNLOAD_MAX_BYTES - call[0])
+    if budget is not None and budget[0] < 0:
         raise LinkDownloadTooLarge(LINK_BATCH_MAX_BYTES - budget[0], batch=True)
 
 
@@ -3208,6 +3519,7 @@ class LinkDownloadTooLarge(Exception):
             message = f"The download is larger than the {LINK_DOWNLOAD_MAX_BYTES}-byte cap ({size}+ bytes)."
         super().__init__(message)
         self.size = size
+        self.batch = batch
 
 
 @mcp.tool()
@@ -3264,10 +3576,16 @@ async def download_link_attachment(
     # archive fallback), drawn on alongside the batch budget, so a single call
     # never transfers more than EMAIL_LINK_MAX_BYTES in total.
     token = _CALL_BUDGET.set([LINK_DOWNLOAD_MAX_BYTES])
+    spools: list[Any] = []
+    spools_token = _CALL_SPOOLS.set(spools)
     try:
         return await _download_link_attachment(url, output_dir, filename, timeout_seconds, chase_html)
     finally:
+        _CALL_SPOOLS.reset(spools_token)
         _CALL_BUDGET.reset(token)
+        for spool in spools:
+            with contextlib.suppress(Exception):
+                spool.close()
 
 
 async def _download_link_attachment(
@@ -3341,19 +3659,23 @@ async def _download_link_attachment(
                         declared = streamed.headers.get("content-length", "")
                         if declared.isdigit() and int(declared) > min(LINK_DOWNLOAD_MAX_BYTES, _call_budget_left()):
                             raise LinkDownloadTooLarge(int(declared))
-                        # Spooled to disk as it arrives (past 1 MiB), then read back
-                        # ONCE: a cap-sized body is held in memory a single time,
-                        # never as a chunk list plus its joined copy.
-                        with tempfile.SpooledTemporaryFile(max_size=1024 * 1024) as spool:
-                            total = 0
-                            async for chunk in streamed.aiter_bytes():
-                                total += len(chunk)
-                                if total > LINK_DOWNLOAD_MAX_BYTES:
-                                    raise LinkDownloadTooLarge(total)
-                                _charge_batch_budget(len(chunk))
-                                spool.write(chunk)
-                            spool.seek(0)
-                            streamed._content = spool.read()  # what Response.aread() stores
+                        # Spooled to disk as it arrives and NEVER read back whole:
+                        # the saved file is copied from the spool in chunks
+                        # (write_reserved), so concurrent near-cap downloads do
+                        # not each hold their body in memory. Only a bounded head
+                        # is kept on the response (_spooled_body).
+                        spool = _new_call_spool()
+                        total = 0
+                        async for chunk in streamed.aiter_bytes():
+                            total += len(chunk)
+                            # Charge the received chunk to the call AND batch
+                            # budgets first, then enforce the per-file cap: the
+                            # chunk that crosses it still counts against the batch.
+                            _charge_batch_budget(len(chunk))
+                            if total > LINK_DOWNLOAD_MAX_BYTES:
+                                raise LinkDownloadTooLarge(total)
+                            spool.write(chunk)
+                        _spooled_body(streamed, spool, total)
                         streamed.history = history
                         return streamed
                 raise httpx.TooManyRedirects(f"more than {LINK_DOWNLOAD_MAX_REDIRECTS} redirects", request=None)
@@ -3391,10 +3713,16 @@ async def _download_link_attachment(
             and _looks_like_html_response(response)
             and (classification["is_click_tracker"] or len(response.history) > 0)
         ):
+            # Only the first EMAIL_LINK_HTML_SCAN_MAX_BYTES of the page are decoded
+            # and scanned for the real link: a cap-sized HTML body is never
+            # decoded whole. No link found there: the full response is saved as
+            # the download like any other (never refused for its size).
+            prefix = response.content[:LINK_HTML_SCAN_MAX_BYTES]
             try:
-                html = response.text
-            except Exception:
-                html = ""
+                html = prefix.decode(response.encoding or "utf-8", errors="replace")
+            except LookupError:
+                html = prefix.decode("utf-8", errors="replace")
+            del prefix
             if html:
                 next_url = _pick_chase_target(html, url)
                 if next_url:
@@ -3412,11 +3740,11 @@ async def _download_link_attachment(
         # Determine filename
         final_filename = filename or get_filename_from_response(response, str(response.url))
         safe_filename = Path(final_filename).name
-        content = response.content
+        body, body_size = _body_of(response)
         _check_batch_deadline()
         reserved = reserve_output_file(download_dir, safe_filename, url)
         output_path = reserved.path
-        await write_reserved(reserved, content)
+        await write_reserved(reserved, body)
 
         logger.info(f"Downloaded link attachment: {output_path}")
 
@@ -3426,7 +3754,7 @@ async def _download_link_attachment(
             "final_url": str(response.url),
             "filename": safe_filename,
             "saved_to": str(output_path),
-            "size_bytes": len(content),
+            "size_bytes": body_size,
             "content_type": response.headers.get("content-type", "unknown"),
             "http_status": response.status_code,
             "redirect_chain": _redirect_chain(response),
@@ -3443,7 +3771,7 @@ async def _download_link_attachment(
             # Release the live body before the archive read: never the HTML page
             # and the archived payload in memory at once (and both together
             # stay within the one per-call byte budget).
-            content = response = None
+            body = response = None
             archived = await _archived_within_deadline()
             if archived is not None:
                 # The live login-page HTML stays where it was saved: deleting
@@ -3592,8 +3920,16 @@ async def download_all_link_attachments(
         # Bounded batch: at most LINK_BATCH_MAX_COUNT links, LINK_BATCH_CONCURRENCY
         # at a time, all charging one LINK_BATCH_MAX_BYTES budget, so one email
         # with many links cannot make the server buffer N x the per-file cap.
-        links = links_result["links"][:LINK_BATCH_MAX_COUNT]
-        skipped_links = links_result["links"][LINK_BATCH_MAX_COUNT:]
+        all_links = links_result["links"]
+        links = all_links[:LINK_BATCH_MAX_COUNT]
+        # Links past the limit are summarized, never materialized one by one:
+        # a count plus a small redacted sample.
+        skipped_count = max(0, len(all_links) - LINK_BATCH_MAX_COUNT)
+        skipped_sample = [
+            redact_url_queries(str(link.get("url", "")))
+            for link in all_links[LINK_BATCH_MAX_COUNT : LINK_BATCH_MAX_COUNT + LINK_BATCH_SKIPPED_SAMPLE]
+        ]
+        del all_links
         gate = asyncio.Semaphore(LINK_BATCH_CONCURRENCY)
         budget_token = _BATCH_BUDGET.set([LINK_BATCH_MAX_BYTES])
         deadline_token = _BATCH_DEADLINE.set(batch_deadline)
@@ -3619,14 +3955,6 @@ async def download_all_link_attachments(
         finally:
             _BATCH_BUDGET.reset(budget_token)
             _BATCH_DEADLINE.reset(deadline_token)
-        for link in skipped_links:
-            errors.append(
-                {
-                    "url": link["url"],
-                    "link_text": link.get("link_text"),
-                    "error": f"Not downloaded: a batch fetches at most {LINK_BATCH_MAX_COUNT} links.",
-                }
-            )
 
         # Process results
         for link, result in zip(links, results, strict=True):
@@ -3662,6 +3990,15 @@ async def download_all_link_attachments(
             "downloaded": downloaded,
             "errors": errors,
             "download_directory": download_dir,
+            **(
+                {
+                    "skipped_count": skipped_count,
+                    "skipped_sample": skipped_sample,
+                    "skipped_reason": f"Not downloaded: a batch fetches at most {LINK_BATCH_MAX_COUNT} links.",
+                }
+                if skipped_count
+                else {}
+            ),
         }
 
     except Exception as e:

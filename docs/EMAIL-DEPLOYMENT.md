@@ -79,28 +79,42 @@ root:root`, written by production-support's email provisioning):
   skipped unless `EMAIL_SENDER_AUTH=off`. `sender_contains` takes the sender's DOMAIN (matching it
   and its subdomains on label boundaries) or a full address, several
   comma-separated, and matches the authenticated mailbox, never the display
-  name (fuzzy sender keywords too): a bare vendor name matches nothing. Each result carries
+  name (fuzzy sender keywords too; a domain-shaped fuzzy keyword matches the
+  sender only): a bare vendor name matches nothing. Each date partition is
+  scanned in full and the newest matches kept. Each result carries
   `sender_authenticated`; skipped mail is reported as an
   `unauthenticated_sender_skipped` warning.
   Optional knobs: `EMAIL_SENDER_AUTH=off` falls back to the forgeable
-  From-substring match (every search then warns);
+  From-substring match, fuzzy sender keywords included (every search then warns);
   `EMAIL_TRUSTED_LEGACY_PREFIXES` (comma-separated S3 key prefixes, off by
   default) admits operator-imported legacy mail that has no
-  `Authentication-Results`; `EMAIL_AUTHSERV_ID` (default `amazonses.com`) names
-  the receiver; `EMAIL_LINK_MAX_BYTES` / `EMAIL_LINK_MAX_SECONDS` (200 MB /
-  240 s) cap each email-link download, every redirect hop and the archive
-  fallback (which gets at most 30 s or a quarter of the deadline) included;
-  `EMAIL_LINK_MAX_COUNT` (20) and `EMAIL_LINK_BATCH_MAX_BYTES` (200 MB) bound
-  `download_all_link_attachments`, which fetches 3 links at a time. The debug
+  `Authentication-Results` (mail in the dated tree is windowed by a valid Date header on its partition's own day, else by the partition day); `EMAIL_AUTHSERV_ID` (default `amazonses.com`) names
+  the receiver. Email-link download limits:
+  `EMAIL_LINK_MAX_BYTES` (200 MB per file) and `EMAIL_LINK_MAX_SECONDS` (240 s)
+  cap each download, every redirect hop and the archive fallback (which gets at
+  most 30 s or a quarter of the deadline) included;
+  `EMAIL_LINK_HTML_SCAN_MAX_BYTES`: the first 10 MB of an HTML click-tracker
+  page is scanned for its real link; never a download limit (with no link
+  found there, the response is saved whole as the file). Downloads stream to a
+  temp file and are copied out in chunks; `download_all_link_attachments`
+  takes at most `EMAIL_LINK_MAX_COUNT` (20) links, 3 at a time, within one
+  240 s deadline and one `EMAIL_LINK_BATCH_MAX_BYTES` budget (1 GB, each file
+  still under 200 MB). The debug
   log defaults to a private per-user file (`<tmp>/ses_s3_email-<uid>/debug.log`,
-  0600; refused if another user owns it or it has extra hard links), and URL
-  userinfo, the whole query string and the whole `#fragment` are redacted from
-  log lines. Live fetch, HTML chase and archive fallback share one byte budget
+  0600; refused if another user owns it or it has extra hard links), and in log lines a URL keeps only its scheme and host: the path collapses to `…` and its last segment keeps only a short alphabetic extension (`/…/***.csv`, else `***`; even a filename-shaped segment can be a token), userinfo (up to the last `@` in the authority) becomes `***@`, and the whole query and fragment become `?***` and `#***` (no query keys are kept), so presigned signatures, tokens and capability paths (`/download/<secret>.csv`) never reach a log. A masked URL is followed by `[url-id:<12 hex>]`, an HMAC-SHA256 of the full original URL under a random per-process key (so a short secret cannot be brute-forced back out of it), so operators can still tell links apart within one process's logs. Live fetch, HTML chase and archive fallback share one byte budget
   per link.
 - Outbound: `SES_OUTBOUND_AWS_ACCESS_KEY_ID`,
   `SES_OUTBOUND_AWS_SECRET_ACCESS_KEY`, `SES_OUTBOUND_AWS_REGION`,
   `SES_OUTBOUND_FROM_EMAIL`, `SES_OUTBOUND_REPLY_TO`,
   `SES_OUTBOUND_ALLOW_UNLISTED_RECIPIENTS`.
+  `ses_outbound` pins its configured roots when the server starts (a root not
+  created yet is reached later from its nearest existing ancestor, pinned
+  then, by a no-follow walk). A root it did not know at startup is opened with
+  no-follow on every path component; trusted system symlinks directly under
+  `/` (root-owned, in a root-owned directory nobody else can write: macOS
+  `/tmp`, `/var`) are followed. The same rule applies at startup, so a root
+  that is, or sits under, any OTHER symlink is refused whenever it is pinned:
+  configure it by its resolved real path.
 
 Inbound must work with no outbound variables set.
 

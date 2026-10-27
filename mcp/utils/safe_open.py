@@ -82,14 +82,22 @@ def containing_root(real: str, roots: Iterable[str]) -> str | None:
     return best
 
 
-def _open_dir_last_nofollow(path: str) -> int:
+class _AncestorLinkError(OSError):
+    """An ancestor of a startup root is a symlink that is not trusted."""
+
+
+def _open_dir_last_nofollow(path: str, *, ancestors_nofollow: bool = False) -> int:
     """Open directory ``path`` without following a symlink in its LAST component.
 
     ``os.open("root/", O_NOFOLLOW)`` follows a final symlink on Linux (the
     trailing separator makes the kernel resolve it), so the path is never opened
     as one string: trailing separators are stripped and the last component is
-    opened with O_NOFOLLOW|O_DIRECTORY relative to its parent's descriptor. The
-    parent chain is configuration, opened normally."""
+    opened with O_NOFOLLOW|O_DIRECTORY relative to its parent's descriptor.
+
+    With ``ancestors_nofollow`` (startup pinning) the parent chain is walked
+    from "/" by walk_trusted too: a symlinked ancestor (/workspace/link/run) is
+    refused (_AncestorLinkError) unless it is a trusted top-level system link.
+    Otherwise (an already-resolved real path) the parent is opened normally."""
     flags = os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC
     stripped = str(path)
     while True:  # "root/", "root//", "root/." and "root/./" all name "root"
@@ -105,11 +113,153 @@ def _open_dir_last_nofollow(path: str) -> int:
     if name == "..":
         # "link/.." is the symlink TARGET's parent: not a pinnable literal root.
         raise OSError(errno.ELOOP, "root ends in '..'", str(path))
-    parent_fd = os.open(parent or os.curdir, os.O_RDONLY | _O_DIRECTORY | _O_CLOEXEC)
+    if ancestors_nofollow:
+        try:
+            parent_fd = walk_trusted(os.path.abspath(parent or os.curdir))
+        except FileNotFoundError:
+            raise
+        except OSError as exc:
+            if exc.errno in (errno.ELOOP, errno.ENOTDIR, errno.EMLINK):
+                raise _AncestorLinkError(
+                    exc.errno, f"an ancestor is a symlink that is not trusted: {exc}", str(path)
+                ) from exc
+            raise
+    else:
+        parent_fd = os.open(parent or os.curdir, os.O_RDONLY | _O_DIRECTORY | _O_CLOEXEC)
     try:
         return os.open(name, flags, dir_fd=parent_fd)
     finally:
         os.close(parent_fd)
+
+
+def _trusted_system_symlink(dir_fd: int, name: str) -> str | None:
+    """The target of ``name`` (in directory ``dir_fd``) when it is a TRUSTED
+    system symlink, else None.
+
+    Trusted means the link itself is owned by root AND its directory is
+    root-owned and writable by nobody else (no group / other write bit): only
+    root could have planted it (macOS /tmp -> private/tmp, /var -> private/var).
+    Any other symlink, e.g. one in a sandbox-writable workspace, is refused.
+    Callers only ask this for links directly under "/" (see walk_trusted): a
+    process running as root (tests, some containers) owns every link it makes,
+    so ownership alone cannot vouch for a link deeper in the tree."""
+    try:
+        link = os.lstat(name, dir_fd=dir_fd)
+        if not stat.S_ISLNK(link.st_mode) or link.st_uid != 0:
+            return None
+        parent = os.fstat(dir_fd)
+        if parent.st_uid != 0 or parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            return None
+        return os.readlink(name, dir_fd=dir_fd)
+    except (OSError, TypeError, NotImplementedError):
+        return None
+
+
+def walk_trusted(path: str, *, _top: str = os.sep) -> int:
+    """Open directory ``path`` from "/" one component at a time with
+    O_NOFOLLOW|O_DIRECTORY. A symlink component is followed ONLY when it sits
+    directly under "/" and is a trusted system symlink
+    (:func:`_trusted_system_symlink`); any other symlink fails the walk (ELOOP). A ".." component is refused: the walk only descends."""
+    flags = os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC
+    pending = [p for p in os.path.abspath(str(path)).split(os.sep) if p not in ("", ".")]
+    done: list[str] = []
+    followed = 0
+    fd = os.open(_top, flags)  # _top: the filesystem root ("/"; a test seam)
+    try:
+        while pending:
+            part = pending.pop(0)
+            if part == "..":
+                raise OSError(errno.ELOOP, "'..' in a root path", str(path))
+            try:
+                child = os.open(part, flags, dir_fd=fd)
+            except OSError as exc:
+                if exc.errno not in (errno.ELOOP, errno.ENOTDIR, errno.EMLINK):
+                    raise
+                # Only a top-level system link ("/tmp", "/var", "/home") may be
+                # followed; anything deeper is refused whoever owns it.
+                target = _trusted_system_symlink(fd, part) if not done else None
+                followed += 1
+                if target is None or followed > 8:
+                    raise
+                # Restart from "/" on the link's target (relative to its directory).
+                base = target if os.path.isabs(target) else os.path.join(os.sep, *done, target)
+                pending = [p for p in os.path.normpath(base).split(os.sep) if p not in ("", ".")] + pending
+                done = []
+                os.close(fd)
+                fd = os.open(_top, flags)
+                continue
+            os.close(fd)
+            fd = child
+            done.append(part)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+# Kept for callers in this module.
+_walk_nofollow = walk_trusted
+
+
+# Roots absent at startup: their nearest EXISTING ancestor is resolved and
+# pinned then (operator config, trusted only at startup), with the components
+# still to come. Lazily, the root is reached from that ancestor's pinned
+# identity with no-follow opens, so no ancestor swapped for a symlink after
+# startup is ever followed.
+_PENDING_ROOTS: dict[str, tuple[str, tuple[int, int], list[str]]] = {}
+
+
+def _record_pending_root(root: str) -> None:
+    """Pin the nearest EXISTING ancestor of an absent root, found by a no-follow
+    walk from "/" (walk_trusted): an ancestor that is a symlink, other than a
+    trusted top-level system link, records nothing, so the root is later
+    refused instead of being pinned as the symlink's target."""
+    parts = [p for p in os.path.abspath(str(root)).split(os.sep) if p not in ("", ".")]
+    if ".." in parts:
+        return
+    for depth in range(len(parts), -1, -1):
+        prefix = os.sep + os.sep.join(parts[:depth])
+        try:
+            fd = walk_trusted(prefix)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return  # a symlinked (or non-directory) ancestor: never pinned
+        try:
+            st = os.fstat(fd)
+        finally:
+            os.close(fd)
+        anc_real = os.path.realpath(prefix)
+        try:
+            check = os.stat(anc_real)
+        except OSError:
+            return
+        if (check.st_dev, check.st_ino) != (st.st_dev, st.st_ino):
+            return  # it changed while being pinned: do not guess
+        _PENDING_ROOTS[root] = (anc_real, (st.st_dev, st.st_ino), parts[depth:])
+        return
+
+
+def _open_lazy_root(root: str) -> int:
+    """Open a root first used after startup, following no symlink on its path."""
+    pending = _PENDING_ROOTS.get(root)
+    if pending is None:
+        return _walk_nofollow(root)
+    anc_real, anc_ident, rest = pending
+    fd = _walk_nofollow(anc_real)
+    try:
+        st = os.fstat(fd)
+        if (st.st_dev, st.st_ino) != anc_ident:
+            raise OSError(errno.ELOOP, "the ancestor pinned at startup was replaced", anc_real)
+        flags = os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC
+        for part in rest:
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 # Configured root (as given) -> its pinned resolution, for the process lifetime.
@@ -136,12 +286,28 @@ def _pin_one(root: str, *, trust_symlink: bool = False) -> _Root | None:
     if cached is not None:
         return cached
     try:
-        fd = _open_dir_last_nofollow(root)
+        # At startup every ancestor is walked no-follow (trusted top-level system
+        # links excepted) and the root's own last component is opened no-follow;
+        # afterwards EVERY component is (_open_lazy_root).
+        fd = _open_dir_last_nofollow(root, ancestors_nofollow=True) if trust_symlink else _open_lazy_root(root)
+    except _AncestorLinkError as exc:
+        logger.warning(
+            "allowed root %s is under a symlinked ancestor that is not trusted (%s): refused; set the variable "
+            "to its resolved real path (%s) instead",
+            root,
+            exc.strerror,
+            os.path.realpath(root),
+        )
+        return None
     except OSError as exc:
         if exc.errno not in (errno.ELOOP, errno.ENOTDIR, errno.EMLINK):
             return None  # not there yet: nothing to pin, nothing under it to open
         if not trust_symlink:
             logger.warning("allowed root %s is a symlink and was not pinned at startup: refused", root)
+            return None
+        reason = _untrusted_root_link_reason(root)
+        if reason is not None:
+            logger.warning("allowed root %s is a symlink that is not trusted (%s): refused", root, reason)
             return None
         fd = None  # an operator-configured symlink root, pinned at startup: resolved once, now
     try:
@@ -163,10 +329,43 @@ def _pin_one(root: str, *, trust_symlink: bool = False) -> _Root | None:
     return real
 
 
+_FS_ROOT = os.sep  # the filesystem root ("/"); a test seam
+
+
+def _untrusted_root_link_reason(root: str) -> str | None:
+    """Why a root whose own final component is a symlink must NOT be followed
+    at startup, or None when it may be.
+
+    Followed only when it is a trusted system symlink by walk_trusted's rule:
+    directly under "/", owned by ROOT, in a root-owned directory that neither
+    group nor others can write (macOS /tmp): only root could have placed it. A link owned by this process's user proves nothing, since
+    sandbox code may run as the same uid. Anything else is refused; the
+    operator should configure the resolved real path instead."""
+    path = str(root).rstrip(os.sep) or os.sep
+    try:
+        link = os.lstat(path)
+        parent = os.stat(os.path.dirname(os.path.abspath(path)) or os.sep)
+    except OSError as exc:
+        return f"cannot inspect it: {exc}"
+    if os.path.dirname(os.path.abspath(path)) != _FS_ROOT:
+        reason = 'it is not a top-level system link directly under "/"'
+    elif link.st_uid != 0:
+        reason = f"the link is owned by uid {link.st_uid}, not root"
+    elif parent.st_uid != 0:
+        reason = f"its directory is owned by uid {parent.st_uid}, not root"
+    elif parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        reason = "its directory is writable by group or others"
+    else:
+        return None
+    return f"{reason}; set the variable to its resolved real path ({os.path.realpath(path)}) instead"
+
+
 def pin_at_startup(roots: Iterable[str]) -> list[str]:
     """Pin the configured roots when a server STARTS, before any tool call (and
     so before sandbox code can swap anything): the one moment a root that is
-    itself an operator-configured symlink (macOS /tmp) is resolved and trusted.
+    itself an operator-configured symlink (macOS /tmp) is resolved and trusted,
+    and only when the link is root's, in a root-owned directory nobody else can
+    write (_untrusted_root_link_reason).
     Roots that do not exist yet are left for lazy pinning, which refuses a
     symlinked root. Never raises: a server must start even if a root is odd."""
     pinned: list[str] = []
@@ -175,6 +374,8 @@ def pin_at_startup(roots: Iterable[str]) -> list[str]:
             continue
         try:
             one = _pin_one(root, trust_symlink=True)
+            if one is None and not os.path.lexists(root):
+                _record_pending_root(root)
         except Exception:  # noqa: BLE001 - startup must not fail on one root
             one = None
         if one is not None and one not in pinned:
@@ -459,17 +660,18 @@ def write_new_or_truncate(
         except BaseException:
             if created:
                 if ident is None:
-                    # fstat itself failed right after the O_EXCL create: identify
-                    # the file the same way through its name, but only an empty
-                    # regular file of ours (what this call just created).
-                    with contextlib.suppress(OSError):
-                        named = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-                        if (
-                            stat.S_ISREG(named.st_mode)
-                            and named.st_size == 0
-                            and (not hasattr(os, "getuid") or named.st_uid == os.getuid())
-                        ):
-                            ident = (named.st_dev, named.st_ino)
+                    # fstat itself failed right after the O_EXCL create: retry it
+                    # once on the still-open descriptor. A name lookup cannot
+                    # prove identity (another writer may have swapped the entry
+                    # in), so without the descriptor's own identity the entry
+                    # is left in place and logged, never removed by name.
+                    try:
+                        retry = os.fstat(fd)
+                        ident = (retry.st_dev, retry.st_ino)
+                    except OSError:
+                        logger.warning(
+                            "%s %s: fstat failed after creating it; the empty file is left in place", label, path
+                        )
                 if ident is not None:
                     _unlink_if_same(name, dir_fd, ident)
             raise

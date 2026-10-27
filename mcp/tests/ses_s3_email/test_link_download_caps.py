@@ -8,6 +8,7 @@ server could stream an unbounded file or drip bytes forever.
 from __future__ import annotations
 
 import asyncio
+import os
 
 import httpx
 import pytest
@@ -252,8 +253,9 @@ async def test_a_batch_is_bounded_in_count_and_shares_one_byte_budget(dest, monk
     result = await ses_s3_email.download_all_link_attachments("emails/k", output_dir=str(dest))
     assert running["max"] <= ses_s3_email.LINK_BATCH_CONCURRENCY
     assert result["downloaded_count"] == 5  # 5 x 400 bytes fit the 2000-byte budget
-    assert result["error_count"] == 25  # 15 over budget + 10 over the link count
-    assert sum("at most 20 links" in e["error"] for e in result["errors"]) == 10
+    assert result["error_count"] == 15  # over budget; links over the count are summarized
+    assert result["skipped_count"] == 10 and "at most 20 links" in result["skipped_reason"]
+    assert [u.split(" [url-id:")[0] for u in result["skipped_sample"]] == ["https://reports.example.com/***.csv"] * 5
 
 
 @respx.mock
@@ -482,3 +484,233 @@ async def test_each_call_gets_a_fresh_budget(dest):
         result = await ses_s3_email.download_link_attachment(url=URL, output_dir=str(dest))
         assert result["status"] == "success", result
     assert ses_s3_email._CALL_BUDGET.get() is None
+
+
+def test_a_chunk_crossing_the_call_cap_is_still_charged_to_the_batch():
+    batch = [10_000]
+    call = [100]
+    b_token = ses_s3_email._BATCH_BUDGET.set(batch)
+    c_token = ses_s3_email._CALL_BUDGET.set(call)
+    try:
+        with pytest.raises(ses_s3_email.LinkDownloadTooLarge):
+            ses_s3_email._charge_batch_budget(150)
+    finally:
+        ses_s3_email._CALL_BUDGET.reset(c_token)
+        ses_s3_email._BATCH_BUDGET.reset(b_token)
+    assert call == [-50]
+    assert batch == [10_000 - 150]  # the received bytes count against the batch too
+
+
+@respx.mock
+async def test_only_the_html_scan_prefix_is_searched_for_the_chase_link(dest, monkeypatch):
+    monkeypatch.setattr(ses_s3_email, "LINK_HTML_SCAN_MAX_BYTES", 200)
+    tracker = "https://click.example.com/ls/click?upn=abc"
+    # The link sits past the scanned prefix: not chased, the page is saved.
+    page = b"<html>" + b" " * 400 + b'<a href="https://reports.example.com/report.csv">Download</a></html>'
+    respx.get(tracker).mock(return_value=httpx.Response(200, content=page, headers={"content-type": "text/html"}))
+    chased = respx.get(URL).mock(return_value=httpx.Response(200, content=b"a,b\n"))
+    result = await ses_s3_email.download_link_attachment(url=tracker, output_dir=str(dest))
+    assert not chased.called
+    assert "chased_to" not in result and result["size_bytes"] == len(page)
+
+
+@respx.mock
+async def test_a_small_html_interstitial_is_still_chased(dest, monkeypatch):
+    monkeypatch.setattr(ses_s3_email, "LINK_HTML_SCAN_MAX_BYTES", 2000)
+    tracker = "https://click.example.com/ls/click?upn=abc"
+    page = b'<html><a href="https://reports.example.com/report.csv">Download</a></html>'
+    respx.get(tracker).mock(return_value=httpx.Response(200, content=page, headers={"content-type": "text/html"}))
+    respx.get(URL).mock(return_value=httpx.Response(200, content=b"a,b\n", headers={"content-type": "text/csv"}))
+    result = await ses_s3_email.download_link_attachment(url=tracker, output_dir=str(dest))
+    assert result["status"] == "success" and result.get("chased_to") == URL, result
+
+
+async def test_skipped_links_are_a_count_and_a_small_redacted_sample(dest, monkeypatch):
+    links = [{"url": f"https://reports.example.com/{i}.csv?token=secret{i}"} for i in range(5000)]
+
+    async def extract(*_a, **_k):
+        return {"status": "success", "links": links, "subject": "s", "total_links_found": len(links)}
+
+    async def one(url, output_dir=None, timeout_seconds=120):
+        return {"status": "error", "error": "x"}
+
+    monkeypatch.setattr(ses_s3_email, "extract_download_links", extract)
+    monkeypatch.setattr(ses_s3_email, "download_link_attachment", one)
+    monkeypatch.setattr(ses_s3_email, "LINK_BATCH_MAX_COUNT", 3)
+    result = await ses_s3_email.download_all_link_attachments("emails/k", output_dir=str(dest))
+    assert result["skipped_count"] == 4997
+    assert len(result["skipped_sample"]) == 5
+    assert all(u.split(" [url-id:")[0].endswith("?***") for u in result["skipped_sample"])
+    assert len(result["errors"]) == 3  # only the attempted links
+    assert "secret" not in str(result["skipped_sample"])
+
+
+@respx.mock
+async def test_a_15_mb_html_page_with_its_link_near_the_top_is_chased(dest, monkeypatch):
+    """The first 10 MB are scanned: a large click-tracker page still chases."""
+    monkeypatch.setattr(ses_s3_email, "LINK_DOWNLOAD_MAX_BYTES", 200 * 1024 * 1024)
+    assert ses_s3_email.LINK_HTML_SCAN_MAX_BYTES == 10 * 1024 * 1024
+    tracker = "https://click.example.com/ls/click?upn=abc"
+    head = b'<html><a href="https://reports.example.com/report.csv">Download</a>'
+    page = head + b"x" * (15 * 1024 * 1024 - len(head))
+    respx.get(tracker).mock(return_value=httpx.Response(200, content=page, headers={"content-type": "text/html"}))
+    respx.get(URL).mock(return_value=httpx.Response(200, content=b"a,b\n", headers={"content-type": "text/csv"}))
+    result = await ses_s3_email.download_link_attachment(url=tracker, output_dir=str(dest))
+    assert result["status"] == "success" and result.get("chased_to") == URL, result
+
+
+@respx.mock
+async def test_a_15_mb_html_report_without_a_link_downloads_as_is(dest, monkeypatch):
+    monkeypatch.setattr(ses_s3_email, "LINK_DOWNLOAD_MAX_BYTES", 200 * 1024 * 1024)
+    tracker = "https://click.example.com/ls/click?upn=abc"
+    page = b"<html><p>report</p>" + b"x" * (15 * 1024 * 1024)
+    respx.get(tracker).mock(return_value=httpx.Response(200, content=page, headers={"content-type": "text/html"}))
+    result = await ses_s3_email.download_link_attachment(url=tracker, output_dir=str(dest))
+    assert result["status"] == "success", result
+    assert result["size_bytes"] == len(page) and "chased_to" not in result
+    with open(result["saved_to"], "rb") as fh:
+        assert fh.read() == page
+
+
+@respx.mock
+async def test_a_large_download_is_never_materialised_in_memory(dest, monkeypatch):
+    import tracemalloc
+
+    size = 16 * 1024 * 1024
+    monkeypatch.setattr(ses_s3_email, "LINK_DOWNLOAD_MAX_BYTES", size + 1)
+
+    async def body():
+        block = b"y" * (256 * 1024)
+        for _ in range(size // len(block)):
+            yield block
+
+    respx.get(URL).mock(return_value=httpx.Response(200, content=body(), headers={"content-type": "text/csv"}))
+    tracemalloc.start()
+    try:
+        result = await ses_s3_email.download_link_attachment(url=URL, output_dir=str(dest))
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert result["status"] == "success" and result["size_bytes"] == size
+    assert peak < 4 * 1024 * 1024, peak  # chunks and copy buffers only, never the 16 MB body
+    assert os.path.getsize(result["saved_to"]) == size
+
+
+@respx.mock
+async def test_three_concurrent_near_cap_downloads_work(dest, monkeypatch):
+    size = 4 * 1024 * 1024
+    monkeypatch.setattr(ses_s3_email, "LINK_DOWNLOAD_MAX_BYTES", size + 10)
+    urls = [f"https://reports.example.com/r{i}.csv" for i in range(3)]
+    for u in urls:
+        respx.get(u).mock(return_value=httpx.Response(200, content=b"z" * size, headers={"content-type": "text/csv"}))
+    results = await asyncio.gather(*(ses_s3_email.download_link_attachment(url=u, output_dir=str(dest)) for u in urls))
+    assert all(r["status"] == "success" and r["size_bytes"] == size for r in results), results
+
+
+@pytest.mark.skipif(
+    bool(
+        __import__("os").environ.get("EMAIL_LINK_BATCH_MAX_BYTES")
+        or __import__("os").environ.get("EMAIL_LINK_MAX_BYTES")
+    ),
+    reason="caps overridden in this environment",
+)
+def test_default_caps_fit_several_large_reports_per_batch():
+    assert ses_s3_email.LINK_DOWNLOAD_MAX_BYTES == 200 * 1024 * 1024
+    assert ses_s3_email.LINK_BATCH_MAX_BYTES == 1024 * 1024 * 1024
+    token = ses_s3_email._BATCH_BUDGET.set([ses_s3_email.LINK_BATCH_MAX_BYTES])
+    try:
+        for _ in range(3):  # three 150 MB reports fit one batch
+            ses_s3_email._charge_batch_budget(150 * 1024 * 1024)
+    finally:
+        ses_s3_email._BATCH_BUDGET.reset(token)
+
+
+async def test_a_cancelled_write_waits_for_the_copy_then_removes_the_partial_file(dest, monkeypatch):
+    """The spool is never closed under the running copy thread, and a cancelled
+    call leaves no partial file behind."""
+    import tempfile
+    import threading
+
+    started = threading.Event()
+    release = threading.Event()
+    real_write_fd = ses_s3_email._write_fd
+    copy_saw_closed: list = []
+
+    def slow_write_fd(fd, data):
+        started.set()
+        release.wait(5)
+        copy_saw_closed.append(data.closed)
+        real_write_fd(fd, data)
+
+    monkeypatch.setattr(ses_s3_email, "_write_fd", slow_write_fd)
+    spool = tempfile.TemporaryFile()  # noqa: SIM115 - closed by call() below, like the wrapper
+    spool.write(b"x" * 1024)
+    spool.seek(0)
+    reserved = ses_s3_email.reserve_output_file(dest, "report.csv", "src")
+
+    async def call():
+        try:
+            await ses_s3_email.write_reserved(reserved, spool)
+        finally:
+            spool.close()  # the call wrapper's cleanup
+
+    task = asyncio.create_task(call())
+    while not started.is_set():
+        await asyncio.sleep(0.01)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not task.done()  # still waiting for the copy thread
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert copy_saw_closed == [False]  # the spool was open for the whole copy
+    assert not reserved.path.exists()  # no partial attachment
+
+
+@respx.mock
+async def test_an_unknown_length_body_crossing_the_file_cap_is_charged_to_the_batch(dest, monkeypatch):
+    """No Content-Length: the chunk that crosses the per-file cap still counts."""
+    monkeypatch.setattr(ses_s3_email, "LINK_DOWNLOAD_MAX_BYTES", 1000)
+
+    async def body():
+        for _ in range(3):
+            yield b"x" * 600  # crosses 1000 on the second chunk
+
+    respx.get(URL).mock(return_value=httpx.Response(200, content=body()))
+    batch = [10_000]
+    token = ses_s3_email._BATCH_BUDGET.set(batch)
+    try:
+        result = await ses_s3_email.download_link_attachment(url=URL, output_dir=str(dest))
+    finally:
+        ses_s3_email._BATCH_BUDGET.reset(token)
+    assert result["status"] == "error"
+    assert batch == [10_000 - 1200]  # both received chunks charged, including the crossing one
+
+
+async def test_an_archive_crossing_the_file_cap_is_charged_to_the_batch(dest, monkeypatch):
+    monkeypatch.setattr(ses_s3_email, "LINK_DOWNLOAD_MAX_BYTES", 1000)
+    monkeypatch.setattr(ses_s3_email, "session", _archive_session(_ChunkedBody(b"y" * 1800, step=600)))
+    batch = [10_000]
+    token = ses_s3_email._BATCH_BUDGET.set(batch)
+    try:
+        result = await ORIGINAL_ARCHIVE(URL, dest)
+    finally:
+        ses_s3_email._BATCH_BUDGET.reset(token)
+    assert result["status"] == "error"
+    assert batch == [10_000 - 1200]
+
+
+async def test_an_archive_crossing_the_call_cap_is_refused_as_too_large_not_missing(dest, monkeypatch):
+    """Unknown length: the crossing chunk is charged, and the refusal says too large."""
+    monkeypatch.setattr(ses_s3_email, "LINK_DOWNLOAD_MAX_BYTES", 1000)
+    monkeypatch.setattr(ses_s3_email, "session", _archive_session(_ChunkedBody(b"y" * 1800, step=600)))
+    batch = [10_000]
+    b_token = ses_s3_email._BATCH_BUDGET.set(batch)
+    c_token = ses_s3_email._CALL_BUDGET.set([1000])
+    try:
+        result = await ORIGINAL_ARCHIVE(URL, dest)
+    finally:
+        ses_s3_email._CALL_BUDGET.reset(c_token)
+        ses_s3_email._BATCH_BUDGET.reset(b_token)
+    assert result is not None and result["status"] == "error" and "cap" in result["error"], result
+    assert batch == [10_000 - 1200]
