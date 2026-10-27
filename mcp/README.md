@@ -15,10 +15,17 @@ connectors, dark until their host env is set:
 All are stdio servers built on `mcp.server.fastmcp.FastMCP`. fleet launches
 each as a host-side subprocess with only the environment its manifest entry
 maps (never the whole host env, and never inside the agent's command sandbox); `utils/` holds their shared run ledger, URL guard and
-filesystem helpers. The run workspace is shared with the sandbox, so a host-side
-server reads or writes a model-supplied path only through `utils/safe_open.py`:
-one symlink-refusing walk from its allowed root (each configured root path is opened `O_NOFOLLOW|O_DIRECTORY` once per process and pinned by that string, never re-resolved), then that descriptor (never
-the name a second time); files it created are removed only through the helper. Lens and Pages are remote (http) servers on the client's
+filesystem helpers. The run workspace is shared with the sandbox, so the
+outbound sender (`ses_sender.py`) reads attachments and content files and writes
+rendered email only through `utils/safe_open.py`: its configured roots are
+pinned (`O_NOFOLLOW|O_DIRECTORY`, by device and inode) when the server starts,
+before any tool call, and never re-resolved; each path is then one
+symlink-refusing walk from its root and that descriptor (never the name a
+second time), and files it created are removed only through the helper. The
+inbound server (`ses_s3_email.py`) does not use `safe_open`: it confines a
+model-supplied `output_dir` to its own allowed roots (`resolve_download_dir`),
+walks to it without following a symlink and creates each download fresh
+(`O_CREAT|O_EXCL|O_NOFOLLOW`), but its roots are resolved per call, not pinned. Lens and Pages are remote (http) servers on the client's
 own boxes, so they have manifest entries but no code here.
 
 To stand up a client's SES/S3 email tenant (infrastructure, least-privilege

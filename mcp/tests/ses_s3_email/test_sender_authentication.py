@@ -382,11 +382,16 @@ async def test_fuzzy_sender_keywords_never_match_the_display_name(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_find_latest_report_carries_the_day_searches_warnings(monkeypatch):
+    counts = iter([1, 100])
+
     async def day_search(**kwargs):
+        n = next(counts)
         return {
             "status": "success",
             "emails": [],
-            "search_warnings": [{"code": "unauthenticated_sender_skipped", "severity": "high", "message": "m"}],
+            "search_warnings": [
+                {"code": "unauthenticated_sender_skipped", "count": n, "severity": "high", "message": f"{n} left out"}
+            ],
         }
 
     monkeypatch.setattr(inbox, "search_emails", day_search)
@@ -396,3 +401,80 @@ async def test_find_latest_report_carries_the_day_searches_warnings(monkeypatch)
     codes = [w["code"] for w in result["search_warnings"]]
     assert codes == ["unauthenticated_sender_skipped"]
     assert result["search_warnings"][0]["days"] == ["2026-10-26", "2026-10-25"]
+    assert result["search_warnings"][0]["count"] == 101
+    assert result["search_warnings"][0]["message"].startswith("101 email(s) were left out across 2 day(s)")
+
+
+def test_url_userinfo_is_masked_with_or_without_a_query():
+    assert inbox.redact_url_queries("GET https://user:pa55@example.com/report.csv done") == (
+        "GET https://***@example.com/report.csv done"
+    )
+    assert inbox.redact_url_queries("https://user:pa55@example.com/r.csv?sig=1#t=2") == (
+        "https://***@example.com/r.csv?sig=***#t=***"
+    )
+    assert inbox.redact_url_queries("mail me at reports@example.com") == "mail me at reports@example.com"
+
+
+def test_a_dmarc_failure_is_final():
+    fails = "amazonses.com; dkim=pass header.d=mail.vendor.example; dmarc=fail header.from=vendor.example"
+    assert inbox.authenticated_sender_domain([fails], FROM) is None
+    for verdict in ("quarantine", "reject", "permerror", "temperror"):
+        text = f"amazonses.com; dkim=pass header.d=vendor.example; dmarc={verdict} header.from=vendor.example"
+        assert inbox.authenticated_sender_domain([text], FROM) is None, verdict
+    for header_d in ("vendor.example", "mail.vendor.example"):
+        ok = f"amazonses.com; dkim=pass header.d={header_d}; dmarc=none header.from=vendor.example"
+        assert inbox.authenticated_sender_domain([ok], FROM) == "vendor.example"
+
+
+def test_a_debug_log_parent_swapped_for_a_symlink_is_refused(tmp_path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    resolved_at_startup = str(logs.resolve())
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    logs.rename(tmp_path / "logs.orig")
+    logs.symlink_to(elsewhere, target_is_directory=True)
+    with pytest.raises(OSError):
+        inbox._open_private_log(str(logs / "debug.log"), parent_real=resolved_at_startup)
+    assert not (elsewhere / "debug.log").exists()
+
+
+@pytest.mark.asyncio
+async def test_bounded_searches_list_trusted_legacy_prefixes_by_date_header(monkeypatch):
+    legacy_in = (
+        b"From: Vendor <reports@vendor.example>\r\nTo: inbox@example.com\r\nSubject: Old report\r\n"
+        b"Date: Mon, 26 Oct 2026 10:00:00 +0000\r\n\r\nbody\r\n"
+    )
+    legacy_out = legacy_in.replace(b"26 Oct 2026", b"01 Jan 2024")
+
+    class S3(_FakeS3):
+        def get_paginator(self, _name):
+            objects = self.objects
+
+            class _Paginator:
+                def paginate(self, **kwargs):
+                    async def pages():
+                        keys = [k for k in objects if k.startswith(kwargs["Prefix"])]
+                        yield {
+                            "Contents": [
+                                # LastModified is the IMPORT time, outside the window.
+                                {"Key": k, "LastModified": datetime(2026, 1, 1, tzinfo=UTC), "Size": 1}
+                                for k in keys
+                            ]
+                        }
+
+                    return pages()
+
+            return _Paginator()
+
+    objects = {"emails/legacy/mailbux-1": legacy_in, "emails/legacy/mailbux-2": legacy_out}
+    monkeypatch.setattr(inbox, "session", _FakeSession(S3(objects)))
+    monkeypatch.setattr(inbox, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(inbox, "S3_PREFIX", "emails/")
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "emails/%Y/%m/%d/")
+    monkeypatch.setattr(inbox, "EMAIL_TRUSTED_LEGACY_PREFIXES", ("emails/legacy/",))
+    assert "emails/legacy/" in inbox.build_search_prefixes(
+        datetime(2026, 10, 26, tzinfo=UTC), datetime(2026, 10, 26, 23, 59, tzinfo=UTC)
+    )
+    result = await inbox.search_emails(date_from="2026-10-26", date_to="2026-10-26")
+    assert [e["s3_key"] for e in result["emails"]] == ["emails/legacy/mailbux-1"], result

@@ -286,3 +286,50 @@ async def test_an_archive_write_is_never_left_running_past_the_deadline(dest, mo
     result = await ORIGINAL_ARCHIVE(URL, dest, read_timeout=0.2)
     assert finished == [True]  # returned only after the write completed
     assert result["status"] == "success"
+
+
+@respx.mock
+async def test_a_cap_sized_body_is_held_once_not_joined_from_chunks(dest, monkeypatch):
+    """Peak memory stays near one copy of the body (spooled, read back once)."""
+    import tracemalloc
+
+    size = 8 * 1024 * 1024
+    monkeypatch.setattr(ses_s3_email, "LINK_DOWNLOAD_MAX_BYTES", size + 1)
+
+    async def body():
+        block = b"x" * (256 * 1024)
+        for _ in range(size // len(block)):
+            yield block
+
+    respx.get(URL).mock(return_value=httpx.Response(200, content=body()))
+    tracemalloc.start()
+    try:
+        result = await ses_s3_email.download_link_attachment(url=URL, output_dir=str(dest))
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert result["status"] == "success" and result["size_bytes"] == size
+    assert peak < size * 1.6, peak  # a chunk list plus its join would be ~2x
+
+
+async def test_a_batch_has_one_outer_deadline(dest, monkeypatch):
+    links = [{"url": f"https://reports.example.com/{i}.csv"} for i in range(6)]
+
+    async def extract(*_a, **_k):
+        return {"status": "success", "links": links, "subject": "s", "total_links_found": len(links)}
+
+    timeouts: list[int] = []
+
+    async def slow(url, output_dir=None, timeout_seconds=120):
+        timeouts.append(timeout_seconds)
+        await asyncio.sleep(min(timeout_seconds, 1))
+        return {"status": "error", "error": "timed out"}
+
+    monkeypatch.setattr(ses_s3_email, "extract_download_links", extract)
+    monkeypatch.setattr(ses_s3_email, "download_link_attachment", slow)
+    monkeypatch.setattr(ses_s3_email, "LINK_DOWNLOAD_MAX_SECONDS", 2)
+    started = asyncio.get_running_loop().time()
+    result = await ses_s3_email.download_all_link_attachments("emails/k", output_dir=str(dest), timeout_seconds=120)
+    assert asyncio.get_running_loop().time() - started < 3.5  # not 6 links x 120 s
+    assert all(t <= 2 for t in timeouts)
+    assert any("Not started" in e["error"] for e in result["errors"])

@@ -1414,5 +1414,11 @@ async def validate_email_address(
     }
 
 
+# Server start: pin the configured roots before any tool call (and so before
+# sandbox code can swap one); a root still missing is pinned lazily later, and
+# a symlinked root is only trusted here.
+safe_open.pin_at_startup(_configured_dirs())
+
+
 if __name__ == "__main__":
     mcp.run()

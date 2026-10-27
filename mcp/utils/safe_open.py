@@ -32,9 +32,12 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import logging
 import os
 import stat
 from collections.abc import Callable, Iterable
+
+logger = logging.getLogger(__name__)
 
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
@@ -83,16 +86,20 @@ def containing_root(real: str, roots: Iterable[str]) -> str | None:
 _ROOT_PINS: dict[str, _Root] = {}
 
 
-def _pin_one(root: str) -> _Root | None:
+def _pin_one(root: str, *, trust_symlink: bool = False) -> _Root | None:
     """Pin one CONFIGURED root, keyed by the literal string the caller configured.
 
     The literal path is opened once with O_NOFOLLOW|O_DIRECTORY and its
     (device, inode) recorded with its realpath; later calls reuse that pin and
     never resolve the literal again, so swapping the configured path for a
-    symlink later changes nothing. A configured root whose own last component is
-    a symlink (operator config such as macOS /tmp) is resolved once, here, at
-    first use. Callers must pass the configured paths, not realpath()ed ones:
-    a resolved string would be a new cache key after a swap."""
+    symlink later changes nothing. Callers must pass the configured paths, not
+    realpath()ed ones: a resolved string would be a new cache key after a swap.
+
+    A configured root whose own last component is a symlink is resolved ONLY
+    with ``trust_symlink`` (:func:`pin_at_startup`, before any sandbox code can
+    act: operator config such as macOS /tmp). Pinned lazily at call time, such a
+    root is REFUSED: the symlink may be an attacker's swap of a renameable
+    workspace root that happened before its first use."""
     if isinstance(root, _Root) and root.ident is not None:
         return root
     cached = _ROOT_PINS.get(root)
@@ -103,7 +110,10 @@ def _pin_one(root: str) -> _Root | None:
     except OSError as exc:
         if exc.errno not in (errno.ELOOP, errno.ENOTDIR, errno.EMLINK):
             return None  # not there yet: nothing to pin, nothing under it to open
-        fd = None  # the configured root is itself a symlink: resolved once, now
+        if not trust_symlink:
+            logger.warning("allowed root %s is a symlink and was not pinned at startup: refused", root)
+            return None
+        fd = None  # an operator-configured symlink root, pinned at startup: resolved once, now
     try:
         real = _Root(os.path.realpath(root))
         st = os.fstat(fd) if fd is not None else os.stat(real)
@@ -121,6 +131,25 @@ def _pin_one(root: str) -> _Root | None:
     real.ident = (st.st_dev, st.st_ino)
     _ROOT_PINS[root] = real
     return real
+
+
+def pin_at_startup(roots: Iterable[str]) -> list[str]:
+    """Pin the configured roots when a server STARTS, before any tool call (and
+    so before sandbox code can swap anything): the one moment a root that is
+    itself an operator-configured symlink (macOS /tmp) is resolved and trusted.
+    Roots that do not exist yet are left for lazy pinning, which refuses a
+    symlinked root. Never raises: a server must start even if a root is odd."""
+    pinned: list[str] = []
+    for root in roots:
+        if not root:
+            continue
+        try:
+            one = _pin_one(root, trust_symlink=True)
+        except Exception:  # noqa: BLE001 - startup must not fail on one root
+            one = None
+        if one is not None and one not in pinned:
+            pinned.append(one)
+    return pinned
 
 
 def pin_roots(roots: Iterable[str]) -> list[str]:
@@ -381,6 +410,7 @@ def write_new_or_truncate(
                 raise
             created = False
             fd = _open_leaf(name, dir_fd, os.O_WRONLY | _O_NONBLOCK, mode, label, path)
+        ident: tuple[int, int] | None = None
         try:
             st = os.fstat(fd)
             ident = (st.st_dev, st.st_ino)
@@ -398,7 +428,20 @@ def write_new_or_truncate(
             return created
         except BaseException:
             if created:
-                _unlink_if_same(name, dir_fd, ident)
+                if ident is None:
+                    # fstat itself failed right after the O_EXCL create: identify
+                    # the file the same way through its name, but only an empty
+                    # regular file of ours (what this call just created).
+                    with contextlib.suppress(OSError):
+                        named = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                        if (
+                            stat.S_ISREG(named.st_mode)
+                            and named.st_size == 0
+                            and (not hasattr(os, "getuid") or named.st_uid == os.getuid())
+                        ):
+                            ident = (named.st_dev, named.st_ino)
+                if ident is not None:
+                    _unlink_if_same(name, dir_fd, ident)
             raise
         finally:
             os.close(fd)

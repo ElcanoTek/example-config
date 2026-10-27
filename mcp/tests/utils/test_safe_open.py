@@ -224,3 +224,58 @@ def test_pins_are_keyed_by_the_configured_path_not_its_resolution(tmp_path):
     assert safe_open.pin_roots([str(configured)])[0] == str(configured)
     with pytest.raises(safe_open.UnsafePathError):
         safe_open.read_bytes(str(configured / "a.txt"), [str(configured)])
+
+
+def test_a_root_already_a_symlink_at_first_lazy_pin_is_refused(tree, tmp_path):
+    """A renameable workspace root swapped for a symlink BEFORE its first use
+    (nothing pinned yet) is refused at call time, never resolved to its target."""
+    workspace = tmp_path / "workspace-first-use"
+    workspace.symlink_to(tree["outside"], target_is_directory=True)
+    assert safe_open.pin_roots([str(workspace)]) == []
+    with pytest.raises(safe_open.UnsafePathError):
+        safe_open.read_bytes(str(workspace / "a.txt"), [str(workspace)])
+    with pytest.raises(safe_open.UnsafePathError):
+        safe_open.write_new_or_truncate(str(workspace / "new.txt"), [str(workspace)], b"x")
+    assert not (tree["outside"] / "new.txt").exists()
+
+
+def test_a_symlinked_root_pinned_at_startup_still_works(tree, tmp_path):
+    """Operator config such as macOS /tmp: pinned at server start, it is trusted."""
+    operator_tmp = tmp_path / "operator-tmp"
+    operator_tmp.symlink_to(tree["root"], target_is_directory=True)
+    assert safe_open.pin_at_startup([str(operator_tmp)]) == [os.path.realpath(tree["root"])]
+    data, _ = safe_open.read_bytes(str(operator_tmp / "sub" / "a.txt"), [str(operator_tmp)])
+    assert data == b"inside"
+
+
+def test_servers_pin_their_roots_at_import():
+    import importlib
+
+    import ses_sender
+
+    # This bundle's only safe_open server; it pins its roots at server start.
+    for module in (ses_sender,):
+        source = importlib.util.find_spec(module.__name__).origin
+        with open(source) as handle:
+            assert "safe_open.pin_at_startup(" in handle.read(), module.__name__
+
+
+def test_an_fstat_failure_after_create_removes_the_empty_file(tree, monkeypatch):
+    import stat as _stat
+
+    real_fstat = os.fstat
+    hit = []
+
+    def failing_fstat(fd):
+        st = real_fstat(fd)
+        if _stat.S_ISREG(st.st_mode):  # the freshly created leaf, not a directory
+            hit.append(fd)
+            raise OSError(5, "I/O error")
+        return st
+
+    monkeypatch.setattr(safe_open.os, "fstat", failing_fstat)
+    with pytest.raises(OSError, match="I/O error"):
+        safe_open.write_new_or_truncate(str(tree["root"] / "fresh.txt"), [str(tree["root"])], b"x")
+    monkeypatch.setattr(safe_open.os, "fstat", real_fstat)
+    assert hit, "the leaf fstat was never reached"
+    assert not (tree["root"] / "fresh.txt").exists()

@@ -29,6 +29,7 @@ import asyncio
 import contextlib
 import contextvars
 import email
+import email.utils
 import hashlib
 import json
 import logging
@@ -94,7 +95,13 @@ def _mask_query(rest: str) -> str:
     return out
 
 
+_URL_USERINFO_RE = re.compile(r"(https?://)[^/\s@?#'\"<>]+@", re.IGNORECASE)
+
+
 def redact_url_queries(text: str) -> str:
+    """Mask URL credentials in a log line: userinfo (https://user:pass@host ->
+    https://***@host), every query component and every fragment component."""
+    text = _URL_USERINFO_RE.sub(r"\1***@", text)
     return _URL_QUERY_RE.sub(lambda m: m.group(1) + _mask_query(m.group(2)), text)
 
 
@@ -163,13 +170,45 @@ def _debug_log_path() -> str | None:
     return os.path.join(base, "debug.log")
 
 
-def _open_private_log(path: str) -> IO[str]:
-    """Open the log file owner-only and never through a symlink, and return a
-    stream on THAT descriptor: the handler writes to it and never reopens the
-    path by name (a swap in between would redirect the log)."""
-    fd = os.open(
-        path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0), 0o600
-    )
+def _open_dir_nofollow(real_dir: str) -> int:
+    """A descriptor for the already-resolved directory ``real_dir``, reached from
+    "/" one component at a time with O_NOFOLLOW|O_DIRECTORY: a component swapped
+    for a symlink after it was resolved is refused (OSError), never followed."""
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(os.sep, flags)
+    try:
+        for part in [p for p in real_dir.split(os.sep) if p]:
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _open_private_log(path: str, *, parent_real: str | None = None) -> IO[str]:
+    """Open the log file owner-only, never through a symlink — neither the file
+    nor any directory above it — and return a stream on THAT descriptor: the
+    handler writes to it and never reopens the path by name.
+
+    The parent is resolved once (operator config, at startup; ``parent_real``)
+    and then reached by a no-follow walk; the file is opened relative to that
+    directory descriptor. A parent owned by another user is refused."""
+    parent = parent_real or os.path.realpath(os.path.dirname(os.path.abspath(path)))
+    dir_fd = _open_dir_nofollow(parent)
+    try:
+        dst = os.fstat(dir_fd)
+        if hasattr(os, "getuid") and dst.st_uid not in (os.getuid(), 0):
+            raise OSError(f"debug log directory {parent} belongs to another user")
+        fd = os.open(
+            os.path.basename(path),
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=dir_fd,
+        )
+    finally:
+        os.close(dir_fd)
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
@@ -661,7 +700,32 @@ def build_search_prefixes(date_from_dt: datetime | None, date_to_dt: datetime | 
         prefixes.append(prefix)
         current = current - timedelta(days=1)
 
+    # Operator-trusted legacy imports (EMAIL_TRUSTED_LEGACY_PREFIXES) do not
+    # live under the date partitions: list them too; their messages are
+    # windowed by their Date header instead (see _legacy_outside_window).
+    for legacy in EMAIL_TRUSTED_LEGACY_PREFIXES:
+        if legacy not in prefixes:
+            prefixes.append(legacy)
     return prefixes
+
+
+def _legacy_outside_window(
+    s3_key: str, message_date: str, date_from_dt: datetime | None, date_to_dt: datetime | None
+) -> bool:
+    """For a key under a trusted legacy prefix (whose LastModified is the import
+    time, not the mail's), True when its Date header lies outside the window
+    (or cannot be read while a window is set)."""
+    if not trusted_legacy_key(s3_key) or (date_from_dt is None and date_to_dt is None):
+        return False
+    try:
+        sent = email.utils.parsedate_to_datetime(message_date)
+    except (TypeError, ValueError):
+        return True
+    if sent is None:
+        return True
+    if sent.tzinfo is None:
+        sent = sent.replace(tzinfo=UTC)
+    return bool((date_from_dt and sent < date_from_dt) or (date_to_dt and sent > date_to_dt))
 
 
 def parse_date_bound(date_str: str | None, is_end: bool) -> datetime | None:
@@ -862,12 +926,20 @@ def authenticated_sender_domain(auth_results: list[str], from_header: str) -> st
         authserv = _split_resinfo(text)[0].strip().split()
         if not authserv or authserv[0].lower() != EMAIL_AUTHSERV_ID:
             continue
-        for method, result, domains in _auth_results(text):
-            if result != "pass":
-                continue
-            if method == "dmarc" and (not domains or from_domain in domains):
+        results = _auth_results(text)
+        dmarc = [result for method, result, _domains in results if method == "dmarc"]
+        for method, result, domains in results:
+            if method == "dmarc" and result == "pass" and (not domains or from_domain in domains):
                 return from_domain
-            if method in ("dkim", "spf") and any(_aligned(d, from_domain) for d in domains):
+        # The SPF / DKIM fallback applies only when the receiver gave NO DMARC
+        # verdict or dmarc=none (no policy published). Any other DMARC result —
+        # fail (e.g. strict adkim=s rejecting a subdomain signature),
+        # quarantine / reject, temperror / permerror — is final: a weaker
+        # fallback never overrides it.
+        if any(result != "none" for result in dmarc):
+            return None
+        for method, result, domains in results:
+            if method in ("dkim", "spf") and result == "pass" and any(_aligned(d, from_domain) for d in domains):
                 return from_domain
         return None  # only the receiver's own (topmost) verdict counts
     return None
@@ -2071,7 +2143,7 @@ async def search_emails(
                             continue
 
                         last_modified = obj["LastModified"]
-                        if not using_partition_prefixes:
+                        if not using_partition_prefixes and not trusted_legacy_key(obj["Key"]):
                             if date_from_dt and last_modified < date_from_dt:
                                 continue
                             if date_to_dt and last_modified > date_to_dt:
@@ -2099,6 +2171,8 @@ async def search_emails(
                         recipients = headers["to"]
                         message_date = headers["date"]
                         last_modified = obj["LastModified"]
+                        if _legacy_outside_window(obj["Key"], message_date, date_from_dt, date_to_dt):
+                            continue
 
                         if SEARCH_PROGRESS_EVERY > 0 and emails_scanned % SEARCH_PROGRESS_EVERY == 0:
                             logger.info(
@@ -2229,6 +2303,7 @@ async def search_emails(
             search_warnings.append(
                 {
                     "code": "unauthenticated_sender_skipped",
+                    "count": unauthenticated_skipped,
                     "severity": "high",
                     "message": (
                         f"{unauthenticated_skipped} email(s) were left out: the receiving server did not "
@@ -2327,7 +2402,10 @@ async def search_emails_fuzzy(
     Args:
         keywords: List of keywords to search for
         search_fields: Which fields to search in (default: ["subject", "sender"])
-                      Options: "subject", "sender", "body"
+                      Options: "subject", "sender", "body". "sender" is the From
+                      MAILBOX only (e.g. reports@vendor.example), never the display
+                      name: search a sender by its domain ("vendor.example"), and a
+                      company name ("Vendor Inc") in the subject.
         match_all: If True, all keywords must match (AND). If False, any keyword (OR)
         date_from: Only emails received on or after this date (ISO format)
         date_to: Only emails received on or before this date (ISO format)
@@ -2347,9 +2425,9 @@ async def search_emails_fuzzy(
             max_results=5,
         )
 
-        # Prior target day fuzzy fallback
+        # Prior target day fuzzy fallback: senders by domain
         search_emails_fuzzy(
-            keywords=["The Trade Desk", "Amazon DSP"],
+            keywords=["vendor.example", "dsp.example"],
             search_fields=["sender"],
             match_all=False,
             date_from="2026-03-16",
@@ -2448,7 +2526,7 @@ async def search_emails_fuzzy(
 
                         # Apply date filters when not using date-partition prefixes
                         last_modified = obj["LastModified"]
-                        if not using_partition_prefixes:
+                        if not using_partition_prefixes and not trusted_legacy_key(obj["Key"]):
                             if date_from_dt and last_modified < date_from_dt:
                                 continue
                             if date_to_dt and last_modified > date_to_dt:
@@ -2529,6 +2607,8 @@ async def search_emails_fuzzy(
                                     last_modified.isoformat(),
                                 )
 
+                            if _legacy_outside_window(obj["Key"], message_date, date_from_dt, date_to_dt):
+                                continue
                             if not include_unauthenticated() and not (authenticated or trusted_legacy_key(obj["Key"])):
                                 unauthenticated_skipped += 1
                                 continue
@@ -2615,6 +2695,7 @@ async def search_emails_fuzzy(
             search_warnings.append(
                 {
                     "code": "unauthenticated_sender_skipped",
+                    "count": unauthenticated_skipped,
                     "severity": "high",
                     "message": f"{unauthenticated_skipped} email(s) were left out: the receiving server did not "
                     "authenticate their sender, so their From header may be forged.",
@@ -2942,18 +3023,19 @@ async def _read_archived(url: str) -> dict[str, Any] | None:
             return _archive_too_large(url, declared)
         # StreamingBody.read(n) may return fewer bytes than asked before EOF:
         # read until EOF under a cumulative cap, then check it is complete.
-        chunks: list[bytes] = []
-        total = 0
-        while True:
-            chunk = await response["Body"].read(1024 * 1024)
-            if not chunk:
-                break
-            total += len(chunk)
-            if total > LINK_DOWNLOAD_MAX_BYTES:
-                return _archive_too_large(url, total)
-            _charge_batch_budget(len(chunk))
-            chunks.append(chunk)
-        content = b"".join(chunks)
+        with tempfile.SpooledTemporaryFile(max_size=1024 * 1024) as spool:
+            total = 0
+            while True:
+                chunk = await response["Body"].read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > LINK_DOWNLOAD_MAX_BYTES:
+                    return _archive_too_large(url, total)
+                _charge_batch_budget(len(chunk))
+                spool.write(chunk)
+            spool.seek(0)
+            content = spool.read()  # held once
         if isinstance(declared, int) and len(content) != declared:
             return {
                 "status": "error",
@@ -3122,15 +3204,19 @@ async def download_link_attachment(
                         declared = streamed.headers.get("content-length", "")
                         if declared.isdigit() and int(declared) > LINK_DOWNLOAD_MAX_BYTES:
                             raise LinkDownloadTooLarge(int(declared))
-                        chunks: list[bytes] = []
-                        total = 0
-                        async for chunk in streamed.aiter_bytes():
-                            total += len(chunk)
-                            if total > LINK_DOWNLOAD_MAX_BYTES:
-                                raise LinkDownloadTooLarge(total)
-                            _charge_batch_budget(len(chunk))
-                            chunks.append(chunk)
-                        streamed._content = b"".join(chunks)  # what Response.aread() stores
+                        # Spooled to disk as it arrives (past 1 MiB), then read back
+                        # ONCE: a cap-sized body is held in memory a single time,
+                        # never as a chunk list plus its joined copy.
+                        with tempfile.SpooledTemporaryFile(max_size=1024 * 1024) as spool:
+                            total = 0
+                            async for chunk in streamed.aiter_bytes():
+                                total += len(chunk)
+                                if total > LINK_DOWNLOAD_MAX_BYTES:
+                                    raise LinkDownloadTooLarge(total)
+                                _charge_batch_budget(len(chunk))
+                                spool.write(chunk)
+                            spool.seek(0)
+                            streamed._content = spool.read()  # what Response.aread() stores
                         streamed.history = history
                         return streamed
                 raise httpx.TooManyRedirects(f"more than {LINK_DOWNLOAD_MAX_REDIRECTS} redirects", request=None)
@@ -3178,6 +3264,10 @@ async def download_link_attachment(
                     logger.info(f"Click-tracker landed on HTML; chasing to {next_url}")
                     chased_from = str(response.url)
                     chased_to = next_url
+                    # Release the first (HTML) body before the chase fetches the
+                    # second: never two cap-sized bodies held at once.
+                    html = ""
+                    response = None
                     response = await _fetch(next_url)
 
         response.raise_for_status()
@@ -3348,13 +3438,23 @@ async def download_all_link_attachments(
         skipped_links = links_result["links"][LINK_BATCH_MAX_COUNT:]
         gate = asyncio.Semaphore(LINK_BATCH_CONCURRENCY)
         budget_token = _BATCH_BUDGET.set([LINK_BATCH_MAX_BYTES])
+        # ONE deadline for the whole batch (EMAIL_LINK_MAX_SECONDS, under Fleet's
+        # ~300 s tool cutoff): each link gets at most what is left, and a link
+        # not started before it expires is reported, not attempted.
+        batch_deadline = asyncio.get_running_loop().time() + LINK_DOWNLOAD_MAX_SECONDS
 
         async def _one(link: dict[str, Any]) -> dict[str, Any]:
             async with gate:
+                remaining = batch_deadline - asyncio.get_running_loop().time()
+                if remaining < 1:
+                    return {
+                        "status": "error",
+                        "error": f"Not started: the batch's {LINK_DOWNLOAD_MAX_SECONDS}-second deadline passed first.",
+                    }
                 return await download_link_attachment(
                     url=link["url"],
                     output_dir=download_dir,
-                    timeout_seconds=timeout_seconds,
+                    timeout_seconds=max(1, min(int(timeout_seconds or LINK_DOWNLOAD_MAX_SECONDS), int(remaining))),
                 )
 
         try:
@@ -3412,10 +3512,19 @@ async def download_all_link_attachments(
 
 
 def _merge_warning(warnings: list[dict[str, Any]], warning: dict[str, Any], day: str) -> None:
+    """One warning per code across the day searches: the days it came from, and
+    for counted warnings the summed count with the message rewritten to it."""
     code = warning.get("code")
     for existing in warnings:
         if existing.get("code") == code:
             existing.setdefault("days", []).append(day)
+            if isinstance(warning.get("count"), int):
+                existing["count"] = int(existing.get("count") or 0) + warning["count"]
+                if code == "unauthenticated_sender_skipped":
+                    existing["message"] = (
+                        f"{existing['count']} email(s) were left out across {len(existing['days'])} day(s): the "
+                        "receiving server did not authenticate their sender, so their From header may be forged."
+                    )
             return
     warnings.append({**warning, "days": [day]})
 
