@@ -33,11 +33,13 @@ import json
 import logging
 import os
 import re
+import stat
 import tempfile
 from datetime import UTC, datetime, timedelta
 from email.header import decode_header
 from email.message import Message
 from email.parser import BytesHeaderParser
+from email.utils import parseaddr
 from pathlib import Path
 from typing import Any, NamedTuple
 from urllib.parse import parse_qs, unquote, urlparse
@@ -61,11 +63,74 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DEBUG_LOG_FILE = os.environ.get("EMAIL_DEBUG_LOG_FILE", "/tmp/ses_s3_email_debug.log")
-file_handler = logging.FileHandler(DEBUG_LOG_FILE)
-file_handler.setLevel(logging.INFO)
-file_handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
-logger.addHandler(file_handler)
+# URLs in log lines lose their query string: presigned S3 / report links carry
+# their credential (X-Amz-Signature, token=...) there, and anyone who can read
+# a log line could otherwise download the report until the link expires.
+_URL_QUERY_RE = re.compile(r"(https?://[^\s?#'\"<>]+)\?[^\s'\"<>]*", re.IGNORECASE)
+
+
+def redact_url_queries(text: str) -> str:
+    return _URL_QUERY_RE.sub(r"\1?<redacted>", text)
+
+
+class _RedactUrlQueries(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001 - never lose a log line over formatting
+            return True
+        redacted = redact_url_queries(message)
+        if redacted != message:
+            record.msg, record.args = redacted, None
+        return True
+
+
+logger.addFilter(_RedactUrlQueries())
+
+
+def _debug_log_path() -> str | None:
+    """EMAIL_DEBUG_LOG_FILE, else a private per-user file (dir 0700, file 0600).
+
+    The old default, /tmp/ses_s3_email_debug.log, was created with the umask's
+    world-readable mode in the shared temp dir: every local user could read the
+    subjects, senders and download links this server logs. None when no private
+    location can be had (the stderr log still works)."""
+    configured = os.environ.get("EMAIL_DEBUG_LOG_FILE", "").strip()
+    if configured:
+        return configured
+    uid = os.getuid() if hasattr(os, "getuid") else None
+    base = os.path.join(tempfile.gettempdir(), f"ses_s3_email-{uid if uid is not None else 'user'}")
+    try:
+        with contextlib.suppress(FileExistsError):
+            os.mkdir(base, 0o700)
+        st = os.lstat(base)
+        if not stat.S_ISDIR(st.st_mode) or (uid is not None and st.st_uid != uid):
+            return None  # a planted symlink or someone else's directory: do not log there
+        os.chmod(base, 0o700)
+    except OSError:
+        return None
+    return os.path.join(base, "debug.log")
+
+
+def _open_private_log(path: str) -> None:
+    """Create the log file owner-only (never through a symlink) before logging opens it."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+    finally:
+        os.close(fd)
+
+
+DEBUG_LOG_FILE = _debug_log_path()
+if DEBUG_LOG_FILE:
+    try:
+        _open_private_log(DEBUG_LOG_FILE)
+        file_handler = logging.FileHandler(DEBUG_LOG_FILE)
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+        logger.addHandler(file_handler)
+    except OSError as exc:
+        logger.warning("debug log file disabled (%s): %s", DEBUG_LOG_FILE, exc)
 
 # --- Configuration ---
 S3_BUCKET = os.environ.get("EMAIL_S3_BUCKET", "")
@@ -604,12 +669,84 @@ async def fetch_email_headers(s3_client, s3_key: str) -> dict[str, str]:
     parser = BytesHeaderParser()
     msg = parser.parsebytes(raw_chunk)
 
+    sender = decode_email_header(msg.get("From", ""))
     return {
         "subject": decode_email_header(msg.get("Subject", "")),
-        "from": decode_email_header(msg.get("From", "")),
+        "from": sender,
         "to": decode_email_header(msg.get("To", "")),
         "date": msg.get("Date", ""),
+        "authenticated_domain": authenticated_sender_domain(msg.get_all("Authentication-Results") or [], sender) or "",
     }
+
+
+# -- authenticated sender ------------------------------------------------------------
+# A From header is text anyone can write: "From: reports@vendor.com" on a mail
+# from anywhere used to be selected as that vendor's report. The receiving MTA
+# (SES inbound) records what it verified in an Authentication-Results header it
+# PREPENDS, so the topmost header carrying its authserv-id is the receiver's
+# verdict; anything below it came with the message and is ignored.
+EMAIL_AUTHSERV_ID = os.environ.get("EMAIL_AUTHSERV_ID", "amazonses.com").strip().lower() or "amazonses.com"
+# "required" (default): sender_contains selects only mail whose From domain the
+# receiver authenticated (DMARC pass, or an aligned SPF / DKIM pass) and the
+# filter text matches. "off": the old header-substring match, for an inbox whose
+# receiver adds no Authentication-Results (documented fallback; every search
+# then carries an unauthenticated_sender_match warning).
+EMAIL_SENDER_AUTH = os.environ.get("EMAIL_SENDER_AUTH", "required").strip().lower() or "required"
+
+_AUTH_RESULT_RE = re.compile(r"\b(dmarc|dkim|spf)\s*=\s*([a-z]+)\b([^;]*)", re.IGNORECASE)
+_AUTH_PROP_RE = re.compile(
+    r"\b(header\.from|header\.d|header\.i|smtp\.mailfrom|smtp\.from)\s*=\s*\"?([^\s;\"]+)", re.IGNORECASE
+)
+
+
+def _address_domain(value: str) -> str:
+    address = parseaddr(value)[1] if "<" in value or " " in value.strip() else value.strip()
+    return address.rpartition("@")[2].strip().strip(".").lower()
+
+
+def _aligned(auth_domain: str, from_domain: str) -> bool:
+    """Relaxed DMARC alignment: same domain, or one is a subdomain of the other."""
+    if not auth_domain or not from_domain:
+        return False
+    return (
+        auth_domain == from_domain or from_domain.endswith("." + auth_domain) or auth_domain.endswith("." + from_domain)
+    )
+
+
+def authenticated_sender_domain(auth_results: list[str], from_header: str) -> str | None:
+    """The From domain when the receiver authenticated it, else None.
+
+    Reads only the topmost Authentication-Results whose authserv-id is
+    EMAIL_AUTHSERV_ID. Accepted: dmarc=pass for the From domain, or dkim=pass /
+    spf=pass for a domain aligned with it."""
+    from_domain = _address_domain(str(from_header or ""))
+    if not from_domain:
+        return None
+    for header in auth_results:
+        text = " ".join(str(header or "").split())
+        authserv = text.split(";", 1)[0].strip().split()
+        if not authserv or authserv[0].lower() != EMAIL_AUTHSERV_ID:
+            continue
+        for method, result, props in _AUTH_RESULT_RE.findall(text):
+            if result.lower() != "pass":
+                continue
+            domains = [_address_domain(value) for _key, value in _AUTH_PROP_RE.findall(props)]
+            if method.lower() == "dmarc" and (not domains or from_domain in domains):
+                return from_domain
+            if method.lower() in ("dkim", "spf") and any(_aligned(d, from_domain) for d in domains):
+                return from_domain
+        return None  # only the receiver's own (topmost) verdict counts
+    return None
+
+
+def sender_filter_matches(sender_filter: str, headers: dict[str, str]) -> bool:
+    """Does ``sender_filter`` select this mail? Under EMAIL_SENDER_AUTH=required
+    the From must also be one the receiver authenticated."""
+    if sender_filter.lower() not in str(headers.get("from", "")).lower():
+        return False
+    if EMAIL_SENDER_AUTH == "off":
+        return True
+    return bool(headers.get("authenticated_domain"))
 
 
 async def fetch_email_headers_batch(
@@ -1693,6 +1830,7 @@ async def search_emails(
         keywords_lower = [k.lower() for k in subject_keywords] if subject_keywords else None
 
         matching_emails = []
+        unauthenticated_skipped = 0
         emails_scanned = 0
         header_fetches = 0
         full_fetches = 0
@@ -1787,7 +1925,9 @@ async def search_emails(
                             if not any(kw in subject_check for kw in keywords_lower):
                                 continue
 
-                        if sender_lower and sender_lower not in sender.lower():
+                        if sender_lower and not sender_filter_matches(sender_lower, headers):
+                            if sender_lower in sender.lower():
+                                unauthenticated_skipped += 1
                             continue
 
                         if recipient_lower and recipient_lower not in recipients.lower():
@@ -1878,6 +2018,32 @@ async def search_emails(
             parse_errors,
             elapsed_seconds,
         )
+
+        if unauthenticated_skipped:
+            search_warnings.append(
+                {
+                    "code": "unauthenticated_sender_skipped",
+                    "severity": "high",
+                    "message": (
+                        f"{unauthenticated_skipped} email(s) whose From matched sender_contains were skipped: the "
+                        "receiving server did not authenticate that sender (no DMARC / aligned SPF or DKIM pass), "
+                        "so the From header may be forged."
+                    ),
+                    "suggestion": "Do not treat those as the vendor's report. If the vendor's mail really fails "
+                    "authentication, the operator can set EMAIL_SENDER_AUTH=off (header matching) for this inbox.",
+                }
+            )
+        if sender_lower and EMAIL_SENDER_AUTH == "off":
+            search_warnings.append(
+                {
+                    "code": "unauthenticated_sender_match",
+                    "severity": "medium",
+                    "message": "EMAIL_SENDER_AUTH=off: sender_contains matched the From header text, which is not "
+                    "authenticated and can be forged.",
+                    "suggestion": "Prefer EMAIL_SENDER_AUTH=required on an inbox whose receiver adds "
+                    "Authentication-Results.",
+                }
+            )
 
         if emails_scanned >= 2000 and len(matching_emails) == 0:
             search_warnings.append(
@@ -2486,6 +2652,19 @@ async def _fetch_archived_link(
         return None
 
 
+# Caps for a link found in an email body (attacker-controllable). Reports this
+# inbox receives are far below them; override per deployment with
+# EMAIL_LINK_MAX_BYTES / EMAIL_LINK_MAX_SECONDS.
+LINK_DOWNLOAD_MAX_BYTES = int(os.environ.get("EMAIL_LINK_MAX_BYTES", "") or 200 * 1024 * 1024)
+LINK_DOWNLOAD_MAX_SECONDS = int(os.environ.get("EMAIL_LINK_MAX_SECONDS", "") or 240)
+
+
+class LinkDownloadTooLarge(Exception):
+    def __init__(self, size: int) -> None:
+        super().__init__(f"The download is larger than the {LINK_DOWNLOAD_MAX_BYTES}-byte cap ({size}+ bytes).")
+        self.size = size
+
+
 @mcp.tool()
 async def download_link_attachment(
     url: str,
@@ -2525,7 +2704,8 @@ async def download_link_attachment(
         url: The URL to download from.
         output_dir: Optional directory to save the file. Defaults to EMAIL_ATTACHMENT_DIR.
         filename: Optional filename to use. If not provided, extracted from response.
-        timeout_seconds: Download timeout in seconds (default 120).
+        timeout_seconds: Download timeout in seconds for the whole fetch (default 120, at most 240).
+            Files over 200 MB are refused (the deployment can change both caps).
         chase_html: If True (default), follow one HTML interstitial when
             the click-tracker doesn't land on a binary file directly.
             Set False to disable for debugging.
@@ -2549,6 +2729,7 @@ async def download_link_attachment(
         }
 
     classification = classify_url(url)
+    effective_timeout = max(1, min(int(timeout_seconds or LINK_DOWNLOAD_MAX_SECONDS), LINK_DOWNLOAD_MAX_SECONDS))
 
     async def _fetch(target_url: str) -> httpx.Response:
         # SSRF guard: the request event hook vets the host of EVERY hop
@@ -2557,13 +2738,39 @@ async def download_link_attachment(
         # BEFORE the request is sent — email-body URLs are attacker
         # controlled, and follow_redirects would otherwise happily land on
         # 169.254.169.254 or an internal service. See utils/url_guard.py.
-        async with httpx.AsyncClient(
-            follow_redirects=True,
-            timeout=httpx.Timeout(timeout_seconds),
-            headers=_BROWSER_HEADERS,
-            event_hooks={"request": [url_guard.request_hook]},
-        ) as client:
-            return await client.get(target_url)
+        #
+        # Bounded: the body is streamed and refused past LINK_DOWNLOAD_MAX_BYTES
+        # (a declared Content-Length over the cap is refused before reading),
+        # and the whole fetch, redirects included, must finish within the
+        # clamped timeout; httpx's own timeout is per read, so a server that
+        # drips bytes could otherwise hold the call (and memory) open forever.
+        async def _get() -> httpx.Response:
+            async with (
+                httpx.AsyncClient(
+                    follow_redirects=True,
+                    timeout=httpx.Timeout(effective_timeout),
+                    headers=_BROWSER_HEADERS,
+                    event_hooks={"request": [url_guard.request_hook]},
+                ) as client,
+                client.stream("GET", target_url) as streamed,
+            ):
+                declared = streamed.headers.get("content-length", "")
+                if declared.isdigit() and int(declared) > LINK_DOWNLOAD_MAX_BYTES:
+                    raise LinkDownloadTooLarge(int(declared))
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in streamed.aiter_bytes():
+                    total += len(chunk)
+                    if total > LINK_DOWNLOAD_MAX_BYTES:
+                        raise LinkDownloadTooLarge(total)
+                    chunks.append(chunk)
+                streamed._content = b"".join(chunks)  # what Response.aread() stores
+                return streamed
+
+        try:
+            return await asyncio.wait_for(_get(), timeout=effective_timeout)
+        except TimeoutError as exc:
+            raise httpx.TimeoutException(f"no complete response within {effective_timeout}s") from exc
 
     def _redirect_chain(response: httpx.Response) -> list[str]:
         chain = [str(h.url) for h in response.history]
@@ -2655,6 +2862,15 @@ async def download_link_attachment(
             "error": str(e),
             "retryable": False,
         }
+    except LinkDownloadTooLarge as e:
+        # Refused, not failed: no archive fallback and not retryable.
+        logger.error(f"Refused oversized link download {url}: {e}")
+        return {
+            "status": "error",
+            "url": url,
+            "error": f"{e} The link was not saved.",
+            "retryable": False,
+        }
     except httpx.TimeoutException:
         logger.error(f"Download timeout for URL: {url}")
         archived = await _fetch_archived_link(url, download_dir, filename)
@@ -2664,7 +2880,7 @@ async def download_link_attachment(
         return {
             "status": "error",
             "url": url,
-            "error": f"Download timed out after {timeout_seconds} seconds",
+            "error": f"Download timed out after {effective_timeout} seconds",
         }
     except httpx.HTTPStatusError as e:
         logger.error(f"HTTP error downloading {url}: {e}")

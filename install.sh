@@ -109,9 +109,20 @@ USAGE
 done
 
 # ── locate / fetch the bundle ─────────────────────────────────────────────────
-# If this script is run from inside a checkout (manifest.yaml beside it), use
-# that. Otherwise clone/update into the chosen dir (one-line curl|bash path).
-SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
+# If this script is run from a real file inside a checkout (manifest.yaml
+# beside it), use that. Otherwise clone/update into the chosen dir (one-line
+# curl|bash path).
+#
+# Piped into bash (`curl ... | bash`) there is no script file: BASH_SOURCE[0]
+# is empty and $0 is "bash", whose dirname is ".". Falling back to $0 used to
+# make the CALLER'S CWD the bundle, so running the one-liner from inside any
+# directory holding a manifest.yaml and mcp/ registered that directory's
+# servers in the user's agents. Only a regular file we were read from counts.
+SELF_DIR=""
+SELF_SRC="${BASH_SOURCE[0]:-}"
+if [ -n "$SELF_SRC" ] && [ -f "$SELF_SRC" ] && [ ! -p "$SELF_SRC" ]; then
+  SELF_DIR="$(cd "$(dirname "$SELF_SRC")" 2>/dev/null && pwd || true)"
+fi
 if [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/manifest.yaml" ] && [ -d "$SELF_DIR/mcp" ]; then
   DIR="$SELF_DIR"
 else

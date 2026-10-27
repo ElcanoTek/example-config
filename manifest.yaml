@@ -461,7 +461,21 @@ mcp_servers:
       EMAIL_SEARCH_PROGRESS_EVERY: "${EMAIL_SEARCH_PROGRESS_EVERY}"
       EMAIL_SEARCH_KEY_LOG_EVERY: "${EMAIL_SEARCH_KEY_LOG_EVERY}"
       EMAIL_DEBUG_LOG_FILE: "${EMAIL_DEBUG_LOG_FILE}"
+      # sender_contains selects only mail the receiver (SES inbound, authserv-id
+      # amazonses.com) authenticated: DMARC pass or aligned SPF/DKIM pass in its
+      # topmost Authentication-Results. EMAIL_SENDER_AUTH=off is the legacy
+      # From-substring match, for an inbox whose vendor mail fails authentication
+      # (each search then warns). Link downloads are capped at
+      # EMAIL_LINK_MAX_BYTES (default 200 MB) and EMAIL_LINK_MAX_SECONDS (240).
+      EMAIL_SENDER_AUTH: "${EMAIL_SENDER_AUTH}"
+      EMAIL_AUTHSERV_ID: "${EMAIL_AUTHSERV_ID}"
+      EMAIL_LINK_MAX_BYTES: "${EMAIL_LINK_MAX_BYTES}"
+      EMAIL_LINK_MAX_SECONDS: "${EMAIL_LINK_MAX_SECONDS}"
     optional_env:
+      - EMAIL_SENDER_AUTH
+      - EMAIL_AUTHSERV_ID
+      - EMAIL_LINK_MAX_BYTES
+      - EMAIL_LINK_MAX_SECONDS
       - AWS_ACCESS_KEY_ID
       - AWS_SECRET_ACCESS_KEY
       - AWS_SESSION_TOKEN

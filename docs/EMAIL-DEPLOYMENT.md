@@ -71,6 +71,14 @@ root:root`, written by production-support's email provisioning):
 
 - Inbound: `EMAIL_S3_BUCKET`, `EMAIL_AWS_ACCESS_KEY_ID`,
   `EMAIL_AWS_SECRET_ACCESS_KEY` (optional `EMAIL_AWS_REGION`).
+  `sender_contains` selects only mail whose From domain SES inbound
+  authenticated (DMARC pass, or an aligned SPF/DKIM pass in its
+  `Authentication-Results`); optional `EMAIL_SENDER_AUTH=off` falls back to the
+  forgeable From-substring match, `EMAIL_AUTHSERV_ID` (default
+  `amazonses.com`) names the receiver, and `EMAIL_LINK_MAX_BYTES` /
+  `EMAIL_LINK_MAX_SECONDS` (200 MB / 240 s) cap email-link downloads. The debug
+  log defaults to a private per-user file (`<tmp>/ses_s3_email-<uid>/debug.log`,
+  0600) with URL query strings redacted.
 - Outbound: `SES_OUTBOUND_AWS_ACCESS_KEY_ID`,
   `SES_OUTBOUND_AWS_SECRET_ACCESS_KEY`, `SES_OUTBOUND_AWS_REGION`,
   `SES_OUTBOUND_FROM_EMAIL`, `SES_OUTBOUND_REPLY_TO`,
