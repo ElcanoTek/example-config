@@ -569,12 +569,15 @@ specifics — names, domains, IPs — stay out of this public template.
   bootstrapping; your resolver may cache the pre-record NXDOMAIN.
 - **Per-client credentials, never shared across clients** — separate spend,
   separate blast radius, separate revocation:
-  - GitHub **fine-grained PAT** `<client>-fleet-bundle-read`: resource owner =
-    the org, access = only that client's bundle repo, **Contents: Read-only**,
-    ~1-year expiry, and the box's domain in the token description so an org
-    token audit knows what breaks on revocation. It lands in
-    `/root/.git-credentials` (0600) via a hidden `read -rs` prompt — secrets
-    never pass through a chat, a scrollback, or git.
+  - **Read-only SSH deploy key** for the bundle repo: the box generates its
+    own key (`/root/.ssh/id_ed25519`) and it is registered on that client's
+    bundle repo only, read-only, titled with the box's domain so a key audit
+    knows what breaks on removal
+    (`gh repo deploy-key add - -R ElcanoTek/<client>-config -t "fleet.<domain> (read-only)"`;
+    production-support's `scripts/deploy-box.sh` prints this command). The box
+    clones `git@github.com:ElcanoTek/<client>-config.git`. Never put a GitHub
+    personal access token in `.git/config`, `/root/.git-credentials` or
+    `/root/.config/gh/hosts.yml`.
   - **OpenRouter key**: one fresh key per client with a **$2,000/month spend
     limit** set at creation — the cap turns a runaway loop or leaked key into
     a bounded incident; size it to the client's expected usage. Set on the box
