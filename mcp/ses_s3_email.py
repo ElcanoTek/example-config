@@ -92,7 +92,9 @@ logger = logging.getLogger(__name__)
 # query / fragment start at the first "?" / "#" after it. An apostrophe ends
 # nothing: over-redacting a closing quote beats leaking a token. Idempotent:
 # an already-redacted URL is left as it is (no second hash).
-_URL_CANDIDATE_RE = re.compile(r"https?://[^\s\"<>]+", re.IGNORECASE)
+# The two delimiter slashes may be any mix of "/" and "\" (https:\\host\x,
+# https:/\host): WHATWG parsers accept those too.
+_URL_CANDIDATE_RE = re.compile(r"https?:[/\\]{2}[^\s\"<>]+", re.IGNORECASE)
 _URL_HASH_TAG = " [url-id:"
 # Keyed per process: the tag only correlates links within one process's logs,
 # and an unkeyed hash of a short secret (a six-digit code) could be brute-forced.
@@ -128,12 +130,12 @@ def _mask_path(path: str) -> str:
 
 
 def _redact_one_url(url: str) -> str:
-    scheme, sep, rest = url.partition("://")
+    # Lenient parsers (WHATWG, httpx) read "\\" as "/", so a backslash path
+    # (https://host\\download\\SECRET.csv) or delimiter (https:\\host) is
+    # masked like a slash one.
+    scheme, sep, rest = url.replace("\\", "/").partition("://")
     if not sep:
         return url
-    # Lenient parsers (WHATWG, httpx) read "\\" as "/", so a backslash path
-    # (https://host\\download\\SECRET.csv) is masked like a slash path.
-    rest = rest.replace("\\", "/")
     cut = len(rest)
     for delimiter in "/?#":
         index = rest.find(delimiter)
@@ -152,10 +154,22 @@ def _redact_one_url(url: str) -> str:
     return f"{scheme}://{authority}{_mask_path(path)}{masked}"
 
 
+# Userinfo is masked BEFORE candidate matching, on the raw text: from the
+# scheme and its delimiter through any non-whitespace characters up to the
+# authority's end ("/", "?" or "#"; a "\\", quote or angle bracket inside the
+# userinfo never ends it), everything before the LAST "@" becomes "***@".
+_USERINFO_PREPASS_RE = re.compile(r"(https?:[/\\]{2})([^\s/?#]*)@", re.IGNORECASE)
+
+
+def _mask_userinfo(text: str) -> str:
+    return _USERINFO_PREPASS_RE.sub(lambda m: m.group(1) + "***@", text)
+
+
 def redact_url_queries(text: str) -> str:
     """Mask URL credentials in a log line: userinfo (https://user:pass@host ->
     https://***@host), every path segment but the last, the whole query and the
     whole fragment; a changed URL is tagged with a keyed HMAC of the original."""
+    text = _mask_userinfo(text)
 
     def _sub(match: re.Match[str]) -> str:
         url = match.group(0)
@@ -734,6 +748,23 @@ def _build_search_warnings(
             }
         )
 
+    ignored = ignored_sender_entries(sender_contains)
+    if ignored:
+        all_ignored = len(ignored) == len(_sender_needles(sender_contains or ""))
+        warnings.append(
+            {
+                "code": "sender_filter_entries_ignored",
+                "severity": "high",
+                "message": (
+                    f"sender_contains entries ignored (not a full mailbox or a multi-label domain): "
+                    f"{', '.join(ignored)}."
+                    + (" No entry is usable, so the sender filter matches nothing." if all_ignored else "")
+                ),
+                "suggestion": "Pass sender domains such as 'vendor.example' or full addresses such as "
+                "'reports@vendor.example'; a bare name or TLD matches nothing.",
+            }
+        )
+
     if recipient_contains is not None and not _is_meaningful_text_filter(recipient_contains):
         warnings.append(
             {
@@ -834,18 +865,39 @@ def build_search_prefixes(date_from_dt: datetime | None, date_to_dt: datetime | 
     return prefixes
 
 
+def _parse_partition(key: str) -> datetime | None:
+    """The day a key's DATE_PREFIX_FORMAT partition names, or None.
+
+    Never cut by a fixed width: a variable-width format ("%Y/%-m/%-d/",
+    "%Y/%B/%d/") is matched by its PATH SEGMENTS (the format's "/" count is
+    fixed), parsed, and accepted only when re-formatting the date reproduces
+    exactly that prefix."""
+    fmt = DATE_PREFIX_FORMAT
+    if not fmt:
+        return None
+    strp = fmt.replace("%-", "%")  # strptime has no "%-d"; it accepts "5" for "%d"
+    if "/" in fmt.rstrip("/") or fmt.endswith("/"):
+        depth = fmt.count("/")
+        pieces = key.split("/")
+        if len(pieces) <= depth - (0 if fmt.endswith("/") else 1):
+            return None
+        candidate = "/".join(pieces[:depth]) + "/" if fmt.endswith("/") else "/".join(pieces[: depth + 1])
+        candidates = [candidate]
+    else:
+        candidates = [key[:n] for n in range(len(key), 0, -1)]
+    for candidate in candidates:
+        try:
+            day = datetime.strptime(candidate, strp).replace(tzinfo=UTC)
+        except ValueError:
+            continue
+        if day.strftime(fmt) == candidate:
+            return day
+    return None
+
+
 def _in_date_tree(prefix: str) -> bool:
     """True when ``prefix`` starts with a DATE_PREFIX_FORMAT partition (any day)."""
-    if not DATE_PREFIX_FORMAT:
-        return False
-    width = len(datetime(2000, 1, 1, tzinfo=UTC).strftime(DATE_PREFIX_FORMAT))
-    if len(prefix) < width:
-        return False
-    try:
-        datetime.strptime(prefix[:width], DATE_PREFIX_FORMAT)
-    except ValueError:
-        return False
-    return True
+    return _parse_partition(prefix) is not None
 
 
 def _message_sent_at(message_date: str) -> datetime | None:
@@ -865,13 +917,7 @@ def _message_sent_at(message_date: str) -> datetime | None:
 
 def _partition_day(s3_key: str) -> datetime | None:
     """The received day a key's date partition names (emails/2026/10/26/...), or None."""
-    if not DATE_PREFIX_FORMAT or not _in_date_tree(s3_key):
-        return None
-    width = len(datetime(2000, 1, 1, tzinfo=UTC).strftime(DATE_PREFIX_FORMAT))
-    try:
-        return datetime.strptime(s3_key[:width], DATE_PREFIX_FORMAT).replace(tzinfo=UTC)
-    except ValueError:
-        return None
+    return _parse_partition(s3_key)
 
 
 def _legacy_outside_window(
@@ -1252,7 +1298,9 @@ def mailbox_matches(needle: str, mailbox: str) -> bool:
     return bool(domain) and bool(needle) and (domain == needle or domain.endswith("." + needle))
 
 
-def sender_filter_matches(sender_filter: str, headers: dict[str, str], s3_key: str = "") -> bool:
+def sender_filter_matches(
+    sender_filter: str, headers: dict[str, str], s3_key: str = "", *, require_trust: bool = True
+) -> bool:
     """Does ``sender_filter`` select this mail?
 
     ``sender_filter`` is one or more comma-separated items, each a sender DOMAIN
@@ -1265,8 +1313,21 @@ def sender_filter_matches(sender_filter: str, headers: dict[str, str], s3_key: s
     if EMAIL_SENDER_AUTH == "off":
         header = str(headers.get("from", "")).lower()
         return any(n in header for n in needles)
+    # Only a full mailbox or a multi-label domain counts ("com", "media" or
+    # "exchange" would match every authenticated mailbox under that TLD); any
+    # other entry is ignored, and a filter of only such entries matches nothing.
+    needles = [n for n in needles if sender_shaped(n)]
     mailbox = parseaddr(str(headers.get("from", "")))[1].lower()
-    return bool(mailbox) and any(mailbox_matches(n, mailbox) for n in needles) and message_trusted(s3_key, headers)
+    matched = bool(mailbox) and any(mailbox_matches(n, mailbox) for n in needles)
+    return matched and (not require_trust or message_trusted(s3_key, headers))
+
+
+def ignored_sender_entries(sender_filter: str | None) -> list[str]:
+    """The sender_contains entries that are neither a full mailbox nor a
+    multi-label domain, which the authenticated match ignores ([] in off mode)."""
+    if not sender_filter or EMAIL_SENDER_AUTH == "off":
+        return []
+    return [n for n in _sender_needles(sender_filter) if not sender_shaped(n)]
 
 
 def include_unauthenticated() -> bool:
@@ -2470,13 +2531,18 @@ async def search_emails(
 
                         # Every search, filtered or broad, returns only mail whose
                         # sender the receiver authenticated (EMAIL_SENDER_AUTH=off: all).
-                        if not include_unauthenticated() and not message_trusted(obj["Key"], headers):
-                            unauthenticated_skipped += 1
-                            continue
-                        if sender_lower and not sender_filter_matches(sender_lower, headers, obj["Key"]):
+                        # The other filters run FIRST, so unauthenticated_skipped
+                        # counts only mail that would otherwise have matched.
+                        trusted = include_unauthenticated() or message_trusted(obj["Key"], headers)
+                        if sender_lower and not sender_filter_matches(
+                            sender_lower, headers, obj["Key"], require_trust=False
+                        ):
                             continue
 
                         if recipient_lower and recipient_lower not in recipients.lower():
+                            continue
+                        if not trusted and has_payload is None:
+                            unauthenticated_skipped += 1
                             continue
 
                         need_full = has_payload is not None or include_body_preview
@@ -2511,6 +2577,9 @@ async def search_emails(
                                 continue
                             if not has_payload and payload_count > 0:
                                 continue
+                        if not trusted:
+                            unauthenticated_skipped += 1
+                            continue
 
                         email_result = {
                             "s3_key": obj["Key"],
@@ -2899,9 +2968,9 @@ async def search_emails_fuzzy(
 
                             if _legacy_outside_window(obj["Key"], message_date, date_from_dt, date_to_dt):
                                 continue
-                            if not include_unauthenticated() and not (authenticated or trusted_legacy_key(obj["Key"])):
-                                unauthenticated_skipped += 1
-                                continue
+                            # Counted as unauthenticated_skipped only AFTER the keyword
+                            # match below: unrelated unauthenticated mail is not counted.
+                            trusted = include_unauthenticated() or authenticated or trusted_legacy_key(obj["Key"])
 
                             # Build searchable text (subject / body: substring match)
                             searchable_parts = []
@@ -2958,6 +3027,9 @@ async def search_emails_fuzzy(
                                 # At least one keyword must match
                                 if len(matches) == 0:
                                     continue
+                            if not trusted:
+                                unauthenticated_skipped += 1
+                                continue
 
                             # Calculate match score (percentage of keywords matched)
                             match_score = len(matches) / len(search_keywords)
@@ -3368,7 +3440,17 @@ async def _read_archived(url: str) -> dict[str, Any] | None:
                 except LinkDownloadTooLarge as exc:
                     spool.close()
                     if exc.batch:
-                        raise  # the BATCH budget is spent: not this copy's size
+                        # The batch's shared budget ran out (not this copy's size):
+                        # a structured refusal, never a "not archived" None.
+                        logger.error(f"Archived copy of {url} not read: the batch byte budget is spent")
+                        return {
+                            "status": "error",
+                            "source": "s3_archive",
+                            "url": url,
+                            "code": "link_batch_budget_exceeded",
+                            "error": f"{exc} The archived copy was not saved.",
+                            "retryable": False,
+                        }
                     return _archive_too_large(url, total)
                 if total > LINK_DOWNLOAD_MAX_BYTES:
                     spool.close()
@@ -3656,6 +3738,10 @@ async def _download_link_attachment(
                             history.append(streamed)
                             current = str(streamed.url.join(location))
                             continue
+                        # An error status (an expired link's 404 / 410 / 5xx) is raised
+                        # BEFORE any size check or body read: its body is never
+                        # charged, and the HTTPStatusError reaches the archive fallback.
+                        streamed.raise_for_status()
                         declared = streamed.headers.get("content-length", "")
                         if declared.isdigit() and int(declared) > min(LINK_DOWNLOAD_MAX_BYTES, _call_budget_left()):
                             raise LinkDownloadTooLarge(int(declared))

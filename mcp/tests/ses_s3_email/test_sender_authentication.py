@@ -1146,6 +1146,9 @@ def test_capability_paths_are_masked_and_tagged_with_a_short_hash():
         # Backslashes are path separators too.
         ("https://files.example\\download\\SECRET.csv", "https://files.example/\u2026/***.csv"),
         ("https://files.example\\SECRET", "https://files.example/***"),
+        # ...and so are the scheme delimiter's slashes (WHATWG accepts any mix).
+        ("https:\\\\files.example\\download\\SECRET.csv", "https://files.example/\u2026/***.csv"),
+        ("https:/\\files.example\\SECRET", "https://files.example/***"),
     ],
 )
 def test_the_last_path_segment_keeps_only_its_extension(url, shown):
@@ -1201,3 +1204,112 @@ def test_without_the_idna_package_non_ascii_domains_fail_closed(monkeypatch):
     assert inbox.authenticated_sender_domain(["amazonses.com; dkim=pass header.d=fass.de"], "R <r@faß.de>") is None
     assert not inbox.mailbox_matches("fass.de", "r@faß.de")
     assert inbox.idna_domain("Vendor.Example") == "vendor.example"
+
+
+@pytest.mark.parametrize(
+    ("sender_filter", "from_addr", "expected"),
+    [
+        ("com", "reports@ssp.com", False),  # a bare TLD never matches
+        ("media", "reports@foo.media", False),
+        ("exchange", "reporting@exchange.example", False),
+        ("ssp.example", "reports@ssp.example", True),
+        ("@ssp.example", "reports@mail.ssp.example", True),
+        ("reports@ssp.example", "reports@ssp.example", True),
+        ("com, ssp.example", "reports@ssp.example", True),  # the invalid entry is ignored
+        ("com, media", "reports@ssp.example", False),  # every entry invalid: matches nothing
+    ],
+)
+def test_sender_filter_entries_must_be_mailboxes_or_multi_label_domains(sender_filter, from_addr, expected):
+    domain = from_addr.rpartition("@")[2]
+    headers = {"from": f"Reports <{from_addr}>", "authenticated_domain": domain}
+    assert inbox.sender_filter_matches(sender_filter, headers) is expected
+
+
+def test_ignored_sender_entries_are_reported_in_search_warnings():
+    assert inbox.ignored_sender_entries("com, ssp.example, media") == ["com", "media"]
+    warnings = inbox._build_search_warnings(
+        subject_contains=None,
+        subject_keywords=None,
+        sender_contains="com,media",
+        recipient_contains=None,
+        date_from="2026-10-26",
+        date_to="2026-10-26",
+        has_payload=None,
+        max_results=5,
+    )
+    ignored = [w for w in warnings if w["code"] == "sender_filter_entries_ignored"]
+    assert ignored and "com, media" in ignored[0]["message"] and "matches nothing" in ignored[0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_unauthenticated_skips_count_only_mail_that_would_otherwise_match(monkeypatch):
+    def mail(sender, to, auth):
+        lines = [f"Authentication-Results: {auth}"] if auth else []
+        lines += [f"From: R <{sender}>", f"To: {to}", "Subject: Daily", "Date: Mon, 26 Oct 2026 10:00:00 +0000"]
+        return ("\r\n".join(lines) + "\r\n\r\nbody\r\n").encode()
+
+    objects = {
+        "emails/ok": mail(
+            "r@vendor.example", "inbox@example.com", "amazonses.com; dmarc=pass header.from=vendor.example"
+        ),
+        # Unauthenticated AND matching the filters: counted.
+        "emails/forged": mail("r@vendor.example", "inbox@example.com", None),
+        # Unauthenticated but for another sender / recipient: not counted.
+        "emails/other-sender": mail("x@other.example", "inbox@example.com", None),
+        "emails/other-rcpt": mail("r@vendor.example", "else@example.com", None),
+    }
+    monkeypatch.setattr(inbox, "session", _FakeSession(_FakeS3(objects)))
+    monkeypatch.setattr(inbox, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(inbox, "S3_PREFIX", "emails/")
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "")
+    monkeypatch.setattr(inbox, "EMAIL_SENDER_AUTH", "required")
+    result = await inbox.search_emails(
+        sender_contains="vendor.example", recipient_contains="inbox@", date_from="2026-10-26", date_to="2026-10-26"
+    )
+    assert [e["s3_key"] for e in result["emails"]] == ["emails/ok"]
+    skipped = [w for w in result["search_warnings"] if w["code"] == "unauthenticated_sender_skipped"]
+    assert skipped and skipped[0]["count"] == 1
+
+    fuzzy = await inbox.search_emails_fuzzy(
+        keywords=["vendor.example"], search_fields=["sender"], date_from="2026-10-26", date_to="2026-10-26"
+    )
+    fskipped = [w for w in fuzzy["search_warnings"] if w["code"] == "unauthenticated_sender_skipped"]
+    # forged + other-rcpt match the sender keyword; other-sender does not and is not counted.
+    assert fskipped and fskipped[0]["count"] == 2
+
+
+@pytest.mark.parametrize(
+    ("line", "secrets_", "expected"),
+    [
+        ("https://user:SECRET\\@host/path", ["SECRET"], "https://***@host/***"),
+        ("https:\\\\user:SECRET@host\\x\\SECRET2.csv", ["SECRET", "SECRET2"], "https://***@host/…/***.csv"),
+        ("https://user:pw@host/a/b.csv", ["user:pw"], "https://***@host/…/***.csv"),
+        ('https://alice:sec"ret@example.com/file', ["sec", "ret"], "https://***@example.com/***"),
+        ("https://alice:sec<ret@example.com/file", ["sec", "ret"], "https://***@example.com/***"),
+        ("https://alice:sec>ret@example.com/file", ["sec", "ret"], "https://***@example.com/***"),
+    ],
+)
+def test_userinfo_is_masked_whatever_it_contains(line, secrets_, expected):
+    out = inbox.redact_url_queries(line)
+    assert _redacted(line) == expected, out
+    for secret in secrets_:
+        assert secret not in out, (secret, out)
+    assert inbox.redact_url_queries(out) == out  # idempotent
+
+
+@pytest.mark.parametrize(
+    ("fmt", "key", "day"),
+    [
+        ("emails/%Y/%-m/%-d/", "emails/2026/10/26/abc", datetime(2026, 10, 26, tzinfo=UTC)),
+        ("emails/%Y/%-m/%-d/", "emails/2026/1/5/abc", datetime(2026, 1, 5, tzinfo=UTC)),
+        ("emails/%Y/%-m/%-d/", "emails/2026/01/05/abc", None),  # not what the format writes
+        ("emails/%Y/%B/%d/", "emails/2026/October/26/abc", datetime(2026, 10, 26, tzinfo=UTC)),
+        ("emails/%Y/%B/%d/", "emails/2026/May/05/abc", datetime(2026, 5, 5, tzinfo=UTC)),
+        ("emails/%Y/%m/%d/", "emails/2026/10/26/mailbux-1", datetime(2026, 10, 26, tzinfo=UTC)),
+        ("emails/%Y/%m/%d/", "emails/legacy/x", None),
+    ],
+)
+def test_variable_width_partition_formats_parse(monkeypatch, fmt, key, day):
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", fmt)
+    assert inbox._partition_day(key) == day
+    assert inbox._in_date_tree(key) is (day is not None)
