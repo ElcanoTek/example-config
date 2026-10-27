@@ -112,8 +112,9 @@ root:root`, written by production-support's email provisioning):
   then, by a no-follow walk). A root it did not know at startup is opened with
   no-follow on every path component; trusted system symlinks directly under
   `/` (root-owned, in a root-owned directory nobody else can write: macOS
-  `/tmp`, `/var`) are followed, so only a root under any OTHER symlinked
-  ancestor is refused: configure it before start, or by its resolved path.
+  `/tmp`, `/var`) are followed. The same rule applies at startup, so a root
+  that is, or sits under, any OTHER symlink is refused whenever it is pinned:
+  configure it by its resolved real path.
 
 Inbound must work with no outbound variables set.
 
