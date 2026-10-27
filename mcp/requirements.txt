@@ -11,7 +11,7 @@
 # unbounded pin resolves to a release on which both servers fail to START with
 # ModuleNotFoundError. Lift it only together with migrating the servers off
 # that import path; the 1.x line stays free to float.
-mcp>=1.28.1,<2
+mcp>=1.30.0,<2
 # HTTP client used by the gated example_api connector and the inbound email
 # archive's guarded link downloads
 httpx
