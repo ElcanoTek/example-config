@@ -1037,13 +1037,19 @@ def decode_email_header(header_value: str) -> str:
 
 async def fetch_email_headers(s3_client, s3_key: str) -> dict[str, str]:
     """Fetch and parse email headers only using an S3 range request."""
+    return _parse_email_headers(await _fetch_header_chunk(s3_client, s3_key))
+
+
+async def _fetch_header_chunk(s3_client, s3_key: str) -> bytes:
     response = await s3_client.get_object(
         Bucket=S3_BUCKET,
         Key=s3_key,
         Range=f"bytes=0-{HEADER_FETCH_BYTES - 1}",
     )
-    raw_chunk = await response["Body"].read()
+    return await response["Body"].read()
 
+
+def _parse_email_headers(raw_chunk: bytes) -> dict[str, str]:
     parser = BytesHeaderParser()
     msg = parser.parsebytes(raw_chunk)
 
@@ -1353,7 +1359,11 @@ async def fetch_email_headers_batch(
     objects: list[dict[str, Any]],
     max_concurrency: int,
 ) -> list[tuple[dict[str, Any], dict[str, str] | None, Exception | None]]:
-    """Fetch headers for a batch of S3 objects with bounded concurrency."""
+    """Fetch headers for a batch of S3 objects with bounded concurrency.
+
+    S3 errors (AccessDenied, throttling, an outage) propagate so the search
+    fails; only a message whose headers cannot be parsed is returned with
+    its error, to be skipped."""
     if not objects:
         return []
 
@@ -1361,10 +1371,10 @@ async def fetch_email_headers_batch(
 
     async def fetch_one(obj: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str] | None, Exception | None]:
         async with semaphore:
+            raw_chunk = await _fetch_header_chunk(s3_client, obj["Key"])
             try:
-                headers = await fetch_email_headers(s3_client, obj["Key"])
-                return obj, headers, None
-            except Exception as exc:  # noqa: BLE001
+                return obj, _parse_email_headers(raw_chunk), None
+            except Exception as exc:  # noqa: BLE001 - skip this message only
                 return obj, None, exc
 
     tasks = [fetch_one(obj) for obj in objects]
@@ -2434,6 +2444,7 @@ async def search_emails(
 
         matching_emails = []
         unauthenticated_skipped = 0
+        unauthenticated_unchecked = 0
         emails_scanned = 0
         header_fetches = 0
         full_fetches = 0
@@ -2560,6 +2571,8 @@ async def search_emails(
                             # match: with has_payload set we cannot know, so no count.
                             if has_payload is None:
                                 unauthenticated_skipped += 1
+                            else:
+                                unauthenticated_unchecked += 1
                             continue
 
                         need_full = has_payload is not None or include_body_preview
@@ -2674,6 +2687,21 @@ async def search_emails(
                         f"{unauthenticated_skipped} email(s) were left out: the receiving server did not "
                         "authenticate their sender (no DMARC / aligned SPF or DKIM pass for the From domain), so "
                         "their From header may be forged."
+                    ),
+                    "suggestion": "Do not treat those as the vendor's report. If the vendor's mail really fails "
+                    "authentication, the operator can set EMAIL_SENDER_AUTH=off (header matching) for this inbox.",
+                }
+            )
+        if unauthenticated_unchecked:
+            search_warnings.append(
+                {
+                    "code": "unauthenticated_sender_unchecked",
+                    "count": unauthenticated_unchecked,
+                    "severity": "high",
+                    "message": (
+                        f"{unauthenticated_unchecked} email(s) matched the header filters but were left out "
+                        "unopened: the receiving server did not authenticate their sender, so whether they "
+                        "carry a payload was not checked."
                     ),
                     "suggestion": "Do not treat those as the vendor's report. If the vendor's mail really fails "
                     "authentication, the operator can set EMAIL_SENDER_AUTH=off (header matching) for this inbox.",
@@ -4139,6 +4167,11 @@ def _merge_warning(warnings: list[dict[str, Any]], warning: dict[str, Any], day:
                         f"{existing['count']} email(s) were left out across {len(existing['days'])} day(s): the "
                         "receiving server did not authenticate their sender, so their From header may be forged."
                     )
+                elif code == "unauthenticated_sender_unchecked":
+                    existing["message"] = (
+                        f"{existing['count']} email(s) across {len(existing['days'])} day(s) matched the header "
+                        "filters but were left out unopened: the receiving server did not authenticate their sender."
+                    )
             return
     warnings.append({**warning, "days": [day]})
 
@@ -4229,7 +4262,17 @@ async def find_latest_report(
             for warning in result.get("search_warnings") or []:
                 _merge_warning(warnings, warning, day_iso)
             if result.get("status") != "success":
-                continue
+                # A failed day (S3 error) must not be read as "no report that
+                # day": an older match would then pass for the latest one.
+                return {
+                    "status": "error",
+                    "error": f"Search for {day_iso} failed: {result.get('error', 'unknown error')}",
+                    "failed_day": day_iso,
+                    "days_searched": days_searched,
+                    "anchor_date": anchor_date.isoformat(),
+                    "emails": collected,
+                    "search_warnings": warnings,
+                }
 
             for match in result.get("emails", []):
                 collected.append(match)

@@ -83,7 +83,9 @@ root:root`, written by production-support's email provisioning):
   sender only): a bare vendor name matches nothing. Each date partition is
   scanned in full and the newest matches kept. Each result carries
   `sender_authenticated`; skipped mail is reported as an
-  `unauthenticated_sender_skipped` warning.
+  `unauthenticated_sender_skipped` warning (with `has_payload` set, as
+  `find_latest_report` does, an `unauthenticated_sender_unchecked` warning:
+  such mail is never opened, so its payload is not checked).
   Optional knobs: `EMAIL_SENDER_AUTH=off` falls back to the forgeable
   From-substring match, fuzzy sender keywords included (every search then warns);
   `EMAIL_TRUSTED_LEGACY_PREFIXES` (comma-separated S3 key prefixes, off by

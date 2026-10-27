@@ -1448,3 +1448,61 @@ async def test_an_s3_fetch_error_fails_the_search_instead_of_returning_success(m
         sender_contains="vendor.example", has_payload=True, date_from="2026-10-26", date_to="2026-10-26"
     )
     assert result["status"] == "error" and "AccessDenied" in result["error"], result
+
+
+@pytest.mark.asyncio
+async def test_a_header_range_fetch_error_fails_the_search_too(monkeypatch):
+    from botocore.exceptions import ClientError
+
+    class DeniedS3(_FakeS3):
+        async def get_object(self, Key, **kwargs):  # noqa: N803, ARG002 - boto3's names
+            raise ClientError({"Error": {"Code": "AccessDenied", "Message": "denied"}}, "GetObject")
+
+    objects = {"emails/ok": _plain_mail("r@vendor.example", "amazonses.com; dmarc=pass header.from=vendor.example")}
+    monkeypatch.setattr(inbox, "session", _FakeSession(DeniedS3(objects)))
+    monkeypatch.setattr(inbox, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(inbox, "S3_PREFIX", "emails/")
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "")
+    monkeypatch.setattr(inbox, "EMAIL_SENDER_AUTH", "required")
+    result = await inbox.search_emails(sender_contains="vendor.example", date_from="2026-10-26", date_to="2026-10-26")
+    assert result["status"] == "error" and "AccessDenied" in result["error"], result
+
+
+@pytest.mark.asyncio
+async def test_find_latest_report_fails_on_a_failed_day_instead_of_returning_an_older_report(monkeypatch):
+    days = iter(
+        [
+            {"status": "error", "error": "AccessDenied"},
+            {"status": "success", "emails": [{"s3_key": "emails/older"}], "search_warnings": []},
+        ]
+    )
+
+    async def day_search(**kwargs):
+        return next(days)
+
+    monkeypatch.setattr(inbox, "search_emails", day_search)
+    result = await inbox.find_latest_report(
+        sender_contains="vendor.example", on_or_before="2026-10-26", lookback_days=2
+    )
+    assert result["status"] == "error" and result["failed_day"] == "2026-10-26", result
+    assert "AccessDenied" in result["error"] and result["emails"] == []
+
+
+@pytest.mark.asyncio
+async def test_untrusted_candidates_under_has_payload_get_their_own_warning(monkeypatch):
+    objects = {
+        "emails/ok": _plain_mail("r@vendor.example", "amazonses.com; dmarc=pass header.from=vendor.example"),
+        "emails/forged": _plain_mail("r@vendor.example", None),
+    }
+    s3 = _CountingS3(objects)
+    monkeypatch.setattr(inbox, "session", _FakeSession(s3))
+    monkeypatch.setattr(inbox, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(inbox, "S3_PREFIX", "emails/")
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "")
+    monkeypatch.setattr(inbox, "EMAIL_SENDER_AUTH", "required")
+    result = await inbox.search_emails(
+        sender_contains="vendor.example", has_payload=True, date_from="2026-10-26", date_to="2026-10-26"
+    )
+    assert "emails/forged" not in s3.full_reads
+    unchecked = [w for w in result["search_warnings"] if w["code"] == "unauthenticated_sender_unchecked"]
+    assert unchecked and unchecked[0]["count"] == 1, result["search_warnings"]
