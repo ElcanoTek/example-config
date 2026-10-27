@@ -415,6 +415,36 @@ mcp_servers:
       - list_input_files
       - get_options
 
+  # explorer: this deployment's own Elcano Explorer (ElcanoTek/explorer
+  #   docs/API.md), which searches the SES email archive in S3. HTTP MCP; dark
+  #   until BOTH variables below are set in fleet's env. The default is
+  #   `explorer.invalid`, a reserved name that never resolves: fleet needs a
+  #   non-empty url to load the bundle, and an unset URL must never fall back to
+  #   another organisation's Explorer. EXPLORER_MCP_URL is
+  #   https://<this deployment's Explorer host>/mcp and EXPLORER_API_TOKEN is a
+  #   token minted on that host with `explorer token create --label
+  #   fleet-<deployment>` (scope email:search: read-only searches; Explorer
+  #   stores only its hash). Results carry the s3_key the `email` server's
+  #   get_email / download_attachment / extract_download_links /
+  #   download_link_attachment take. Only mail whose sender the receiver
+  #   authenticated is returned (Explorer's EMAIL_SENDER_AUTH, default required);
+  #   skipped mail is reported in search_warnings.
+  - name: explorer
+    optional: true
+    enabled_by_default: true
+    display_name: "Explorer email search"
+    description: "Search the inbound email archive for report emails by sender, subject and date with Elcano Explorer; read and download them with the Email Reports tools."
+    category: data-storage
+    type: http
+    url: "${EXPLORER_MCP_URL:-https://explorer.invalid/mcp}"
+    enabled_env: ["EXPLORER_MCP_URL", "EXPLORER_API_TOKEN"]
+    headers:
+      Authorization: "Bearer ${EXPLORER_API_TOKEN}"
+    tools:
+      - search_emails
+      - search_emails_fuzzy
+      - find_latest_report
+
   # 5) email — inbound email reports that Amazon SES deposits in this
   #    deployment's isolated S3 bucket (one SES/S3 email tenant per client).
   #    Independent of outbound email: this connector lights up when
@@ -430,7 +460,7 @@ mcp_servers:
     optional: true
     enabled_by_default: true
     display_name: "Email Reports"
-    description: "Search and read inbound email reports stored by Amazon SES in this deployment's S3 archive."
+    description: "Read inbound email reports stored by Amazon SES in this deployment's S3 archive, and download their attachments and links (find them with the Explorer search tools)."
     category: data-storage
     type: stdio
     command: python3
@@ -442,8 +472,6 @@ mcp_servers:
     env:
       EMAIL_S3_BUCKET: "${EMAIL_S3_BUCKET}"
       EMAIL_S3_PREFIX: "${EMAIL_S3_PREFIX:-emails/}"
-      EMAIL_S3_DATE_PREFIX_FORMAT: "${EMAIL_S3_DATE_PREFIX_FORMAT:-emails/%Y/%m/%d/}"
-      EMAIL_S3_MAX_DATE_PREFIX_DAYS: "${EMAIL_S3_MAX_DATE_PREFIX_DAYS:-62}"
       EMAIL_S3_ARCHIVE_PREFIX: "${EMAIL_S3_ARCHIVE_PREFIX:-emails/attachments/}"
       AWS_ACCESS_KEY_ID: "${EMAIL_AWS_ACCESS_KEY_ID}"
       AWS_SECRET_ACCESS_KEY: "${EMAIL_AWS_SECRET_ACCESS_KEY}"
@@ -456,22 +484,11 @@ mcp_servers:
       # dir and a non-bundle cwd; it always refuses the bundle checkout.
       EMAIL_ALLOWED_DIRS: "${FLEET_WORKSPACE_ROOT}"
       EMAIL_LAST_CHECK_FILE: "${FLEET_WORKSPACE}/email_last_checked.txt"
-      EMAIL_HEADER_FETCH_BYTES: "${EMAIL_HEADER_FETCH_BYTES}"
-      EMAIL_SEARCH_HEADER_FETCH_CONCURRENCY: "${EMAIL_SEARCH_HEADER_FETCH_CONCURRENCY}"
-      EMAIL_SEARCH_PROGRESS_EVERY: "${EMAIL_SEARCH_PROGRESS_EVERY}"
-      EMAIL_SEARCH_KEY_LOG_EVERY: "${EMAIL_SEARCH_KEY_LOG_EVERY}"
       EMAIL_DEBUG_LOG_FILE: "${EMAIL_DEBUG_LOG_FILE}"
-      # sender_contains selects only mail the receiver (SES inbound, authserv-id
-      # amazonses.com) authenticated: DMARC pass or aligned SPF/DKIM pass in its
-      # topmost Authentication-Results. EMAIL_SENDER_AUTH=off is the legacy
-      # From-substring match, for an inbox whose vendor mail fails authentication
-      # (each search then warns). Link downloads are capped at
+      # Searching (and its sender-authentication rules: EMAIL_SENDER_AUTH,
+      # EMAIL_TRUSTED_LEGACY_PREFIXES) moved to the `explorer` server; this
+      # server reads and downloads by s3_key. Link downloads are capped at
       # EMAIL_LINK_MAX_BYTES (default 200 MB) and EMAIL_LINK_MAX_SECONDS (240).
-      EMAIL_SENDER_AUTH: "${EMAIL_SENDER_AUTH}"
-      # Off by default: comma-separated S3 key prefixes of operator-imported legacy
-      # mail (no SES Authentication-Results) to treat as a pre-authenticated archive.
-      EMAIL_TRUSTED_LEGACY_PREFIXES: "${EMAIL_TRUSTED_LEGACY_PREFIXES}"
-      EMAIL_AUTHSERV_ID: "${EMAIL_AUTHSERV_ID}"
       EMAIL_LINK_MAX_BYTES: "${EMAIL_LINK_MAX_BYTES}"
       EMAIL_LINK_MAX_SECONDS: "${EMAIL_LINK_MAX_SECONDS}"
       # download_all_link_attachments: at most this many links (default 20), 3 at a
@@ -483,9 +500,6 @@ mcp_servers:
       # found there, the response is saved as the file, under EMAIL_LINK_MAX_BYTES.
       EMAIL_LINK_HTML_SCAN_MAX_BYTES: "${EMAIL_LINK_HTML_SCAN_MAX_BYTES}"
     optional_env:
-      - EMAIL_SENDER_AUTH
-      - EMAIL_TRUSTED_LEGACY_PREFIXES
-      - EMAIL_AUTHSERV_ID
       - EMAIL_LINK_MAX_BYTES
       - EMAIL_LINK_MAX_SECONDS
       - EMAIL_LINK_MAX_COUNT
@@ -498,10 +512,6 @@ mcp_servers:
       - EMAIL_ATTACHMENT_DIR
       - EMAIL_ALLOWED_DIRS
       - EMAIL_LAST_CHECK_FILE
-      - EMAIL_HEADER_FETCH_BYTES
-      - EMAIL_SEARCH_HEADER_FETCH_CONCURRENCY
-      - EMAIL_SEARCH_PROGRESS_EVERY
-      - EMAIL_SEARCH_KEY_LOG_EVERY
       - EMAIL_DEBUG_LOG_FILE
 
   # 6) ses_outbound — outbound only. Dark until the dedicated, send-only
@@ -805,13 +815,13 @@ agent_policy:
     - mcp_example_api_api_list_records
     # SES/S3 email reads follow Victoria's read-only report workflow. Download
     # tools only materialize files into fleet's managed workspace.
-    - mcp_email_search_emails
-    - mcp_email_search_emails_fuzzy
+    - mcp_explorer_search_emails
+    - mcp_explorer_search_emails_fuzzy
     - mcp_email_get_email
     - mcp_email_download_attachment
     - mcp_email_download_link_attachment
     - mcp_email_extract_download_links
-    - mcp_email_find_latest_report
+    - mcp_explorer_find_latest_report
     - mcp_email_list_archived_attachments
     # render_email only writes a uniquely named HTML file into the agent's own
     # working directory; nothing leaves the host until send_email is approved.

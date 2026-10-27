@@ -235,10 +235,11 @@ everything else, and the four connectors of the standard Elcano client stack.
 | `example_api` | `enabled_env: [EXAMPLE_API_KEY]` | brokered host-side | The **gated connector** pattern — listed as **Needs setup** and never launched until the key is set. |
 | `pages` | `enabled_env: [PAGES_MCP_URL, PAGES_API_TOKEN]` | token in the header, host-side | Build, publish and refresh dashboards on the deployment's own Pages. Page changes wait for approval; data refreshes (`update_page_data`, `update_page_data_upload`) run at once and post a card (`critical_tool_modes: notify`). |
 | `lens` | `enabled_env: [LENS_MCP_URL, LENS_API_TOKEN]` | token in the header, host-side | Classify sites, apps and CTV apps into quality tiers on the deployment's own Lens. Starting or cancelling a job needs approval. |
-| `email` | `enabled_env: [EMAIL_S3_BUCKET]` | read-only IAM user, host-side | Search and read inbound report mail that SES stores in the client's S3 bucket. Only mail SES authenticated (DMARC / aligned SPF or DKIM) is returned; `sender_contains` takes sender domains or addresses and matches the authenticated mailbox, not From text; link downloads (single and batch) are size-, count- and time-capped. |
+| `explorer` | `enabled_env: [EXPLORER_MCP_URL, EXPLORER_API_TOKEN]` | token in the header, host-side | Search the inbound email archive on the deployment's own Explorer (`search_emails`, `search_emails_fuzzy`, `find_latest_report`). Only mail SES authenticated (DMARC / aligned SPF or DKIM) is returned; `sender_contains` takes sender domains or addresses and matches the authenticated mailbox, not From text. |
+| `email` | `enabled_env: [EMAIL_S3_BUCKET]` | read-only IAM user, host-side | Read inbound report mail that SES stores in the client's S3 bucket by `s3_key` (from an Explorer search), and download its attachments and links; link downloads (single and batch) are size-, count- and time-capped. |
 | `ses_outbound` | `enabled_env: [SES_OUTBOUND_AWS_ACCESS_KEY_ID, …SECRET_ACCESS_KEY, SES_OUTBOUND_FROM_EMAIL]` | send-only IAM user, host-side | Render and send audited email as the client's sender. Every `send_email` needs approval; unlisted recipients are refused unless `SES_OUTBOUND_ALLOW_UNLISTED_RECIPIENTS=true`. |
 
-The Lens and Pages entries default their `url` to a reserved `.invalid` host:
+The Lens, Explorer and Pages entries default their `url` to a reserved `.invalid` host:
 fleet needs a non-empty URL to load the bundle, and an unset one must never
 reach another organisation's box. The email host variables are unprefixed
 (`EMAIL_*`, `SES_OUTBOUND_*`) because one fleet box serves one client; the

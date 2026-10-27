@@ -71,27 +71,17 @@ root:root`, written by production-support's email provisioning):
 
 - Inbound: `EMAIL_S3_BUCKET`, `EMAIL_AWS_ACCESS_KEY_ID`,
   `EMAIL_AWS_SECRET_ACCESS_KEY` (optional `EMAIL_AWS_REGION`).
-  Searches return only mail SES inbound authenticated, read from its own
-  `Authentication-Results`. That means a DMARC pass, or (only when DMARC is
-  absent or `none`; a DMARC fail is final) an SPF / DKIM pass for exactly the From
-  domain; a subdomain, parent or sibling domain counts only through SES's own
-  `dmarc=pass`, so a vendor without DMARC that signs from a subdomain is
-  skipped unless `EMAIL_SENDER_AUTH=off`. `sender_contains` takes the sender's DOMAIN (matching it
-  and its subdomains on label boundaries) or a full address, several
-  comma-separated, and matches the authenticated mailbox, never the display
-  name (fuzzy sender keywords too; a domain-shaped fuzzy keyword matches the
-  sender only): a bare vendor name matches nothing. Each date partition is
-  scanned in full and the newest matches kept. Each result carries
-  `sender_authenticated`; skipped mail is reported as an
-  `unauthenticated_sender_skipped` warning (with `has_payload` set, as
-  `find_latest_report` does, an `unauthenticated_sender_unchecked` warning:
-  such mail is never opened, so its payload is not checked).
-  Optional knobs: `EMAIL_SENDER_AUTH=off` falls back to the forgeable
-  From-substring match, fuzzy sender keywords included (every search then warns);
-  `EMAIL_TRUSTED_LEGACY_PREFIXES` (comma-separated S3 key prefixes, off by
-  default) admits operator-imported legacy mail that has no
-  `Authentication-Results` (mail in the dated tree is windowed by a valid Date header on its partition's own day, else by the partition day); `EMAIL_AUTHSERV_ID` (default `amazonses.com`) names
-  the receiver. Email-link download limits:
+  This server reads and downloads by `s3_key`. Searching moved to the
+  `explorer` connector (Elcano Explorer's MCP server; host variables
+  `EXPLORER_MCP_URL` and `EXPLORER_API_TOKEN`, the token minted on the
+  Explorer host with `explorer token create`). Explorer returns only mail SES
+  inbound authenticated (DMARC, or an SPF / DKIM pass for exactly the From
+  domain), matches `sender_contains` against the authenticated mailbox, never
+  the display name, and reports skipped mail in `search_warnings`
+  (`unauthenticated_sender_skipped` / `_unchecked`). Its sender settings
+  (`EMAIL_SENDER_AUTH`, `EMAIL_TRUSTED_LEGACY_PREFIXES`, `EMAIL_AUTHSERV_ID`)
+  are set on the Explorer host; see ElcanoTek/explorer `docs/API.md`.
+  Email-link download limits:
   `EMAIL_LINK_MAX_BYTES` (200 MB per file) and `EMAIL_LINK_MAX_SECONDS` (240 s)
   cap each download, every redirect hop and the archive fallback (which gets at
   most 30 s or a quarter of the deadline) included;
