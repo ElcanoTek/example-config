@@ -14,7 +14,9 @@ Names, identifiers and where secrets are kept only. **No secret values.**
 
 | Item | Value |
 |---|---|
-| Client / slug | |
+| Client / short name / slug | |
+| Website / LinkedIn | |
+| Brand assets sent (mark SVG, hex colours) | |
 | Client domain | |
 | Pages content domain | |
 | Vultr region | |
@@ -24,6 +26,7 @@ Names, identifiers and where secrets are kept only. **No secret values.**
 | Email: root domain or `reports.` subdomain | |
 | Email: sender / reply-to / recipient policy | |
 | Email: history to migrate? | |
+| Solution engineer | |
 | Secrets stored in | (password manager vault / item names) |
 
 ## Inventory
