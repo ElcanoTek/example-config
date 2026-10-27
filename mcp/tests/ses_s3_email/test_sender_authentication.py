@@ -1526,3 +1526,50 @@ async def test_a_fuzzy_search_s3_fetch_error_fails_the_search(monkeypatch):
         keywords=["daily"], search_fields=["subject", "body"], date_from="2026-10-26", date_to="2026-10-26"
     )
     assert result["status"] == "error" and "AccessDenied" in result["error"], result
+
+
+@pytest.mark.asyncio
+async def test_an_empty_object_is_skipped_not_fatal(monkeypatch):
+    from botocore.exceptions import ClientError
+
+    class EmptyObjectS3(_FakeS3):
+        async def get_object(self, Key, **kwargs):  # noqa: N803 - boto3's names
+            if Key == "emails/empty":
+                raise ClientError({"Error": {"Code": "InvalidRange", "Message": "empty"}}, "GetObject")
+            return await super().get_object(Key=Key, **kwargs)
+
+    objects = {
+        "emails/ok": _plain_mail("r@vendor.example", "amazonses.com; dmarc=pass header.from=vendor.example"),
+        "emails/empty": b"",
+    }
+    monkeypatch.setattr(inbox, "session", _FakeSession(EmptyObjectS3(objects)))
+    monkeypatch.setattr(inbox, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(inbox, "S3_PREFIX", "emails/")
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "")
+    monkeypatch.setattr(inbox, "EMAIL_SENDER_AUTH", "required")
+    result = await inbox.search_emails(sender_contains="vendor.example", date_from="2026-10-26", date_to="2026-10-26")
+    assert result["status"] == "success", result
+    assert [e["s3_key"] for e in result["emails"]] == ["emails/ok"]
+    fuzzy = await inbox.search_emails_fuzzy(
+        keywords=["daily"], search_fields=["subject", "body"], date_from="2026-10-26", date_to="2026-10-26"
+    )
+    assert fuzzy["status"] == "success" and [e["s3_key"] for e in fuzzy["emails"]] == ["emails/ok"], fuzzy
+
+
+@pytest.mark.asyncio
+async def test_a_failed_header_fetch_leaves_no_sibling_running(monkeypatch):
+    from botocore.exceptions import ClientError
+
+    calls: list[str] = []
+
+    class FakeClient:
+        async def get_object(self, Key, **kwargs):  # noqa: N803, ARG002 - boto3's names
+            calls.append(Key)
+            if Key == "k0":
+                raise ClientError({"Error": {"Code": "SlowDown", "Message": "throttled"}}, "GetObject")
+            raise AssertionError("not reached once the batch failed")
+
+    objects = [{"Key": f"k{i}"} for i in range(5)]
+    with pytest.raises(ClientError):
+        await inbox.fetch_email_headers_batch(FakeClient(), objects, 1)
+    assert calls == ["k0"]  # queued fetches never start after the failure

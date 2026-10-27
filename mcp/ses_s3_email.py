@@ -1362,24 +1362,40 @@ async def fetch_email_headers_batch(
 ) -> list[tuple[dict[str, Any], dict[str, str] | None, Exception | None]]:
     """Fetch headers for a batch of S3 objects with bounded concurrency.
 
-    S3 errors (AccessDenied, throttling, an outage) propagate so the search
-    fails; only a message whose headers cannot be parsed is returned with
-    its error, to be skipped."""
+    S3 errors (AccessDenied, throttling, an outage) fail the search, raised
+    only once every fetch of the batch has finished, so none is left running
+    against a closing client. A message that cannot be read as an email (an
+    empty object: InvalidRange; unparseable headers) is returned with its
+    error, to be skipped."""
     if not objects:
         return []
 
     semaphore = asyncio.Semaphore(max(1, max_concurrency))
+    fatal: list[Exception] = []
 
     async def fetch_one(obj: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str] | None, Exception | None]:
         async with semaphore:
-            raw_chunk = await _fetch_header_chunk(s3_client, obj["Key"])
+            if fatal:
+                return obj, None, fatal[0]
+            try:
+                raw_chunk = await _fetch_header_chunk(s3_client, obj["Key"])
+            except ClientError as exc:
+                if exc.response.get("Error", {}).get("Code") == "InvalidRange":
+                    return obj, None, exc
+                fatal.append(exc)
+                return obj, None, exc
+            except Exception as exc:  # noqa: BLE001 - raised below, after the batch
+                fatal.append(exc)
+                return obj, None, exc
             try:
                 return obj, _parse_email_headers(raw_chunk), None
             except Exception as exc:  # noqa: BLE001 - skip this message only
                 return obj, None, exc
 
-    tasks = [fetch_one(obj) for obj in objects]
-    return await asyncio.gather(*tasks)
+    results = await asyncio.gather(*(fetch_one(obj) for obj in objects))
+    if fatal:
+        raise fatal[0]
+    return results
 
 
 async def get_last_checked_timestamp() -> datetime:
@@ -3121,8 +3137,16 @@ async def search_emails_fuzzy(
                                     matching_emails.sort(key=lambda x: (x["match_score"], x["_sort_at"]), reverse=True)
                                     del matching_emails[max_results:]
 
-                        except (ClientError, BotoCoreError):
-                            raise  # an S3 failure fails the search; only a bad message is skipped
+                        except ClientError as e:
+                            # An S3 failure fails the search; an empty object (InvalidRange)
+                            # is a bad message, skipped like any other.
+                            if e.response.get("Error", {}).get("Code") != "InvalidRange":
+                                raise
+                            parse_errors += 1
+                            logger.warning(f"Failed to parse email {obj['Key']}: {e}")
+                            continue
+                        except BotoCoreError:
+                            raise
                         except Exception as e:
                             parse_errors += 1
                             logger.warning(f"Failed to parse email {obj['Key']}: {e}")
