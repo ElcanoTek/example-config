@@ -475,9 +475,13 @@ mcp_servers:
       EMAIL_LINK_MAX_BYTES: "${EMAIL_LINK_MAX_BYTES}"
       EMAIL_LINK_MAX_SECONDS: "${EMAIL_LINK_MAX_SECONDS}"
       # download_all_link_attachments: at most this many links (default 20), 3 at a
-      # time, sharing one byte budget (default 200 MB).
+      # time, sharing one byte budget (default 1 GB; each file stays under 200 MB).
       EMAIL_LINK_MAX_COUNT: "${EMAIL_LINK_MAX_COUNT}"
       EMAIL_LINK_BATCH_MAX_BYTES: "${EMAIL_LINK_BATCH_MAX_BYTES}"
+      # How much of an HTML click-tracker page is scanned for its real download
+      # link (default 10 MB). Never a download limit: a larger HTML response is
+      # saved as the file, under EMAIL_LINK_MAX_BYTES.
+      EMAIL_LINK_HTML_SCAN_MAX_BYTES: "${EMAIL_LINK_HTML_SCAN_MAX_BYTES}"
     optional_env:
       - EMAIL_SENDER_AUTH
       - EMAIL_TRUSTED_LEGACY_PREFIXES
@@ -486,6 +490,7 @@ mcp_servers:
       - EMAIL_LINK_MAX_SECONDS
       - EMAIL_LINK_MAX_COUNT
       - EMAIL_LINK_BATCH_MAX_BYTES
+      - EMAIL_LINK_HTML_SCAN_MAX_BYTES
       - AWS_ACCESS_KEY_ID
       - AWS_SECRET_ACCESS_KEY
       - AWS_SESSION_TOKEN

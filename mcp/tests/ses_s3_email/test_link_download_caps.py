@@ -252,8 +252,9 @@ async def test_a_batch_is_bounded_in_count_and_shares_one_byte_budget(dest, monk
     result = await ses_s3_email.download_all_link_attachments("emails/k", output_dir=str(dest))
     assert running["max"] <= ses_s3_email.LINK_BATCH_CONCURRENCY
     assert result["downloaded_count"] == 5  # 5 x 400 bytes fit the 2000-byte budget
-    assert result["error_count"] == 25  # 15 over budget + 10 over the link count
-    assert sum("at most 20 links" in e["error"] for e in result["errors"]) == 10
+    assert result["error_count"] == 15  # over budget; links over the count are summarized
+    assert result["skipped_count"] == 10 and "at most 20 links" in result["skipped_reason"]
+    assert result["skipped_sample"] == [f"https://reports.example.com/{i}.csv" for i in range(20, 25)]
 
 
 @respx.mock
@@ -482,3 +483,95 @@ async def test_each_call_gets_a_fresh_budget(dest):
         result = await ses_s3_email.download_link_attachment(url=URL, output_dir=str(dest))
         assert result["status"] == "success", result
     assert ses_s3_email._CALL_BUDGET.get() is None
+
+
+def test_a_chunk_crossing_the_call_cap_is_still_charged_to_the_batch():
+    batch = [10_000]
+    call = [100]
+    b_token = ses_s3_email._BATCH_BUDGET.set(batch)
+    c_token = ses_s3_email._CALL_BUDGET.set(call)
+    try:
+        with pytest.raises(ses_s3_email.LinkDownloadTooLarge):
+            ses_s3_email._charge_batch_budget(150)
+    finally:
+        ses_s3_email._CALL_BUDGET.reset(c_token)
+        ses_s3_email._BATCH_BUDGET.reset(b_token)
+    assert call == [-50]
+    assert batch == [10_000 - 150]  # the received bytes count against the batch too
+
+
+@respx.mock
+async def test_an_oversized_html_interstitial_is_not_decoded_or_chased(dest, monkeypatch):
+    monkeypatch.setattr(ses_s3_email, "LINK_HTML_SCAN_MAX_BYTES", 200)
+    tracker = "https://click.example.com/ls/click?upn=abc"
+    page = b'<html><a href="https://reports.example.com/report.csv">Download</a></html>' + b" " * 400
+    respx.get(tracker).mock(return_value=httpx.Response(200, content=page, headers={"content-type": "text/html"}))
+    chased = respx.get(URL).mock(return_value=httpx.Response(200, content=b"a,b\n"))
+    result = await ses_s3_email.download_link_attachment(url=tracker, output_dir=str(dest))
+    assert not chased.called
+    assert "chased_to" not in result
+
+
+@respx.mock
+async def test_a_small_html_interstitial_is_still_chased(dest, monkeypatch):
+    monkeypatch.setattr(ses_s3_email, "LINK_HTML_SCAN_MAX_BYTES", 2000)
+    tracker = "https://click.example.com/ls/click?upn=abc"
+    page = b'<html><a href="https://reports.example.com/report.csv">Download</a></html>'
+    respx.get(tracker).mock(return_value=httpx.Response(200, content=page, headers={"content-type": "text/html"}))
+    respx.get(URL).mock(return_value=httpx.Response(200, content=b"a,b\n", headers={"content-type": "text/csv"}))
+    result = await ses_s3_email.download_link_attachment(url=tracker, output_dir=str(dest))
+    assert result["status"] == "success" and result.get("chased_to") == URL, result
+
+
+async def test_skipped_links_are_a_count_and_a_small_redacted_sample(dest, monkeypatch):
+    links = [{"url": f"https://reports.example.com/{i}.csv?token=secret{i}"} for i in range(5000)]
+
+    async def extract(*_a, **_k):
+        return {"status": "success", "links": links, "subject": "s", "total_links_found": len(links)}
+
+    async def one(url, output_dir=None, timeout_seconds=120):
+        return {"status": "error", "error": "x"}
+
+    monkeypatch.setattr(ses_s3_email, "extract_download_links", extract)
+    monkeypatch.setattr(ses_s3_email, "download_link_attachment", one)
+    monkeypatch.setattr(ses_s3_email, "LINK_BATCH_MAX_COUNT", 3)
+    result = await ses_s3_email.download_all_link_attachments("emails/k", output_dir=str(dest))
+    assert result["skipped_count"] == 4997
+    assert len(result["skipped_sample"]) == 5
+    assert all(u.endswith("?***") for u in result["skipped_sample"])
+    assert len(result["errors"]) == 3  # only the attempted links
+    assert "secret" not in str(result["skipped_sample"])
+
+
+@respx.mock
+async def test_a_15_mb_html_report_downloads_without_a_chase(dest, monkeypatch):
+    """The scan cap (10 MB default) only skips the chase: the file still downloads."""
+    monkeypatch.setattr(ses_s3_email, "LINK_DOWNLOAD_MAX_BYTES", 200 * 1024 * 1024)
+    assert ses_s3_email.LINK_HTML_SCAN_MAX_BYTES == 10 * 1024 * 1024
+    tracker = "https://click.example.com/ls/click?upn=abc"
+    head = b'<html><a href="https://reports.example.com/report.csv">Download</a>'
+    page = head + b"x" * (15 * 1024 * 1024 - len(head))
+    respx.get(tracker).mock(return_value=httpx.Response(200, content=page, headers={"content-type": "text/html"}))
+    chased = respx.get(URL).mock(return_value=httpx.Response(200, content=b"a,b\n"))
+    result = await ses_s3_email.download_link_attachment(url=tracker, output_dir=str(dest))
+    assert result["status"] == "success", result
+    assert result["size_bytes"] == len(page)
+    assert not chased.called and "chased_to" not in result
+
+
+@pytest.mark.skipif(
+    bool(
+        __import__("os").environ.get("EMAIL_LINK_BATCH_MAX_BYTES")
+        or __import__("os").environ.get("EMAIL_LINK_MAX_BYTES")
+    ),
+    reason="caps overridden in this environment",
+)
+def test_default_caps_fit_several_large_reports_per_batch():
+    assert ses_s3_email.LINK_DOWNLOAD_MAX_BYTES == 200 * 1024 * 1024
+    assert ses_s3_email.LINK_BATCH_MAX_BYTES == 1024 * 1024 * 1024
+    token = ses_s3_email._BATCH_BUDGET.set([ses_s3_email.LINK_BATCH_MAX_BYTES])
+    try:
+        for _ in range(3):  # three 150 MB reports fit one batch
+            ses_s3_email._charge_batch_budget(150 * 1024 * 1024)
+    finally:
+        ses_s3_email._BATCH_BUDGET.reset(token)

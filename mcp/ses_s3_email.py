@@ -69,31 +69,43 @@ logger = logging.getLogger(__name__)
 # presigned S3 / report links carry their credential (X-Amz-Signature,
 # token=...) there, under arbitrary names, no name at all, or AS the name
 # (?eyJhbGciOi...=), so no part of either is kept. Only scheme://host/path
-# survives, with any userinfo masked too. An apostrophe ends neither the path
-# (https://host/o'clock?token=...) nor the query: over-redacting a closing
-# quote beats leaking a token.
-_URL_QUERY_RE = re.compile(r"(https?://[^\s?#\"<>]+)([?#][^\s\"<>]*)", re.IGNORECASE)
+# survives, with any userinfo masked too.
+#
+# Structural, not one regex per part: each URL candidate (scheme to the next
+# whitespace, quote-mark " or angle bracket) is split by the URL grammar
+# itself. The authority ends at the first "/", "?" or "#"; everything before
+# its LAST "@" is userinfo (any characters: non-ASCII, apostrophes, ...); the
+# query / fragment start at the first "?" / "#" after it. An apostrophe ends
+# nothing: over-redacting a closing quote beats leaking a token.
+_URL_CANDIDATE_RE = re.compile(r"https?://[^\s\"<>]+", re.IGNORECASE)
 
 
-def _mask_query(rest: str) -> str:
-    """``rest`` starts with "?" or "#": the query, then the fragment, each fully masked."""
-    out = "?***" if rest.startswith("?") else ""
-    if "#" in rest:
-        out += "#***"
-    return out
-
-
-# RFC 3986 userinfo: unreserved / pct-encoded / sub-delims (incl. ' ( ) * + , ; =)
-# / ":", up to the "@" that ends it. None of those characters is "/", "?" or "#",
-# so the match never leaves the authority.
-_URL_USERINFO_RE = re.compile(r"(https?://)[A-Za-z0-9\-._~%!$&'()*+,;=:]+@", re.IGNORECASE)
+def _redact_one_url(url: str) -> str:
+    scheme, sep, rest = url.partition("://")
+    if not sep:
+        return url
+    cut = len(rest)
+    for delimiter in "/?#":
+        index = rest.find(delimiter)
+        if index != -1:
+            cut = min(cut, index)
+    authority, tail = rest[:cut], rest[cut:]
+    if "@" in authority:
+        authority = "***@" + authority.rpartition("@")[2]
+    query_at = min((i for i in (tail.find("?"), tail.find("#")) if i != -1), default=-1)
+    if query_at != -1:
+        path, rest_q = tail[:query_at], tail[query_at:]
+        masked = "?***" if rest_q.startswith("?") else ""
+        if "#" in rest_q:
+            masked += "#***"
+        tail = path + masked
+    return f"{scheme}://{authority}{tail}"
 
 
 def redact_url_queries(text: str) -> str:
     """Mask URL credentials in a log line: userinfo (https://user:pass@host ->
-    https://***@host), every query component and every fragment component."""
-    text = _URL_USERINFO_RE.sub(r"\1***@", text)
-    return _URL_QUERY_RE.sub(lambda m: m.group(1) + _mask_query(m.group(2)), text)
+    https://***@host), the whole query and the whole fragment."""
+    return _URL_CANDIDATE_RE.sub(lambda m: _redact_one_url(m.group(0)), text)
 
 
 class _RedactUrlQueries(logging.Filter):
@@ -183,11 +195,13 @@ def _open_private_log(path: str, *, parent_real: str | None = None) -> IO[str]:
     nor any directory above it — and return a stream on THAT descriptor: the
     handler writes to it and never reopens the path by name.
 
-    The parent is resolved once (operator config, at startup; ``parent_real``)
-    and then reached by a no-follow walk; the file is opened relative to that
-    directory descriptor. A parent owned by another user is refused, and so is
-    an existing log file owned by another user or hard-linked elsewhere."""
-    parent = parent_real or os.path.realpath(os.path.dirname(os.path.abspath(path)))
+    The configured parent is never realpath()ed: it is reached from "/" one
+    component at a time without following any symlink (a planted parent
+    symlink is refused, not resolved), unless the caller passes an already
+    resolved ``parent_real``; the file is opened relative to that directory
+    descriptor. A parent owned by another user is refused, and so is an
+    existing log file owned by another user or hard-linked elsewhere."""
+    parent = parent_real or os.path.dirname(os.path.abspath(path))
     dir_fd = _open_dir_nofollow(parent)
     try:
         dst = os.fstat(dir_fd)
@@ -1052,9 +1066,12 @@ def _sender_needles(sender_filter: str) -> list[str]:
     return needles
 
 
-# A fuzzy keyword shaped like a sender: an address ("a@b") or a dotted domain
-# ("vendor.example"): letters/digits/hyphens on both sides of a dot.
-_SENDER_SHAPED_KEYWORD_RE = re.compile(r"@|^[a-z0-9-]+(\.[a-z0-9-]+)+$", re.IGNORECASE)
+# A fuzzy keyword shaped like a sender: the WHOLE keyword is a mailbox
+# ("reports@vendor.example", "@vendor.example") or a domain name (two or more
+# LDH labels, alphabetic TLD: "vendor.example"). "version 2.0", "2.0" or
+# "report @ 10am" are not, and keep matching subject / body text.
+_DOMAIN_PATTERN = r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}"
+_SENDER_SHAPED_KEYWORD_RE = re.compile(rf"^(?:[^@\s]*@)?{_DOMAIN_PATTERN}$", re.IGNORECASE)
 
 
 def mailbox_matches(needle: str, mailbox: str) -> bool:
@@ -2759,7 +2776,7 @@ async def search_emails_fuzzy(
                                 for original, normalized in keyword_pairs
                                 if _sender_hit(normalized)
                                 or (
-                                    not (sender_bound and _SENDER_SHAPED_KEYWORD_RE.search(normalized.strip()))
+                                    not (sender_bound and _SENDER_SHAPED_KEYWORD_RE.fullmatch(normalized.strip()))
                                     and normalized in searchable_text
                                 )
                             ]
@@ -3200,6 +3217,10 @@ async def _read_archived(url: str) -> dict[str, Any] | None:
 LINK_DOWNLOAD_MAX_BYTES = int(os.environ.get("EMAIL_LINK_MAX_BYTES", "") or 200 * 1024 * 1024)
 LINK_DOWNLOAD_MAX_SECONDS = int(os.environ.get("EMAIL_LINK_MAX_SECONDS", "") or 240)
 LINK_DOWNLOAD_MAX_REDIRECTS = 10
+# How much of an HTML response is decoded and scanned for a chase target
+# (default 10 MB). It never limits a download: a larger HTML response is not
+# chased and is saved as the downloaded file, under EMAIL_LINK_MAX_BYTES.
+LINK_HTML_SCAN_MAX_BYTES = int(os.environ.get("EMAIL_LINK_HTML_SCAN_MAX_BYTES", "") or 10 * 1024 * 1024)
 
 
 # A batch (download_all_link_attachments) shares ONE byte budget across its
@@ -3207,7 +3228,10 @@ LINK_DOWNLOAD_MAX_REDIRECTS = 10
 # charge the same counter.
 LINK_BATCH_MAX_COUNT = int(os.environ.get("EMAIL_LINK_MAX_COUNT", "") or 20)
 LINK_BATCH_CONCURRENCY = 3
-LINK_BATCH_MAX_BYTES = int(os.environ.get("EMAIL_LINK_BATCH_MAX_BYTES", "") or 200 * 1024 * 1024)
+LINK_BATCH_SKIPPED_SAMPLE = 5
+# Default 1 GiB: several large reports (e.g. 3 x 150 MB) fit one batch; each
+# file stays under LINK_DOWNLOAD_MAX_BYTES (200 MB).
+LINK_BATCH_MAX_BYTES = int(os.environ.get("EMAIL_LINK_BATCH_MAX_BYTES", "") or 1024 * 1024 * 1024)
 _BATCH_BUDGET: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar("link_batch_budget", default=None)
 
 
@@ -3241,16 +3265,17 @@ def _call_budget_left() -> int:
 
 def _charge_batch_budget(n: int) -> None:
     """Charge ``n`` received bytes to this call's budget and to the batch's."""
+    # Both counters are debited for the bytes received BEFORE either limit is
+    # raised: a chunk that crosses the per-call cap still counts against the batch.
     call = _CALL_BUDGET.get()
+    budget = _BATCH_BUDGET.get()
     if call is not None:
         call[0] -= n
-        if call[0] < 0:
-            raise LinkDownloadTooLarge(LINK_DOWNLOAD_MAX_BYTES - call[0])
-    budget = _BATCH_BUDGET.get()
-    if budget is None:
-        return
-    budget[0] -= n
-    if budget[0] < 0:
+    if budget is not None:
+        budget[0] -= n
+    if call is not None and call[0] < 0:
+        raise LinkDownloadTooLarge(LINK_DOWNLOAD_MAX_BYTES - call[0])
+    if budget is not None and budget[0] < 0:
         raise LinkDownloadTooLarge(LINK_BATCH_MAX_BYTES - budget[0], batch=True)
 
 
@@ -3445,10 +3470,18 @@ async def _download_link_attachment(
             and _looks_like_html_response(response)
             and (classification["is_click_tracker"] or len(response.history) > 0)
         ):
-            try:
-                html = response.text
-            except Exception:
-                html = ""
+            # Only an interstitial up to EMAIL_LINK_HTML_SCAN_MAX_BYTES is decoded
+            # and scanned: a cap-sized HTML body is never decoded to a str next
+            # to its bytes. A larger one is simply not chased; it is saved as
+            # the download like any other response (never refused for its size).
+            html = ""
+            if len(response.content) <= LINK_HTML_SCAN_MAX_BYTES:
+                try:
+                    html = response.content.decode(response.encoding or "utf-8", errors="replace")
+                except LookupError:
+                    html = response.content.decode("utf-8", errors="replace")
+            else:
+                logger.info("Not chasing an HTML page of %s bytes (over the chase cap)", len(response.content))
             if html:
                 next_url = _pick_chase_target(html, url)
                 if next_url:
@@ -3646,8 +3679,16 @@ async def download_all_link_attachments(
         # Bounded batch: at most LINK_BATCH_MAX_COUNT links, LINK_BATCH_CONCURRENCY
         # at a time, all charging one LINK_BATCH_MAX_BYTES budget, so one email
         # with many links cannot make the server buffer N x the per-file cap.
-        links = links_result["links"][:LINK_BATCH_MAX_COUNT]
-        skipped_links = links_result["links"][LINK_BATCH_MAX_COUNT:]
+        all_links = links_result["links"]
+        links = all_links[:LINK_BATCH_MAX_COUNT]
+        # Links past the limit are summarized, never materialized one by one:
+        # a count plus a small redacted sample.
+        skipped_count = max(0, len(all_links) - LINK_BATCH_MAX_COUNT)
+        skipped_sample = [
+            redact_url_queries(str(link.get("url", "")))
+            for link in all_links[LINK_BATCH_MAX_COUNT : LINK_BATCH_MAX_COUNT + LINK_BATCH_SKIPPED_SAMPLE]
+        ]
+        del all_links
         gate = asyncio.Semaphore(LINK_BATCH_CONCURRENCY)
         budget_token = _BATCH_BUDGET.set([LINK_BATCH_MAX_BYTES])
         deadline_token = _BATCH_DEADLINE.set(batch_deadline)
@@ -3673,14 +3714,6 @@ async def download_all_link_attachments(
         finally:
             _BATCH_BUDGET.reset(budget_token)
             _BATCH_DEADLINE.reset(deadline_token)
-        for link in skipped_links:
-            errors.append(
-                {
-                    "url": link["url"],
-                    "link_text": link.get("link_text"),
-                    "error": f"Not downloaded: a batch fetches at most {LINK_BATCH_MAX_COUNT} links.",
-                }
-            )
 
         # Process results
         for link, result in zip(links, results, strict=True):
@@ -3716,6 +3749,15 @@ async def download_all_link_attachments(
             "downloaded": downloaded,
             "errors": errors,
             "download_directory": download_dir,
+            **(
+                {
+                    "skipped_count": skipped_count,
+                    "skipped_sample": skipped_sample,
+                    "skipped_reason": f"Not downloaded: a batch fetches at most {LINK_BATCH_MAX_COUNT} links.",
+                }
+                if skipped_count
+                else {}
+            ),
         }
 
     except Exception as e:

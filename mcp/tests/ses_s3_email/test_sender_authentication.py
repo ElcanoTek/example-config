@@ -891,3 +891,71 @@ async def test_domain_shaped_fuzzy_keywords_bind_to_the_sender(monkeypatch, send
     monkeypatch.setattr(inbox, "EMAIL_SENDER_AUTH", "required")
     result = await inbox.search_emails_fuzzy(keywords=[keyword], date_from="2026-10-26", date_to="2026-10-26")
     assert bool(result["emails"]) is expected, result
+
+
+@pytest.mark.parametrize(
+    ("keyword", "sender_shaped"),
+    [
+        ("vendor.example", True),
+        ("mail.vendor.example", True),
+        ("reports@vendor.example", True),
+        ("@vendor.example", True),
+        ("version 2.0", False),
+        ("2.0", False),
+        ("report @ 10am", False),
+        ("v1.2.3", False),
+        ("streaming", False),
+        ("a@b", False),
+    ],
+)
+def test_only_whole_mailboxes_or_domains_are_sender_shaped(keyword, sender_shaped):
+    assert bool(inbox._SENDER_SHAPED_KEYWORD_RE.fullmatch(keyword)) is sender_shaped
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("keyword", ["version 2.0", "report @ 10am"])
+async def test_non_sender_keywords_with_dots_or_at_still_match_the_subject(monkeypatch, keyword):
+    raw = (
+        "Authentication-Results: amazonses.com; dmarc=pass header.from=vendor.example\r\n"
+        "From: Reports <reports@vendor.example>\r\nTo: inbox@example.com\r\n"
+        f"Subject: Daily {keyword} digest\r\n"
+        "Date: Mon, 26 Oct 2026 10:00:00 +0000\r\n\r\nbody\r\n"
+    ).encode()
+    monkeypatch.setattr(inbox, "session", _FakeSession(_FakeS3({"emails/m": raw})))
+    monkeypatch.setattr(inbox, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(inbox, "S3_PREFIX", "emails/")
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "")
+    monkeypatch.setattr(inbox, "EMAIL_SENDER_AUTH", "required")
+    result = await inbox.search_emails_fuzzy(keywords=[keyword], date_from="2026-10-26", date_to="2026-10-26")
+    assert [e["s3_key"] for e in result["emails"]] == ["emails/m"], result
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("https://josé:sécret@example.com/r.csv", "https://***@example.com/r.csv"),
+        ("https://us'er:pa'ss@example.com/o'clock?token=s3cr3t#frag", "https://***@example.com/o'clock?***#***"),
+        ("GET https://ü:p@exämple.com/a;b=c?x=1 done", "GET https://***@exämple.com/a;b=c?*** done"),
+        ("https://a@b@example.com/x", "https://***@example.com/x"),  # the LAST '@' ends userinfo
+        ("https://example.com/path@not-userinfo?t=1", "https://example.com/path@not-userinfo?***"),
+        ("https://***@example.com/x?***#***", "https://***@example.com/x?***#***"),  # idempotent
+        ("plain reports@example.com text", "plain reports@example.com text"),
+    ],
+)
+def test_structural_url_redaction(line, expected):
+    assert inbox.redact_url_queries(line) == expected
+    assert "s3cr3t" not in inbox.redact_url_queries(line) and "sécret" not in inbox.redact_url_queries(line)
+
+
+def test_a_configured_debug_log_under_a_planted_parent_symlink_is_refused(tmp_path):
+    elsewhere = tmp_path / "elsewhere-log"
+    elsewhere.mkdir()
+    (tmp_path / "logs-link").symlink_to(elsewhere, target_is_directory=True)
+    with pytest.raises(OSError):
+        inbox._open_private_log(str(tmp_path / "logs-link" / "debug.log"))
+    assert not (elsewhere / "debug.log").exists()
+    # A plain directory still works.
+    plain = tmp_path / "logs-plain"
+    plain.mkdir()
+    inbox._open_private_log(str(plain / "debug.log")).close()
+    assert (plain / "debug.log").exists()

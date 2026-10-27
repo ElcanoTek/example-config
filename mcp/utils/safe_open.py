@@ -112,6 +112,74 @@ def _open_dir_last_nofollow(path: str) -> int:
         os.close(parent_fd)
 
 
+def _walk_nofollow(path: str) -> int:
+    """Open directory ``path`` from "/" one component at a time, each with
+    O_NOFOLLOW|O_DIRECTORY: no symlink anywhere on the path is followed. A ".."
+    component is refused (ELOOP): the walk only ever descends."""
+    flags = os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC
+    fd = os.open(os.sep, flags)
+    try:
+        for part in os.path.abspath(str(path)).split(os.sep):
+            if part in ("", "."):
+                continue
+            if part == "..":
+                raise OSError(errno.ELOOP, "'..' in a root path", str(path))
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+# Roots absent at startup: their nearest EXISTING ancestor is resolved and
+# pinned then (operator config, trusted only at startup), with the components
+# still to come. Lazily, the root is reached from that ancestor's pinned
+# identity with no-follow opens, so no ancestor swapped for a symlink after
+# startup is ever followed.
+_PENDING_ROOTS: dict[str, tuple[str, tuple[int, int], list[str]]] = {}
+
+
+def _record_pending_root(root: str) -> None:
+    path = os.path.abspath(str(root))
+    rest: list[str] = []
+    while not os.path.isdir(path):
+        parent, name = os.path.split(path)
+        if parent == path:
+            return
+        if name not in ("", "."):
+            rest.insert(0, name)
+        path = parent
+    if any(part == ".." for part in rest):
+        return
+    anc_real = os.path.realpath(path)
+    st = os.stat(anc_real)
+    _PENDING_ROOTS[root] = (anc_real, (st.st_dev, st.st_ino), rest)
+
+
+def _open_lazy_root(root: str) -> int:
+    """Open a root first used after startup, following no symlink on its path."""
+    pending = _PENDING_ROOTS.get(root)
+    if pending is None:
+        return _walk_nofollow(root)
+    anc_real, anc_ident, rest = pending
+    fd = _walk_nofollow(anc_real)
+    try:
+        st = os.fstat(fd)
+        if (st.st_dev, st.st_ino) != anc_ident:
+            raise OSError(errno.ELOOP, "the ancestor pinned at startup was replaced", anc_real)
+        flags = os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC
+        for part in rest:
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 # Configured root (as given) -> its pinned resolution, for the process lifetime.
 _ROOT_PINS: dict[str, _Root] = {}
 
@@ -136,7 +204,10 @@ def _pin_one(root: str, *, trust_symlink: bool = False) -> _Root | None:
     if cached is not None:
         return cached
     try:
-        fd = _open_dir_last_nofollow(root)
+        # At startup only the root's own last component is opened no-follow
+        # (operator config may sit under a symlinked ancestor); afterwards EVERY
+        # component is (_open_lazy_root).
+        fd = _open_dir_last_nofollow(root) if trust_symlink else _open_lazy_root(root)
     except OSError as exc:
         if exc.errno not in (errno.ELOOP, errno.ENOTDIR, errno.EMLINK):
             return None  # not there yet: nothing to pin, nothing under it to open
@@ -175,6 +246,8 @@ def pin_at_startup(roots: Iterable[str]) -> list[str]:
             continue
         try:
             one = _pin_one(root, trust_symlink=True)
+            if one is None and not os.path.lexists(root):
+                _record_pending_root(root)
         except Exception:  # noqa: BLE001 - startup must not fail on one root
             one = None
         if one is not None and one not in pinned:

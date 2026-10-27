@@ -90,11 +90,16 @@ root:root`, written by production-support's email provisioning):
   default) admits operator-imported legacy mail that has no
   `Authentication-Results` (mail in the dated tree is windowed by its partition
   day); `EMAIL_AUTHSERV_ID` (default `amazonses.com`) names
-  the receiver; `EMAIL_LINK_MAX_BYTES` / `EMAIL_LINK_MAX_SECONDS` (200 MB /
-  240 s) cap each email-link download, every redirect hop and the archive
-  fallback (which gets at most 30 s or a quarter of the deadline) included;
-  `EMAIL_LINK_MAX_COUNT` (20) and `EMAIL_LINK_BATCH_MAX_BYTES` (200 MB) bound
-  `download_all_link_attachments`, which fetches 3 links at a time. The debug
+  the receiver. Email-link download limits:
+  `EMAIL_LINK_MAX_BYTES` (200 MB per file) and `EMAIL_LINK_MAX_SECONDS` (240 s)
+  cap each download, every redirect hop and the archive fallback (which gets at
+  most 30 s or a quarter of the deadline) included;
+  `EMAIL_LINK_HTML_SCAN_MAX_BYTES` (10 MB) is only how much of an HTML
+  click-tracker page is scanned for its real link, never a download limit (a
+  larger HTML response is saved as the file); `download_all_link_attachments`
+  takes at most `EMAIL_LINK_MAX_COUNT` (20) links, 3 at a time, within one
+  240 s deadline and one `EMAIL_LINK_BATCH_MAX_BYTES` budget (1 GB, each file
+  still under 200 MB). The debug
   log defaults to a private per-user file (`<tmp>/ses_s3_email-<uid>/debug.log`,
   0600; refused if another user owns it or it has extra hard links), and URL
   userinfo, the whole query string and the whole `#fragment` are redacted from
@@ -104,6 +109,11 @@ root:root`, written by production-support's email provisioning):
   `SES_OUTBOUND_AWS_SECRET_ACCESS_KEY`, `SES_OUTBOUND_AWS_REGION`,
   `SES_OUTBOUND_FROM_EMAIL`, `SES_OUTBOUND_REPLY_TO`,
   `SES_OUTBOUND_ALLOW_UNLISTED_RECIPIENTS`.
+  `ses_outbound` pins its configured roots when the server starts (a root not
+  created yet is reached later from its nearest existing ancestor, pinned
+  then). A root it did not know at startup is opened with no-follow on every
+  path component, so one under a symlinked ancestor (macOS `/tmp`, say) is
+  refused: configure it before start, or by its resolved path.
 
 Inbound must work with no outbound variables set.
 

@@ -327,3 +327,51 @@ def test_a_persistent_fstat_failure_never_removes_an_entry_by_name(tree, monkeyp
         safe_open.write_new_or_truncate(str(target), [str(tree["root"])], b"x")
     monkeypatch.setattr(safe_open.os, "fstat", real_fstat)
     assert target.exists()  # the swapped-in file survives
+
+
+def test_an_ancestor_swapped_for_a_symlink_after_startup_is_never_followed(tree, tmp_path):
+    """A root absent at startup is reached from its ancestor pinned THEN: swapping
+    an intermediate directory for a symlink later cannot authorize another tree."""
+    workspace = tmp_path / "ws-anc"
+    workspace.mkdir()
+    root = workspace / "run" / "out"  # does not exist yet
+    assert safe_open.pin_at_startup([str(root)]) == []
+
+    # Attacker: /ws-anc/run becomes a symlink to a tree that has an "out" dir.
+    evil = tmp_path / "evil"
+    (evil / "out").mkdir(parents=True)
+    (evil / "out" / "a.txt").write_bytes(b"secret")
+    (workspace / "run").symlink_to(evil, target_is_directory=True)
+
+    assert safe_open.pin_roots([str(root)]) == []
+    with pytest.raises(safe_open.UnsafePathError):
+        safe_open.read_bytes(str(root / "a.txt"), [str(root)])
+
+
+def test_a_pinned_ancestor_replaced_after_startup_is_refused(tree, tmp_path):
+    workspace = tmp_path / "ws-repl"
+    workspace.mkdir()
+    root = workspace / "out"
+    safe_open.pin_at_startup([str(root)])
+    workspace.rename(tmp_path / "ws-repl.orig")
+    elsewhere = tmp_path / "elsewhere-repl"
+    (elsewhere / "out").mkdir(parents=True)
+    workspace.symlink_to(elsewhere, target_is_directory=True)
+    assert safe_open.pin_roots([str(root)]) == []
+
+
+def test_a_root_created_after_startup_under_its_pinned_ancestor_works(tree, tmp_path):
+    workspace = tmp_path / "ws-late"
+    workspace.mkdir()
+    root = workspace / "run" / "out"
+    safe_open.pin_at_startup([str(root)])
+    root.mkdir(parents=True)
+    (root / "a.txt").write_bytes(b"ok")
+    data, _ = safe_open.read_bytes(str(root / "a.txt"), [str(root)])
+    assert data == b"ok"
+
+
+def test_a_root_never_seen_at_startup_refuses_a_symlinked_ancestor(tree, tmp_path):
+    link = tmp_path / "anc-link"
+    link.symlink_to(tree["root"], target_is_directory=True)
+    assert safe_open.pin_roots([str(link / "sub")]) == []
