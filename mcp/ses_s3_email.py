@@ -52,6 +52,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import aioboto3
 import aiofiles
 import httpx
+from botocore.exceptions import BotoCoreError, ClientError
 from mcp.server.fastmcp import FastMCP
 from utils import safe_open, url_guard
 from utils.fsutil import ensure_dir
@@ -3120,6 +3121,8 @@ async def search_emails_fuzzy(
                                     matching_emails.sort(key=lambda x: (x["match_score"], x["_sort_at"]), reverse=True)
                                     del matching_emails[max_results:]
 
+                        except (ClientError, BotoCoreError):
+                            raise  # an S3 failure fails the search; only a bad message is skipped
                         except Exception as e:
                             parse_errors += 1
                             logger.warning(f"Failed to parse email {obj['Key']}: {e}")

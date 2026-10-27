@@ -1506,3 +1506,23 @@ async def test_untrusted_candidates_under_has_payload_get_their_own_warning(monk
     assert "emails/forged" not in s3.full_reads
     unchecked = [w for w in result["search_warnings"] if w["code"] == "unauthenticated_sender_unchecked"]
     assert unchecked and unchecked[0]["count"] == 1, result["search_warnings"]
+
+
+@pytest.mark.asyncio
+async def test_a_fuzzy_search_s3_fetch_error_fails_the_search(monkeypatch):
+    from botocore.exceptions import ClientError
+
+    class DeniedS3(_FakeS3):
+        async def get_object(self, Key, **kwargs):  # noqa: N803, ARG002 - boto3's names
+            raise ClientError({"Error": {"Code": "AccessDenied", "Message": "denied"}}, "GetObject")
+
+    objects = {"emails/ok": _plain_mail("r@vendor.example", "amazonses.com; dmarc=pass header.from=vendor.example")}
+    monkeypatch.setattr(inbox, "session", _FakeSession(DeniedS3(objects)))
+    monkeypatch.setattr(inbox, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(inbox, "S3_PREFIX", "emails/")
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "")
+    monkeypatch.setattr(inbox, "EMAIL_SENDER_AUTH", "required")
+    result = await inbox.search_emails_fuzzy(
+        keywords=["daily"], search_fields=["subject", "body"], date_from="2026-10-26", date_to="2026-10-26"
+    )
+    assert result["status"] == "error" and "AccessDenied" in result["error"], result
