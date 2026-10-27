@@ -452,7 +452,9 @@ async def test_live_and_archive_share_one_byte_cap(dest, monkeypatch):
     charged = _count_charged(monkeypatch)
     monkeypatch.setattr(ses_s3_email, "_fetch_archived_link", ORIGINAL_ARCHIVE)
     monkeypatch.setattr(ses_s3_email, "session", _archive_session(_ChunkedBody(b"y" * 600, step=100)))
-    respx.get(URL).mock(return_value=httpx.Response(500, content=b"e" * 600))
+    respx.get(URL).mock(
+        return_value=httpx.Response(200, content=b"<html>" + b"e" * 594, headers={"content-type": "text/html"})
+    )  # a 600-byte login page: its bytes are charged, then the archive fallback runs
     result = await ses_s3_email.download_link_attachment(url=URL, output_dir=str(dest))
     assert result["status"] == "error", result
     assert sum(charged) <= 1000 + 100
@@ -471,7 +473,9 @@ async def test_a_declared_archive_larger_than_what_is_left_is_refused_up_front(d
             return await super().read(_amt)
 
     monkeypatch.setattr(ses_s3_email, "session", _archive_session(Body(b"y" * 600, step=100), length=600))
-    respx.get(URL).mock(return_value=httpx.Response(500, content=b"e" * 600))
+    respx.get(URL).mock(
+        return_value=httpx.Response(200, content=b"<html>" + b"e" * 594, headers={"content-type": "text/html"})
+    )  # a 600-byte login page: its bytes are charged, then the archive fallback runs
     result = await ses_s3_email.download_link_attachment(url=URL, output_dir=str(dest))
     assert result["status"] == "error"
     assert reads == []  # 600 declared > 400 left: not read at all
@@ -714,3 +718,59 @@ async def test_an_archive_crossing_the_call_cap_is_refused_as_too_large_not_miss
         ses_s3_email._BATCH_BUDGET.reset(b_token)
     assert result is not None and result["status"] == "error" and "cap" in result["error"], result
     assert batch == [10_000 - 1200]
+
+
+@respx.mock
+async def test_an_expired_links_huge_error_body_still_falls_back_to_the_archive(dest, monkeypatch):
+    """A 404 declaring a body far over the cap: the status is raised first, nothing
+    is charged or read, and the archived copy is served."""
+    monkeypatch.setattr(ses_s3_email, "_fetch_archived_link", ORIGINAL_ARCHIVE)
+    monkeypatch.setattr(ses_s3_email, "session", _archive_session(_ChunkedBody(b"a,b\n1,2\n"), length=8))
+    charged = _count_charged(monkeypatch)
+    respx.get(URL).mock(return_value=httpx.Response(404, headers={"content-length": str(10**12)}, content=b"gone"))
+    result = await ses_s3_email.download_link_attachment(url=URL, output_dir=str(dest))
+    assert result["status"] == "success" and result["source"] == "s3_archive", result
+    assert result["live_result_was"] == "http_404"
+    assert sum(charged) == 8  # only the archived bytes
+
+
+async def test_an_archive_crossing_the_batch_budget_is_a_structured_refusal(dest, monkeypatch):
+    monkeypatch.setattr(ses_s3_email, "session", _archive_session(_ChunkedBody(b"y" * 900, step=300)))
+    b_token = ses_s3_email._BATCH_BUDGET.set([500])
+    try:
+        result = await ORIGINAL_ARCHIVE(URL, dest)
+    finally:
+        ses_s3_email._BATCH_BUDGET.reset(b_token)
+    assert result is not None and result["status"] == "error", result
+    assert result["code"] == "link_batch_budget_exceeded" and "batch" in result["error"]
+    assert list(dest.iterdir()) == []
+
+
+async def test_batch_errors_carry_the_per_link_code_and_retryable(dest, monkeypatch):
+    links = [{"url": "https://reports.example.com/a.csv"}]
+
+    async def extract(*_a, **_k):
+        return {"status": "success", "links": links, "subject": "s", "total_links_found": 1}
+
+    async def one(url, output_dir=None, timeout_seconds=120):
+        return {"status": "error", "error": "budget spent", "code": "link_batch_budget_exceeded", "retryable": False}
+
+    monkeypatch.setattr(ses_s3_email, "extract_download_links", extract)
+    monkeypatch.setattr(ses_s3_email, "download_link_attachment", one)
+    result = await ses_s3_email.download_all_link_attachments("emails/k", output_dir=str(dest))
+    assert result["errors"][0]["code"] == "link_batch_budget_exceeded"
+    assert result["errors"][0]["retryable"] is False
+
+
+@respx.mock
+async def test_a_live_download_over_the_batch_budget_carries_its_code(dest):
+    respx.get(URL).mock(return_value=httpx.Response(200, content=b"x" * 600, headers={"content-type": "text/csv"}))
+    token = ses_s3_email._BATCH_BUDGET.set([100])
+    try:
+        result = await ses_s3_email.download_link_attachment(url=URL, output_dir=str(dest))
+    finally:
+        ses_s3_email._BATCH_BUDGET.reset(token)
+    assert result["status"] == "error"
+    assert result["code"] == "link_batch_budget_exceeded" and result["retryable"] is False
+    single = await ses_s3_email.download_link_attachment(url=URL, output_dir=str(dest))  # no batch: no code
+    assert single["status"] == "success"
