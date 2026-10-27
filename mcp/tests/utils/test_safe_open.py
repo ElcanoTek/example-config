@@ -282,22 +282,48 @@ def test_servers_pin_their_roots_at_import():
             assert "safe_open.pin_at_startup(" in handle.read(), module.__name__
 
 
-def test_an_fstat_failure_after_create_removes_the_empty_file(tree, monkeypatch):
+def test_a_transient_fstat_failure_after_create_removes_the_file_by_its_identity(tree, monkeypatch):
+    """fstat fails once on the new leaf: the retry on the same descriptor proves
+    its identity, and only then is the entry removed."""
     import stat as _stat
 
     real_fstat = os.fstat
     hit = []
 
-    def failing_fstat(fd):
+    def failing_once(fd):
         st = real_fstat(fd)
-        if _stat.S_ISREG(st.st_mode):  # the freshly created leaf, not a directory
+        if _stat.S_ISREG(st.st_mode) and not hit:  # the freshly created leaf, first call only
             hit.append(fd)
             raise OSError(5, "I/O error")
         return st
 
-    monkeypatch.setattr(safe_open.os, "fstat", failing_fstat)
+    monkeypatch.setattr(safe_open.os, "fstat", failing_once)
     with pytest.raises(OSError, match="I/O error"):
         safe_open.write_new_or_truncate(str(tree["root"] / "fresh.txt"), [str(tree["root"])], b"x")
     monkeypatch.setattr(safe_open.os, "fstat", real_fstat)
     assert hit, "the leaf fstat was never reached"
     assert not (tree["root"] / "fresh.txt").exists()
+
+
+def test_a_persistent_fstat_failure_never_removes_an_entry_by_name(tree, monkeypatch):
+    """Without the descriptor's identity the entry is left alone: a file another
+    writer swapped in under the same name must never be deleted."""
+    import stat as _stat
+
+    real_fstat = os.fstat
+    target = tree["root"] / "fresh.txt"
+
+    def failing_fstat(fd):
+        st = real_fstat(fd)
+        if _stat.S_ISREG(st.st_mode):
+            # Another writer replaces the entry between our create and cleanup.
+            target.unlink()
+            target.write_bytes(b"")
+            raise OSError(5, "I/O error")
+        return st
+
+    monkeypatch.setattr(safe_open.os, "fstat", failing_fstat)
+    with pytest.raises(OSError, match="I/O error"):
+        safe_open.write_new_or_truncate(str(target), [str(tree["root"])], b"x")
+    monkeypatch.setattr(safe_open.os, "fstat", real_fstat)
+    assert target.exists()  # the swapped-in file survives

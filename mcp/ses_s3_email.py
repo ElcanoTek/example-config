@@ -69,9 +69,10 @@ logger = logging.getLogger(__name__)
 # presigned S3 / report links carry their credential (X-Amz-Signature,
 # token=...) there, under arbitrary names, no name at all, or AS the name
 # (?eyJhbGciOi...=), so no part of either is kept. Only scheme://host/path
-# survives, with any userinfo masked too. An apostrophe does not end the
-# query: over-redacting a closing quote beats leaking a token that holds one.
-_URL_QUERY_RE = re.compile(r"(https?://[^\s?#'\"<>]+)([?#][^\s\"<>]*)", re.IGNORECASE)
+# survives, with any userinfo masked too. An apostrophe ends neither the path
+# (https://host/o'clock?token=...) nor the query: over-redacting a closing
+# quote beats leaking a token.
+_URL_QUERY_RE = re.compile(r"(https?://[^\s?#\"<>]+)([?#][^\s\"<>]*)", re.IGNORECASE)
 
 
 def _mask_query(rest: str) -> str:
@@ -741,14 +742,33 @@ def _message_sent_at(message_date: str) -> datetime | None:
     return sent.replace(tzinfo=UTC) if sent.tzinfo is None else sent
 
 
+def _partition_day(s3_key: str) -> datetime | None:
+    """The received day a key's date partition names (emails/2026/10/26/...), or None."""
+    if not DATE_PREFIX_FORMAT or not _in_date_tree(s3_key):
+        return None
+    width = len(datetime(2000, 1, 1, tzinfo=UTC).strftime(DATE_PREFIX_FORMAT))
+    try:
+        return datetime.strptime(s3_key[:width], DATE_PREFIX_FORMAT).replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
 def _legacy_outside_window(
     s3_key: str, message_date: str, date_from_dt: datetime | None, date_to_dt: datetime | None
 ) -> bool:
     """For a key under a trusted legacy prefix (whose LastModified is the import
-    time, not the mail's), True when its Date header lies outside the window
-    (or cannot be read while a window is set)."""
+    time, not the mail's), True when it lies outside the window.
+
+    A legacy object INSIDE the date tree is windowed by its partition (the
+    received date): a missing, malformed or timezone-shifted Date header must
+    not make it undiscoverable. Only legacy objects outside the date tree are
+    windowed by their Date header (and dropped when it cannot be read)."""
     if not trusted_legacy_key(s3_key) or (date_from_dt is None and date_to_dt is None):
         return False
+    day = _partition_day(s3_key)
+    if day is not None:
+        day_end = day + timedelta(days=1) - timedelta(microseconds=1)
+        return bool((date_from_dt and day_end < date_from_dt) or (date_to_dt and day > date_to_dt))
     sent = _message_sent_at(message_date)
     if sent is None:
         return True
@@ -757,11 +777,18 @@ def _legacy_outside_window(
 
 def _effective_received(s3_key: str, message_date: str, last_modified: datetime) -> datetime:
     """When a message arrived, for ordering results: LastModified for SES-delivered
-    mail; the Date header for a trusted legacy import (its LastModified is the
-    import time). An unreadable legacy Date sorts as the oldest possible."""
+    mail; for a trusted legacy import (its LastModified is the import time) the
+    Date header, bounded by its received-date partition when it is in the date
+    tree. An unreadable legacy Date outside the tree sorts as the oldest."""
     if not trusted_legacy_key(s3_key):
         return last_modified
-    return _message_sent_at(message_date) or datetime.min.replace(tzinfo=UTC)
+    sent = _message_sent_at(message_date)
+    day = _partition_day(s3_key)
+    if day is not None:
+        # In the date tree the partition is the received day: the Date header
+        # orders messages within it only when it agrees with that day.
+        return sent if sent is not None and day <= sent < day + timedelta(days=1) else day
+    return sent or datetime.min.replace(tzinfo=UTC)
 
 
 def _is_legacy_prefix(prefix: str) -> bool:
@@ -1023,6 +1050,11 @@ def _sender_needles(sender_filter: str) -> list[str]:
         if item:
             needles.append(item)
     return needles
+
+
+# A fuzzy keyword shaped like a sender: an address ("a@b") or a dotted domain
+# ("vendor.example"): letters/digits/hyphens on both sides of a dot.
+_SENDER_SHAPED_KEYWORD_RE = re.compile(r"@|^[a-z0-9-]+(\.[a-z0-9-]+)+$", re.IGNORECASE)
 
 
 def mailbox_matches(needle: str, mailbox: str) -> bool:
@@ -2168,10 +2200,13 @@ async def search_emails(
         async with session.client("s3", region_name=AWS_REGION) as s3_client:
             paginator = s3_client.get_paginator("list_objects_v2")
 
-            # Date partitions are listed newest day first, so once they fill
-            # max_results the older days can be skipped. Trusted legacy
-            # prefixes are NOT time-ordered (and come last): they are always
-            # scanned in full, and the limit is applied after a global sort.
+            # Date partitions are listed newest day first. A partition is always
+            # scanned in FULL (its keys are not in time order), keeping the
+            # newest max_results; once the limit is reached, only the older
+            # partitions after it are skipped. Trusted legacy prefixes are not
+            # time-ordered either (and come last): always scanned in full. The
+            # limit is applied after one global sort. Without partitions (an
+            # unbounded or very wide window) the scan still stops at the limit.
             stop_search = False
             seen_keys: set[str] = set()  # overlapping prefixes never yield one object twice
             for prefix in search_prefixes:
@@ -2330,13 +2365,13 @@ async def search_emails(
 
                         if len(matching_emails) >= max_results:
                             stop_search = True
-                            if not legacy_scan:
+                            if not using_partition_prefixes:
                                 break
                             if len(matching_emails) > max_results:
                                 matching_emails.sort(key=lambda x: x["_sort_at"], reverse=True)
                                 del matching_emails[max_results:]
 
-                    if stop_search and not legacy_scan:
+                    if stop_search and not using_partition_prefixes:
                         break
 
         matching_emails.sort(key=lambda x: x["_sort_at"], reverse=True)
@@ -2463,7 +2498,9 @@ async def search_emails_fuzzy(
                       name, and is matched like sender_contains: a keyword must be
                       the whole mailbox or a domain ("ssp.example", which also
                       matches its subdomains); a bare company name never matches a
-                      sender, so search it ("Example SSP") in the subject.
+                      sender, so search it ("Example SSP") in the subject. While
+                      "sender" is searched, a domain- or address-shaped keyword
+                      matches the sender only, never subject or body text.
         match_all: If True, all keywords must match (AND). If False, any keyword (OR)
         date_from: Only emails received on or after this date (ISO format)
         date_to: Only emails received on or before this date (ISO format)
@@ -2568,10 +2605,13 @@ async def search_emails_fuzzy(
         async with session.client("s3", region_name=AWS_REGION) as s3_client:
             paginator = s3_client.get_paginator("list_objects_v2")
 
-            # Date partitions are listed newest day first, so once they fill
-            # max_results the older days can be skipped. Trusted legacy
-            # prefixes are NOT time-ordered (and come last): they are always
-            # scanned in full, and the limit is applied after a global sort.
+            # Date partitions are listed newest day first. A partition is always
+            # scanned in FULL (its keys are not in time order), keeping the
+            # newest max_results; once the limit is reached, only the older
+            # partitions after it are skipped. Trusted legacy prefixes are not
+            # time-ordered either (and come last): always scanned in full. The
+            # limit is applied after one global sort. Without partitions (an
+            # unbounded or very wide window) the scan still stops at the limit.
             stop_search = False
             seen_keys: set[str] = set()  # overlapping prefixes never yield one object twice
             for prefix in search_prefixes:
@@ -2694,20 +2734,34 @@ async def search_emails_fuzzy(
                             # a whole mailbox or a domain on a label boundary, never a
                             # substring (vendor.example must not match
                             # reports@vendor.example.evil.example).
+                            # EMAIL_SENDER_AUTH=off keeps the documented legacy match: a
+                            # substring of the WHOLE From header, display name included.
                             sender_mailbox = parseaddr(sender)[1].lower() if "sender" in search_fields else ""
+                            sender_header = str(sender).lower() if "sender" in search_fields else ""
 
-                            def _sender_hit(normalized: str, mailbox: str = sender_mailbox) -> bool:
+                            def _sender_hit(
+                                normalized: str, mailbox: str = sender_mailbox, header: str = sender_header
+                            ) -> bool:
+                                if include_unauthenticated():
+                                    return bool(header) and normalized in header
                                 if not mailbox:
                                     return False
-                                if include_unauthenticated():
-                                    return normalized in mailbox  # EMAIL_SENDER_AUTH=off: legacy substring
                                 return mailbox_matches(normalized.strip().lstrip("@"), mailbox)
 
-                            # Check keyword matches
+                            # Check keyword matches. With sender authentication required
+                            # and "sender" searched, a domain- or address-shaped keyword
+                            # ("vendor.example", "reports@vendor.example") is a SENDER
+                            # constraint only: a subject saying "vendor.example" on mail
+                            # from attacker@evil.example must not select it.
+                            sender_bound = "sender" in search_fields and not include_unauthenticated()
                             matches = [
                                 original
                                 for original, normalized in keyword_pairs
-                                if normalized in searchable_text or _sender_hit(normalized)
+                                if _sender_hit(normalized)
+                                or (
+                                    not (sender_bound and _SENDER_SHAPED_KEYWORD_RE.search(normalized.strip()))
+                                    and normalized in searchable_text
+                                )
                             ]
 
                             if match_all:
@@ -2744,7 +2798,7 @@ async def search_emails_fuzzy(
 
                             if len(matching_emails) >= max_results:
                                 stop_search = True
-                                if not legacy_scan:
+                                if not using_partition_prefixes:
                                     break
                                 if len(matching_emails) > max_results:
                                     matching_emails.sort(key=lambda x: (x["match_score"], x["_sort_at"]), reverse=True)
@@ -2755,7 +2809,7 @@ async def search_emails_fuzzy(
                             logger.warning(f"Failed to parse email {obj['Key']}: {e}")
                             continue
 
-                    if stop_search and not legacy_scan:
+                    if stop_search and not using_partition_prefixes:
                         break
 
         # Sort by match score (highest first), then by date (newest first);

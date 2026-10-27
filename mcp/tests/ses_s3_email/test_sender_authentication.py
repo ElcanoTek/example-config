@@ -755,3 +755,139 @@ async def test_overlapping_prefixes_never_return_an_object_twice(monkeypatch):
         keywords=["report"], search_fields=["subject"], date_from="2026-10-26", date_to="2026-10-26"
     )
     assert sorted(e["s3_key"] for e in fuzzy["emails"]) == keys and len(fuzzy["emails"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_newest_match_in_a_partition_wins_even_when_its_key_sorts_last(monkeypatch):
+    authed = "amazonses.com; dmarc=pass header.from=vendor.example"
+    objects = {
+        # Key order (a < z) is not time order: the newest report sorts last.
+        "emails/2026/10/26/a-old": (
+            _dated_mail("Mon, 26 Oct 2026 06:00:00 +0000", "Old report", authed),
+            datetime(2026, 10, 26, 6, tzinfo=UTC),
+        ),
+        "emails/2026/10/26/m-mid": (
+            _dated_mail("Mon, 26 Oct 2026 12:00:00 +0000", "Mid report", authed),
+            datetime(2026, 10, 26, 12, tzinfo=UTC),
+        ),
+        "emails/2026/10/26/z-new": (
+            _dated_mail("Mon, 26 Oct 2026 22:00:00 +0000", "New report", authed),
+            datetime(2026, 10, 26, 22, tzinfo=UTC),
+        ),
+        "emails/2026/10/25/x-yesterday": (
+            _dated_mail("Sun, 25 Oct 2026 23:00:00 +0000", "Yesterday report", authed),
+            datetime(2026, 10, 25, 23, tzinfo=UTC),
+        ),
+    }
+    s3 = _DatedS3(objects)
+    _partition_setup(monkeypatch, s3)
+    monkeypatch.setattr(inbox, "EMAIL_TRUSTED_LEGACY_PREFIXES", ())
+    result = await inbox.search_emails(
+        sender_contains="vendor.example", date_from="2026-10-25", date_to="2026-10-26", max_results=1
+    )
+    assert [e["s3_key"] for e in result["emails"]] == ["emails/2026/10/26/z-new"], result
+    assert "emails/2026/10/25/" not in s3.listed  # the older partition was skipped
+    fuzzy = await inbox.search_emails_fuzzy(
+        keywords=["report"], search_fields=["subject"], date_from="2026-10-25", date_to="2026-10-26", max_results=2
+    )
+    assert [e["s3_key"] for e in fuzzy["emails"]] == ["emails/2026/10/26/z-new", "emails/2026/10/26/m-mid"]
+
+    latest = await inbox.find_latest_report(
+        sender_contains="vendor.example", on_or_before="2026-10-26", lookback_days=1, require_payload=False
+    )
+    assert [e["s3_key"] for e in latest["emails"]] == ["emails/2026/10/26/z-new"], latest
+
+
+def test_a_query_after_an_apostrophe_in_the_path_is_redacted():
+    assert inbox.redact_url_queries("https://example.com/o'clock?token=secret") == "https://example.com/o'clock?***"
+    assert (
+        inbox.redact_url_queries("GET https://example.com/a'b/c#t=1 done") == "GET https://example.com/a'b/c#*** done"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "date_header",
+    ["", "garbage", "Tue, 27 Oct 2026 03:00:00 +0500"],  # missing, malformed, shifted to the next day
+)
+async def test_in_tree_legacy_mail_is_windowed_by_its_partition_not_its_date_header(monkeypatch, date_header):
+    objects = {
+        "emails/2026/10/26/mailbux-1": (
+            _dated_mail(date_header, "Legacy in tree", None).replace(b"Date: \r\n", b""),
+            datetime(2026, 1, 1, tzinfo=UTC),  # import time
+        ),
+    }
+    _partition_setup(monkeypatch, _DatedS3(objects))
+    monkeypatch.setattr(inbox, "EMAIL_TRUSTED_LEGACY_PREFIXES", ("emails/2026/10/26/mailbux-",))
+    result = await inbox.search_emails(date_from="2026-10-26", date_to="2026-10-26")
+    assert [e["s3_key"] for e in result["emails"]] == ["emails/2026/10/26/mailbux-1"], result
+    fuzzy = await inbox.search_emails_fuzzy(
+        keywords=["legacy"], search_fields=["subject"], date_from="2026-10-26", date_to="2026-10-26"
+    )
+    assert [e["s3_key"] for e in fuzzy["emails"]] == ["emails/2026/10/26/mailbux-1"], fuzzy
+
+
+def test_out_of_tree_legacy_mail_is_still_windowed_by_its_date_header(monkeypatch):
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "emails/%Y/%m/%d/")
+    monkeypatch.setattr(inbox, "EMAIL_TRUSTED_LEGACY_PREFIXES", ("emails/legacy/", "emails/2026/10/26/mailbux-"))
+    window = (datetime(2026, 10, 26, tzinfo=UTC), datetime(2026, 10, 26, 23, 59, tzinfo=UTC))
+    assert inbox._legacy_outside_window("emails/legacy/x", "garbage", *window) is True
+    assert inbox._legacy_outside_window("emails/legacy/x", "Mon, 26 Oct 2026 10:00:00 +0000", *window) is False
+    assert inbox._legacy_outside_window("emails/2026/10/26/mailbux-x", "garbage", *window) is False
+    assert inbox._legacy_outside_window("emails/2026/10/26/mailbux-x", "Mon, 01 Jan 2024 10:00:00 +0000", *window) is (
+        False
+    )
+    # Sorting inside the tree: the Date header only when it agrees with the partition day.
+    day = datetime(2026, 10, 26, tzinfo=UTC)
+    assert inbox._effective_received("emails/2026/10/26/mailbux-x", "garbage", datetime(2026, 1, 1, tzinfo=UTC)) == day
+    assert inbox._effective_received(
+        "emails/2026/10/26/mailbux-x", "Mon, 26 Oct 2026 10:00:00 +0000", datetime(2026, 1, 1, tzinfo=UTC)
+    ) == datetime(2026, 10, 26, 10, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("mode", "expected"), [("off", True), ("required", False)])
+async def test_fuzzy_display_name_keywords_match_only_in_off_mode(monkeypatch, mode, expected):
+    raw = (
+        b"Authentication-Results: amazonses.com; dmarc=pass header.from=vendor.example\r\n"
+        b"From: Vendor Reports <reports@vendor.example>\r\nTo: inbox@example.com\r\nSubject: Daily\r\n"
+        b"Date: Mon, 26 Oct 2026 10:00:00 +0000\r\n\r\nbody\r\n"
+    )
+    monkeypatch.setattr(inbox, "session", _FakeSession(_FakeS3({"emails/m": raw})))
+    monkeypatch.setattr(inbox, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(inbox, "S3_PREFIX", "emails/")
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "")
+    monkeypatch.setattr(inbox, "EMAIL_SENDER_AUTH", mode)
+    result = await inbox.search_emails_fuzzy(
+        keywords=["vendor reports"], search_fields=["sender"], date_from="2026-10-26", date_to="2026-10-26"
+    )
+    assert bool(result["emails"]) is expected, result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sender", "subject", "keyword", "expected"),
+    [
+        # An attacker's authenticated mail naming the vendor domain in its subject.
+        ("attacker@evil.example", "Report from vendor.example", "vendor.example", False),
+        ("attacker@evil.example", "Report for reports@vendor.example", "reports@vendor.example", False),
+        # The vendor's own mail still matches by sender.
+        ("reports@vendor.example", "Daily", "vendor.example", True),
+        # Plain words keep the subject/sender OR.
+        ("attacker@evil.example", "Streaming summary", "streaming", True),
+    ],
+)
+async def test_domain_shaped_fuzzy_keywords_bind_to_the_sender(monkeypatch, sender, subject, keyword, expected):
+    domain = sender.rpartition("@")[2]
+    raw = (
+        f"Authentication-Results: amazonses.com; dmarc=pass header.from={domain}\r\n"
+        f"From: Reports <{sender}>\r\nTo: inbox@example.com\r\nSubject: {subject}\r\n"
+        "Date: Mon, 26 Oct 2026 10:00:00 +0000\r\n\r\nbody\r\n"
+    ).encode()
+    monkeypatch.setattr(inbox, "session", _FakeSession(_FakeS3({"emails/m": raw})))
+    monkeypatch.setattr(inbox, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(inbox, "S3_PREFIX", "emails/")
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "")
+    monkeypatch.setattr(inbox, "EMAIL_SENDER_AUTH", "required")
+    result = await inbox.search_emails_fuzzy(keywords=[keyword], date_from="2026-10-26", date_to="2026-10-26")
+    assert bool(result["emails"]) is expected, result

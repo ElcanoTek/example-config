@@ -79,14 +79,17 @@ root:root`, written by production-support's email provisioning):
   skipped unless `EMAIL_SENDER_AUTH=off`. `sender_contains` takes the sender's DOMAIN (matching it
   and its subdomains on label boundaries) or a full address, several
   comma-separated, and matches the authenticated mailbox, never the display
-  name (fuzzy sender keywords too): a bare vendor name matches nothing. Each result carries
+  name (fuzzy sender keywords too; a domain-shaped fuzzy keyword matches the
+  sender only): a bare vendor name matches nothing. Each date partition is
+  scanned in full and the newest matches kept. Each result carries
   `sender_authenticated`; skipped mail is reported as an
   `unauthenticated_sender_skipped` warning.
   Optional knobs: `EMAIL_SENDER_AUTH=off` falls back to the forgeable
-  From-substring match (every search then warns);
+  From-substring match, fuzzy sender keywords included (every search then warns);
   `EMAIL_TRUSTED_LEGACY_PREFIXES` (comma-separated S3 key prefixes, off by
   default) admits operator-imported legacy mail that has no
-  `Authentication-Results`; `EMAIL_AUTHSERV_ID` (default `amazonses.com`) names
+  `Authentication-Results` (mail in the dated tree is windowed by its partition
+  day); `EMAIL_AUTHSERV_ID` (default `amazonses.com`) names
   the receiver; `EMAIL_LINK_MAX_BYTES` / `EMAIL_LINK_MAX_SECONDS` (200 MB /
   240 s) cap each email-link download, every redirect hop and the archive
   fallback (which gets at most 30 s or a quarter of the deadline) included;

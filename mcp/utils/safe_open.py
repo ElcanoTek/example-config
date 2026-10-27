@@ -459,17 +459,18 @@ def write_new_or_truncate(
         except BaseException:
             if created:
                 if ident is None:
-                    # fstat itself failed right after the O_EXCL create: identify
-                    # the file the same way through its name, but only an empty
-                    # regular file of ours (what this call just created).
-                    with contextlib.suppress(OSError):
-                        named = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-                        if (
-                            stat.S_ISREG(named.st_mode)
-                            and named.st_size == 0
-                            and (not hasattr(os, "getuid") or named.st_uid == os.getuid())
-                        ):
-                            ident = (named.st_dev, named.st_ino)
+                    # fstat itself failed right after the O_EXCL create: retry it
+                    # once on the still-open descriptor. A name lookup cannot
+                    # prove identity (another writer may have swapped the entry
+                    # in), so without the descriptor's own identity the entry
+                    # is left in place and logged, never removed by name.
+                    try:
+                        retry = os.fstat(fd)
+                        ident = (retry.st_dev, retry.st_ino)
+                    except OSError:
+                        logger.warning(
+                            "%s %s: fstat failed after creating it; the empty file is left in place", label, path
+                        )
                 if ident is not None:
                     _unlink_if_same(name, dir_fd, ident)
             raise
