@@ -100,11 +100,11 @@ RUN microdnf upgrade -y \
 # Hand-ported from fleet's config/default/sandbox/Containerfile; bundles are
 # peers, so a future fix there is ported here as its own PR, never synced.
 RUN python3 -m pip install --no-cache-dir --break-system-packages --upgrade \
-        pip pypdf soupsieve pygments "tornado>=6.5.8" \
+        pip pypdf python-docx python-pptx soupsieve pygments "tornado>=6.5.8" \
     && rpm -e --nodeps python3-pip python3-pypdf python3-soupsieve python3-pygments python3-tornado \
     && rm -rf /root/.cache/pip \
-    && python3 -c "import sys, pip, pypdf, soupsieve, pygments, tornado; \
-stale = [m.__name__ for m in (pip, pypdf, soupsieve, pygments, tornado) \
+    && python3 -c "import sys, pip, pypdf, docx, pptx, soupsieve, pygments, tornado; \
+stale = [m.__name__ for m in (pip, pypdf, docx, pptx, soupsieve, pygments, tornado) \
          if not m.__file__.startswith('/usr/local/')]; \
 sys.exit('RPM copy still shadows the pip overlay: %r' % stale if stale else 0)"
 
