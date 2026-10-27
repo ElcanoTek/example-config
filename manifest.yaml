@@ -461,7 +461,31 @@ mcp_servers:
       EMAIL_SEARCH_PROGRESS_EVERY: "${EMAIL_SEARCH_PROGRESS_EVERY}"
       EMAIL_SEARCH_KEY_LOG_EVERY: "${EMAIL_SEARCH_KEY_LOG_EVERY}"
       EMAIL_DEBUG_LOG_FILE: "${EMAIL_DEBUG_LOG_FILE}"
+      # sender_contains selects only mail the receiver (SES inbound, authserv-id
+      # amazonses.com) authenticated: DMARC pass or aligned SPF/DKIM pass in its
+      # topmost Authentication-Results. EMAIL_SENDER_AUTH=off is the legacy
+      # From-substring match, for an inbox whose vendor mail fails authentication
+      # (each search then warns). Link downloads are capped at
+      # EMAIL_LINK_MAX_BYTES (default 200 MB) and EMAIL_LINK_MAX_SECONDS (240).
+      EMAIL_SENDER_AUTH: "${EMAIL_SENDER_AUTH}"
+      # Off by default: comma-separated S3 key prefixes of operator-imported legacy
+      # mail (no SES Authentication-Results) to treat as a pre-authenticated archive.
+      EMAIL_TRUSTED_LEGACY_PREFIXES: "${EMAIL_TRUSTED_LEGACY_PREFIXES}"
+      EMAIL_AUTHSERV_ID: "${EMAIL_AUTHSERV_ID}"
+      EMAIL_LINK_MAX_BYTES: "${EMAIL_LINK_MAX_BYTES}"
+      EMAIL_LINK_MAX_SECONDS: "${EMAIL_LINK_MAX_SECONDS}"
+      # download_all_link_attachments: at most this many links (default 20), 3 at a
+      # time, sharing one byte budget (default 200 MB).
+      EMAIL_LINK_MAX_COUNT: "${EMAIL_LINK_MAX_COUNT}"
+      EMAIL_LINK_BATCH_MAX_BYTES: "${EMAIL_LINK_BATCH_MAX_BYTES}"
     optional_env:
+      - EMAIL_SENDER_AUTH
+      - EMAIL_TRUSTED_LEGACY_PREFIXES
+      - EMAIL_AUTHSERV_ID
+      - EMAIL_LINK_MAX_BYTES
+      - EMAIL_LINK_MAX_SECONDS
+      - EMAIL_LINK_MAX_COUNT
+      - EMAIL_LINK_BATCH_MAX_BYTES
       - AWS_ACCESS_KEY_ID
       - AWS_SECRET_ACCESS_KEY
       - AWS_SESSION_TOKEN

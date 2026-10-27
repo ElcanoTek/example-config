@@ -1,0 +1,70 @@
+# Dependabot proposes updates for this bundle's two trackable dependency
+# surfaces: the MCP servers' Python requirements under mcp/ and the GitHub
+# Actions the workflows use. Modelled on voice's, lens's and pages's files,
+# on a weekly cadence because a client bundle changes far less often.
+#
+# Proposing is not merging: a human merges a bump only when it earns it.
+# Minor + patch bumps are grouped per ecosystem into one PR that Dependabot
+# keeps current; majors stay separate so a breaking change gets its own
+# review. Supply-chain cooldown: a fresh release is not proposed until it is a
+# few days old, so a compromised version that gets yanked quickly never
+# reaches review. Cooldown applies to version updates only, never to security
+# updates. `labels: []` keeps Dependabot from creating labels this repo does
+# not use.
+#
+# Not covered:
+#   * The sandbox image's base (sandbox/Containerfile). It deliberately tracks
+#     fedora-minimal:latest with no digest, so every rebuild picks up upstream
+#     patches, and the weekly sandbox-canary.yml catches breakage. Dependabot
+#     has no version to bump on an undigested `latest`, so a docker entry
+#     would track nothing. Add one if the base is ever pinned by digest.
+#   * The reusable workflows called from ElcanoTek/fleet at @main, which
+#     follow fleet's own main on purpose.
+#
+# Schema: https://docs.github.com/code-security/reference/supply-chain-security/dependabot-options-reference
+version: 2
+
+updates:
+  # mcp/requirements*.txt: the MCP servers' runtime and test dependencies.
+  - package-ecosystem: pip
+    directory: "/mcp"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
+      semver-major-days: 7
+      semver-minor-days: 7
+      semver-patch-days: 3
+    labels: []
+    commit-message:
+      prefix: "deps(pip)"
+    groups:
+      pip-minor-patch:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # mcp's `<2` ceiling is load-bearing (see mcp/requirements.txt): the
+      # 2.x wheels ship no mcp.server.fastmcp, which every server here imports,
+      # so a proposal to lift it would fail to start them. Drop this rule
+      # together with migrating the servers off that import path.
+      - dependency-name: mcp
+        update-types: ["version-update:semver-major"]
+
+  # Actions referenced by .github/workflows/* (version tags such as @v4).
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 3
+    labels: []
+    commit-message:
+      prefix: "deps(actions)"
+    groups:
+      actions-minor-patch:
+        update-types:
+          - minor
+          - patch

@@ -12,6 +12,8 @@ that deployment's variables in, so this file stays the same across clients.
 from __future__ import annotations
 
 import contextlib
+import contextvars
+import functools
 import logging
 import mimetypes
 import os
@@ -21,6 +23,7 @@ import stat
 import sys
 import tempfile
 import time
+import types
 from collections.abc import Mapping, MutableMapping, Sequence
 from email.utils import parseaddr
 from pathlib import PurePath
@@ -59,7 +62,7 @@ from email_lint import (
     validate_html_legacy as _validate_html,
 )
 from mcp.server.fastmcp import FastMCP
-from utils import run_ledger
+from utils import run_ledger, safe_open
 
 # Re-exported by name so the existing test files
 # (`test_ses_template_validation.py`, `test_mcp_integration.py`,
@@ -86,6 +89,8 @@ mcp = FastMCP("ses_outbound")
 _SESSION = aioboto3.Session()
 _MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 _MAX_TOTAL_ATTACHMENT_BYTES = 28 * 1024 * 1024
+# A content_file is an email body; SES caps a whole message at 40MB.
+_MAX_CONTENT_FILE_BYTES = 20 * 1024 * 1024
 
 # The bundle checkout this server ships inside: mcp/ses_sender.py -> mcp/ -> root.
 # Derived from __file__ rather than sniffed for marker files, so it is exact and
@@ -93,7 +98,37 @@ _MAX_TOTAL_ATTACHMENT_BYTES = 28 * 1024 * 1024
 _BUNDLE_ROOT = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir))
 
 
+# The allowed roots of ONE tool call, resolved once and pinned (device, inode)
+# when the call starts: the path checks and the reads/writes that follow all
+# use these, so a root swapped for a symlink in between is refused rather than
+# re-resolved to its new target (utils.safe_open.pin_roots).
+_CALL_ROOTS: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar("ses_call_roots", default=None)
+
+
+def _pinned_call(fn):
+    """Run a tool body with its allowed roots pinned for the whole call."""
+
+    async def wrapper(*args, **kwargs):
+        token = _CALL_ROOTS.set(safe_open.pin_roots(_configured_dirs()))
+        try:
+            return await fn(*args, **kwargs)
+        finally:
+            _CALL_ROOTS.reset(token)
+
+    rebuilt = types.FunctionType(
+        wrapper.__code__, fn.__globals__, fn.__name__, wrapper.__defaults__, wrapper.__closure__
+    )
+    functools.update_wrapper(rebuilt, fn)
+    return rebuilt
+
+
 def _allowed_dirs() -> list[str]:
+    """The pinned allowed roots: this call's when a tool call is running."""
+    pinned = _CALL_ROOTS.get()
+    return list(pinned) if pinned is not None else safe_open.pin_roots(_configured_dirs())
+
+
+def _configured_dirs() -> list[str]:
     """Host-side roots this server may read attachments from.
 
     Shared by the security check and the diagnostics so a refused/missing path
@@ -108,7 +143,7 @@ def _allowed_dirs() -> list[str]:
     # attachment source: the deal sheets and reports the run just produced.
     run_workdir = os.environ.get("CUTLASS_RUN_WORKDIR", "").strip()
     if run_workdir:
-        allowed_dirs.append(os.path.realpath(run_workdir))
+        allowed_dirs.append(run_workdir)
 
     # cwd, but never when it IS the bundle checkout. Older fleets spawned every
     # stdio server with cwd = the bundle root, which made the whole checkout —
@@ -117,19 +152,22 @@ def _allowed_dirs() -> list[str]:
     # that tree is a deliberate attachment source. cwd stays allowed otherwise
     # because these servers are also run by a local coding agent
     # (docs/TESTING-LOCALLY.md), where cwd is the operator's own project dir.
-    cwd = os.path.realpath(os.getcwd())
-    if cwd != _BUNDLE_ROOT:
+    cwd = os.getcwd()
+    if os.path.realpath(cwd) != _BUNDLE_ROOT:
         allowed_dirs.append(cwd)
 
-    allowed_dirs.append(os.path.realpath(tempfile.gettempdir()))
+    allowed_dirs.append(tempfile.gettempdir())
 
     extra = os.environ.get("CUTLASS_ALLOWED_DIRS", "")
     if extra:
         for d in extra.split(":"):
             d = d.strip()
             if d:
-                allowed_dirs.append(os.path.realpath(d))
+                allowed_dirs.append(d)
 
+    # The CONFIGURED paths, unresolved: utils.safe_open.pin_roots keys its
+    # process-wide pins by them, so a root swapped for a symlink later is never
+    # re-resolved into a new root.
     return list(dict.fromkeys(allowed_dirs))
 
 
@@ -458,10 +496,22 @@ def _resolve_from_email(explicit_from: str | None = None) -> str:
     return sender
 
 
-def _read_file(path: str) -> bytes:
-    """Read one size-capped attachment."""
-    with open(path, "rb") as file:
-        return file.read()
+def _read_confined(path: str, max_bytes: int, label: str) -> tuple[bytes, os.stat_result]:
+    """Read a validated path through ONE descriptor: ``(data, fstat)``.
+
+    The path was already checked against ``_allowed_dirs()``, but the run
+    workspace is shared with the sandbox, so the name cannot be trusted a
+    second time: a file (or a directory above it) swapped for a symlink after
+    the check would otherwise make this host-side server mail any host file.
+    ``utils.safe_open`` re-resolves the path, walks down from its allowed root
+    without following a symlink, refuses a non-regular file and one over
+    ``max_bytes`` (``FileTooLargeError``), and reads from that descriptor.
+    """
+    return safe_open.read_bytes(path, _allowed_dirs(), max_bytes=max_bytes, label=label)
+
+
+def _too_large_message(label: str, name: str, size: int) -> str:
+    return f"{label} too large: {name} ({size / 1024 / 1024:.1f}MB). Maximum size is 25MB per attachment."
 
 
 def _aws_region() -> str:
@@ -592,7 +642,14 @@ def _reject_disallowed_recipients(addresses: Sequence[str] | None) -> str | None
     if allowed is None:
         if not recipients:
             return None
-        if _is_managed_run() and not _allow_unlisted_recipients():
+        if _is_managed_run() and _allow_unlisted_recipients():
+            logger.warning(
+                "SES_ALLOWED_RECIPIENT_DOMAINS is unset and SES_ALLOW_UNLISTED_RECIPIENTS is on: this managed "
+                "run may mail any address (%d recipient(s)); set a recipient-domain list to close this",
+                len(recipients),
+            )
+            return None
+        if _is_managed_run():
             return (
                 "SES_ALLOWED_RECIPIENT_DOMAINS is not set and this is a managed "
                 "(deployed) run: refusing to send (fail-closed, cutlass#741). "
@@ -632,6 +689,7 @@ def _missing_cid_message(problem: str, missing: list[str]) -> str:
 
 
 @mcp.tool()
+@_pinned_call
 async def send_email(
     to_email: str,
     subject: str,
@@ -804,12 +862,11 @@ async def send_email(
         try:
             # Expand user home directory and resolve path securely
             file_path = _validate_path_security(content_file)
-
-            if not os.path.exists(file_path):
+            try:
+                raw_content, content_stat = _read_confined(file_path, _MAX_CONTENT_FILE_BYTES, "Content file")
+            except FileNotFoundError:
                 return {"error": f"Content file not found: {content_file}"}
-
-            with open(file_path, encoding="utf-8") as f:
-                actual_content = f.read()
+            actual_content = raw_content.decode("utf-8")
             content_source = f"file:{content_file}"
             logger.info("Read email content from file: %s (%d bytes)", content_file, len(actual_content))
         except ValueError as e:
@@ -832,10 +889,13 @@ async def send_email(
         upgraded = ensure_mobile_friendly(actual_content)
         if upgraded != actual_content:
             actual_content = upgraded
-            with contextlib.suppress(OSError):
-                fd = os.open(file_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    fh.write(actual_content)
+            # Written back only into the very file that was read (same inode,
+            # reached by the same symlink-refusing walk): a name swapped for a
+            # symlink in between is left alone, never written through.
+            with contextlib.suppress(OSError, ValueError):
+                safe_open.rewrite_same_file(
+                    file_path, _allowed_dirs(), content_stat, actual_content.encode("utf-8"), label="Content file"
+                )
 
     # Run the shared validator (subject + body + structure + leakage).
     findings = validate(actual_content, subject=subject, content_type=resolved_type, require_frame=True)
@@ -912,13 +972,13 @@ async def send_email(
 
                 # Get file info
                 file_name = os.path.basename(resolved_path)
-                file_size = os.path.getsize(resolved_path)
-
-                if file_size > _MAX_ATTACHMENT_BYTES:
-                    return {
-                        "error": f"Attachment too large: {file_name} ({file_size / 1024 / 1024:.1f}MB). "
-                        f"Maximum size is 25MB per attachment."
-                    }
+                # Opened ONCE here, without following a swapped symlink; the
+                # size and the bytes both come from that descriptor.
+                try:
+                    raw_data, _file_stat = _read_confined(resolved_path, _MAX_ATTACHMENT_BYTES, "Attachment")
+                except safe_open.FileTooLargeError as exc:
+                    return {"error": _too_large_message("Attachment", file_name, exc.size)}
+                file_size = len(raw_data)  # what is actually sent, not the stat before reading
 
                 # Detect MIME type
                 mime_type, _ = mimetypes.guess_type(resolved_path)
@@ -929,7 +989,6 @@ async def send_email(
                 if total_attachment_bytes > _MAX_TOTAL_ATTACHMENT_BYTES:
                     return {"error": "Combined attachments are too large. Maximum raw attachment size is 28MB."}
 
-                raw_data = _read_file(resolved_path)
                 ses_attachments.append(
                     {
                         "RawContent": raw_data,
@@ -970,13 +1029,11 @@ async def send_email(
                 resolved_path = _locate_attachment(file_path, label="Inline attachment")
 
                 file_name = os.path.basename(resolved_path)
-                file_size = os.path.getsize(resolved_path)
-
-                if file_size > _MAX_ATTACHMENT_BYTES:
-                    return {
-                        "error": f"Inline attachment too large: {file_name} ({file_size / 1024 / 1024:.1f}MB). "
-                        f"Maximum size is 25MB per attachment."
-                    }
+                try:
+                    raw_data, _file_stat = _read_confined(resolved_path, _MAX_ATTACHMENT_BYTES, "Inline attachment")
+                except safe_open.FileTooLargeError as exc:
+                    return {"error": _too_large_message("Inline attachment", file_name, exc.size)}
+                file_size = len(raw_data)  # what is actually sent, not the stat before reading
 
                 mime_type = str(item.get("mime_type") or "").strip()
                 if not mime_type:
@@ -987,7 +1044,6 @@ async def send_email(
                 if total_attachment_bytes > _MAX_TOTAL_ATTACHMENT_BYTES:
                     return {"error": "Combined attachments are too large. Maximum raw attachment size is 28MB."}
 
-                raw_data = _read_file(resolved_path)
                 ses_attachments.append(
                     {
                         "RawContent": raw_data,
@@ -1073,6 +1129,7 @@ async def send_email(
 
 
 @mcp.tool()
+@_pinned_call
 async def validate_email_content(
     content: str = "",
     content_file: str = "",
@@ -1101,10 +1158,11 @@ async def validate_email_content(
     if content_file:
         try:
             resolved_path = _validate_path_security(content_file.strip())
-            if not os.path.exists(resolved_path):
+            try:
+                raw_content, _ = _read_confined(resolved_path, _MAX_CONTENT_FILE_BYTES, "Content file")
+            except FileNotFoundError:
                 return {"valid": False, "errors": [f"File not found: {content_file}"], "warnings": []}
-            with open(resolved_path, encoding="utf-8", errors="replace") as f:
-                actual_content = f.read()
+            actual_content = raw_content.decode("utf-8", errors="replace")
             source = "content_file"
         except ValueError as e:
             return {"valid": False, "errors": [str(e)], "warnings": []}
@@ -1137,6 +1195,7 @@ async def validate_email_content(
 
 
 @mcp.tool()
+@_pinned_call
 async def render_email(
     subject: str,
     blocks: list[dict[str, Any]],
@@ -1224,8 +1283,14 @@ async def render_email(
     except ValueError as exc:
         return {"error": str(exc)}
     if file_arg and not os.path.isdir(directory):
-        with contextlib.suppress(OSError):
-            os.makedirs(directory, exist_ok=True)
+        # Created by a symlink-refusing walk from its allowed root, so a
+        # directory swapped for a symlink cannot place new ones elsewhere.
+        try:
+            safe_open.makedirs(directory, _allowed_dirs(), label="output_dir")
+        except ValueError as exc:  # a confinement refusal (UnsafePathError) is the caller's answer
+            return {"error": str(exc)}
+        except OSError:
+            pass  # reported just below as "not an existing directory"
     if not os.path.isdir(directory):
         return {"error": f"output_dir is not an existing directory: {directory_arg}"}
 
@@ -1248,25 +1313,38 @@ async def render_email(
     stem = os.path.join(directory, f"email-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{secrets.token_hex(3)}")
     path = target_file if target_file else f"{stem}.html"
     inline_attachments: list[dict[str, str]] = []
-    created: list[str] = []  # only files this call made, so cleanup never removes another
+    # Only files this call made, with the inode each was created as: cleanup never
+    # removes another file, nor follows a directory swapped for a symlink.
+    created: list[tuple[str, tuple[int, int]]] = []
+    # Every write goes through utils.safe_open: the directory is reached by a
+    # walk from its allowed root that never follows a symlink, and the file is
+    # opened with O_NOFOLLOW, so neither the file nor a directory above it
+    # swapped for a symlink (the workspace is shared with the sandbox) can
+    # redirect the write to a host file outside the allowed roots.
+    roots = _allowed_dirs()
     try:
         if target_file:
-            os.makedirs(os.path.dirname(target_file), exist_ok=True)
-            existed = os.path.exists(target_file)
-            fd = os.open(target_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            if not existed:
-                created.append(target_file)
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(html_content)
+            safe_open.write_new_or_truncate(
+                target_file,
+                roots,
+                html_content.encode("utf-8"),
+                create_dirs=True,
+                label="output_file",
+                on_created=lambda ident: created.append((target_file, ident)),
+            )
         else:
             # Create-only and owner-only: never overwrites, and an output_dir in a
             # shared location (the temp dir is a readable root) does not expose
             # the email to other local users. Fleet's approval stager and this
             # server run as the same user.
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            created.append(path)
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(html_content)
+            safe_open.write_new_or_truncate(
+                path,
+                roots,
+                html_content.encode("utf-8"),
+                exclusive=True,
+                label="email",
+                on_created=lambda ident: created.append((path, ident)),
+            )
         logo = email_render.brand_logo()
         if logo is not None and f"cid:{email_render.LOGO_CID}" in html_content:
             # A copy beside the email, inside the workspace: send_email reads
@@ -1274,16 +1352,19 @@ async def render_email(
             # when it previews the logo.
             logo_path = f"{stem}-{email_render.LOGO_CID}.png"
             logo_bytes = logo[0].read_bytes()
-            fd = os.open(logo_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            created.append(logo_path)
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(logo_bytes)
+            safe_open.write_new_or_truncate(
+                logo_path,
+                roots,
+                logo_bytes,
+                exclusive=True,
+                label="logo",
+                on_created=lambda ident: created.append((logo_path, ident)),
+            )
             inline_attachments.append({"path": os.path.abspath(logo_path), "cid": email_render.LOGO_CID})
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         # Half a rendered email is not handed back, so do not leave it behind.
-        for leftover in created:
-            with contextlib.suppress(OSError):
-                os.unlink(leftover)
+        for leftover, ident in created:
+            safe_open.remove_created(leftover, roots, ident)
         return {"error": f"Could not write the rendered email into {directory_arg}: {exc}"}
 
     findings = validate(html_content, subject=subject, content_type="text/html", require_frame=True)
@@ -1331,6 +1412,12 @@ async def validate_email_address(
         "source": label,
         "validation": "local_syntax",
     }
+
+
+# Server start: pin the configured roots before any tool call (and so before
+# sandbox code can swap one); a root still missing is pinned lazily later, and
+# a symlinked root is only trusted here.
+safe_open.pin_at_startup(_configured_dirs())
 
 
 if __name__ == "__main__":
