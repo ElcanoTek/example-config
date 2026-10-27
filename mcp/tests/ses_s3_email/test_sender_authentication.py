@@ -1376,8 +1376,12 @@ async def test_untrusted_mail_bodies_are_never_fetched_even_with_has_payload(mon
         sender_contains="vendor.example", has_payload=False, date_from="2026-10-26", date_to="2026-10-26"
     )
     assert "emails/forged" not in s3.full_reads
-    skipped = [w for w in result["search_warnings"] if w["code"] == "unauthenticated_sender_skipped"]
-    assert skipped and skipped[0]["count"] == 1
+    # With has_payload set, an untrusted header-only match is not counted: whether it
+    # would have matched (payload or not) cannot be known without its body.
+    assert not [w for w in result["search_warnings"] if w["code"] == "unauthenticated_sender_skipped"]
+    plain = await inbox.search_emails(sender_contains="vendor.example", date_from="2026-10-26", date_to="2026-10-26")
+    skipped = [w for w in plain["search_warnings"] if w["code"] == "unauthenticated_sender_skipped"]
+    assert skipped and skipped[0]["count"] == 1  # without has_payload the headers decide
 
     s3.full_reads.clear()
     fuzzy = await inbox.search_emails_fuzzy(
@@ -1422,3 +1426,25 @@ def test_short_keys_under_a_format_without_trailing_slash_do_not_crash(monkeypat
     assert inbox._parse_partition("emails/legacy/x") is None
     assert inbox._in_date_tree("emails/legacy/") is False
     assert inbox._parse_partition("emails/2026/10/26abc") is not None
+
+
+@pytest.mark.asyncio
+async def test_an_s3_fetch_error_fails_the_search_instead_of_returning_success(monkeypatch):
+    from botocore.exceptions import ClientError
+
+    class DeniedS3(_FakeS3):
+        async def get_object(self, Key, **kwargs):  # noqa: N803 - boto3's names
+            if "Range" not in kwargs:
+                raise ClientError({"Error": {"Code": "AccessDenied", "Message": "denied"}}, "GetObject")
+            return await super().get_object(Key=Key, **kwargs)
+
+    objects = {"emails/ok": _plain_mail("r@vendor.example", "amazonses.com; dmarc=pass header.from=vendor.example")}
+    monkeypatch.setattr(inbox, "session", _FakeSession(DeniedS3(objects)))
+    monkeypatch.setattr(inbox, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(inbox, "S3_PREFIX", "emails/")
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "")
+    monkeypatch.setattr(inbox, "EMAIL_SENDER_AUTH", "required")
+    result = await inbox.search_emails(
+        sender_contains="vendor.example", has_payload=True, date_from="2026-10-26", date_to="2026-10-26"
+    )
+    assert result["status"] == "error" and "AccessDenied" in result["error"], result

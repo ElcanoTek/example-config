@@ -760,3 +760,17 @@ async def test_batch_errors_carry_the_per_link_code_and_retryable(dest, monkeypa
     result = await ses_s3_email.download_all_link_attachments("emails/k", output_dir=str(dest))
     assert result["errors"][0]["code"] == "link_batch_budget_exceeded"
     assert result["errors"][0]["retryable"] is False
+
+
+@respx.mock
+async def test_a_live_download_over_the_batch_budget_carries_its_code(dest):
+    respx.get(URL).mock(return_value=httpx.Response(200, content=b"x" * 600, headers={"content-type": "text/csv"}))
+    token = ses_s3_email._BATCH_BUDGET.set([100])
+    try:
+        result = await ses_s3_email.download_link_attachment(url=URL, output_dir=str(dest))
+    finally:
+        ses_s3_email._BATCH_BUDGET.reset(token)
+    assert result["status"] == "error"
+    assert result["code"] == "link_batch_budget_exceeded" and result["retryable"] is False
+    single = await ses_s3_email.download_link_attachment(url=URL, output_dir=str(dest))  # no batch: no code
+    assert single["status"] == "success"

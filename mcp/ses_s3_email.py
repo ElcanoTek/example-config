@@ -2555,10 +2555,11 @@ async def search_emails(
                         if recipient_lower and recipient_lower not in recipients.lower():
                             continue
                         if not trusted:
-                            # Never fetch or parse an untrusted message's body: only
-                            # the header filters above decide whether it is counted
-                            # (has_payload cannot be reflected in the count).
-                            unauthenticated_skipped += 1
+                            # Never fetch or parse an untrusted message's body. It is
+                            # counted only when the header filters alone decide the
+                            # match: with has_payload set we cannot know, so no count.
+                            if has_payload is None:
+                                unauthenticated_skipped += 1
                             continue
 
                         need_full = has_payload is not None or include_body_preview
@@ -2570,12 +2571,14 @@ async def search_emails(
                         body_html = ""
 
                         if need_full:
-                            # One malformed (or unreadable) message never fails the
-                            # whole search: it is logged and skipped.
+                            # S3 fetch errors (AccessDenied, throttling, an outage)
+                            # propagate: the search fails instead of claiming success.
+                            response = await s3_client.get_object(Bucket=S3_BUCKET, Key=obj["Key"])
+                            raw_email = await response["Body"].read()
+                            full_fetches += 1
+                            # One malformed message never fails the whole search: only
+                            # its MIME parse is caught, logged and skipped.
                             try:
-                                response = await s3_client.get_object(Bucket=S3_BUCKET, Key=obj["Key"])
-                                raw_email = await response["Body"].read()
-                                full_fetches += 1
                                 msg: Message = await asyncio.get_running_loop().run_in_executor(
                                     None, email.message_from_bytes, raw_email
                                 )
@@ -2584,7 +2587,7 @@ async def search_emails(
                                 )
                             except Exception as exc:  # noqa: BLE001 - skip this message only
                                 parse_errors += 1
-                                logger.warning(f"Skipped email {obj['Key']}: its body could not be read ({exc})")
+                                logger.warning(f"Skipped email {obj['Key']}: its body could not be parsed ({exc})")
                                 continue
 
                             attachments = content["attachments"]
@@ -3922,6 +3925,7 @@ async def _download_link_attachment(
             "status": "error",
             "url": url,
             "error": f"{e} The link was not saved.",
+            **({"code": "link_batch_budget_exceeded"} if e.batch else {}),
             "retryable": False,
         }
     except httpx.TimeoutException:
