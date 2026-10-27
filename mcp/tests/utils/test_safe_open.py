@@ -205,3 +205,22 @@ def test_a_root_swapped_before_resolve_is_not_adopted(tree, tmp_path):
     root.symlink_to(tree["outside"], target_is_directory=True)
     with pytest.raises(safe_open.UnsafePathError):
         safe_open.read_bytes(str(root / "sub" / "a.txt"), [str(root)])
+
+
+def test_pins_are_keyed_by_the_configured_path_not_its_resolution(tmp_path):
+    """Callers pass configured paths: a root swapped between two calls is refused,
+    because the second call reuses the first call's pin instead of resolving
+    the (now symlinked) configured path into a new root."""
+    configured = tmp_path / "configured-root"
+    configured.mkdir()
+    (configured / "a.txt").write_bytes(b"inside")
+    assert safe_open.read_bytes(str(configured / "a.txt"), [str(configured)])[0] == b"inside"
+    target = tmp_path / "attacker"
+    target.mkdir()
+    (target / "a.txt").write_bytes(b"secret")
+    configured.rename(tmp_path / "configured.orig")
+    configured.symlink_to(target, target_is_directory=True)
+    # The pin still names the directory first configured, never the attacker's target.
+    assert safe_open.pin_roots([str(configured)])[0] == str(configured)
+    with pytest.raises(safe_open.UnsafePathError):
+        safe_open.read_bytes(str(configured / "a.txt"), [str(configured)])

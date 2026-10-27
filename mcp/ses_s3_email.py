@@ -67,24 +67,35 @@ logger = logging.getLogger(__name__)
 # URLs in log lines lose their query string: presigned S3 / report links carry
 # their credential (X-Amz-Signature, token=...) there, and anyone who can read
 # a log line could otherwise download the report until the link expires.
-_URL_QUERY_RE = re.compile(r"(https?://[^\s?#'\"<>]+)\?[^\s'\"<>]*", re.IGNORECASE)
+_URL_QUERY_RE = re.compile(r"(https?://[^\s?#'\"<>]+)([?#][^\s'\"<>]*)", re.IGNORECASE)
 
 
-# Every query VALUE is masked (keys kept: ?upn=***&ticket=***): bearer links put
-# their credential under arbitrary names, so guessing which ones are secret is
-# not safe. Idempotent: an already-masked value stays "***".
-def _mask_query(query: str) -> str:
-    parts = []
-    for pair in query.split("&"):
-        name, sep, _value = pair.partition("=")
-        parts.append(f"{name}=***" if sep else pair)
-    return "&".join(parts)
+# Every query and fragment component is masked: values of keyed ones (keys kept:
+# ?upn=***&ticket=***), and keyless ones entirely (?eyJhbGci... -> ?***), because
+# bearer links put their credential under arbitrary names or no name at all.
+# Idempotent: an already-masked value stays "***".
+def _mask_components(part: str) -> str:
+    masked = []
+    for component in part.split("&"):
+        if not component:
+            masked.append(component)
+            continue
+        name, sep, _value = component.partition("=")
+        masked.append(f"{name}=***" if sep else "***")
+    return "&".join(masked)
+
+
+def _mask_query(rest: str) -> str:
+    """``rest`` starts with "?" or "#": mask the query, then the fragment."""
+    query, hash_sign, fragment = rest[1:].partition("#") if rest.startswith("?") else ("", "#", rest[1:])
+    out = ("?" + _mask_components(query)) if rest.startswith("?") else ""
+    if hash_sign:
+        out += "#" + _mask_components(fragment)
+    return out
 
 
 def redact_url_queries(text: str) -> str:
-    return _URL_QUERY_RE.sub(
-        lambda m: m.group(0).split("?", 1)[0] + "?" + _mask_query(m.group(0).split("?", 1)[1]), text
-    )
+    return _URL_QUERY_RE.sub(lambda m: m.group(1) + _mask_query(m.group(2)), text)
 
 
 class _RedactUrlQueries(logging.Filter):
@@ -2527,7 +2538,9 @@ async def search_emails_fuzzy(
                             if "subject" in search_fields:
                                 searchable_parts.append(subject)
                             if "sender" in search_fields:
-                                searchable_parts.append(sender)
+                                # The parsed mailbox only, never the display name
+                                # ("Vendor <attacker@evil.example>" is not Vendor).
+                                searchable_parts.append(parseaddr(sender)[1])
                             if "body" in search_fields:
                                 searchable_parts.append(body)
 
@@ -2848,54 +2861,37 @@ def _archive_too_large(url: str, size: int) -> dict[str, Any]:
 
 
 async def _fetch_archived_link(
-    url: str, download_dir: str | Path, filename: str | None = None
+    url: str, download_dir: str | Path, filename: str | None = None, *, read_timeout: float | None = None
 ) -> dict[str, Any] | None:
     """Try to serve a link from the S3 archive written at email-arrival time.
 
     Returns a success result dict if the archive has the URL, else None.
-    Never raises — archive lookup is a best-effort fallback."""
-    try:
-        url_hash = archive_hash_for_url(url)
-        prefix = f"{ARCHIVE_PREFIX}by-url/{url_hash}/"
-        async with session.client("s3", region_name=AWS_REGION) as s3_client:
-            listing = await s3_client.list_objects_v2(Bucket=S3_BUCKET, Prefix=prefix, MaxKeys=1)
-            contents = listing.get("Contents", [])
-            if not contents:
-                return None
-            archive_key = contents[0]["Key"]
-            archived_name = archive_key.rsplit("/", 1)[-1]
-            # The archived copy gets the same byte cap as the live link.
-            listed = contents[0].get("Size")
-            if isinstance(listed, int) and listed > LINK_DOWNLOAD_MAX_BYTES:
-                return _archive_too_large(url, listed)
-            response = await s3_client.get_object(Bucket=S3_BUCKET, Key=archive_key)
-            declared = response.get("ContentLength")
-            if isinstance(declared, int) and declared > LINK_DOWNLOAD_MAX_BYTES:
-                return _archive_too_large(url, declared)
-            # StreamingBody.read(n) may return fewer bytes than asked before EOF:
-            # read until EOF under a cumulative cap, then check it is complete.
-            chunks: list[bytes] = []
-            total = 0
-            while True:
-                chunk = await response["Body"].read(1024 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > LINK_DOWNLOAD_MAX_BYTES:
-                    return _archive_too_large(url, total)
-                _charge_batch_budget(len(chunk))
-                chunks.append(chunk)
-            content = b"".join(chunks)
-            if isinstance(declared, int) and len(content) != declared:
-                return {
-                    "status": "error",
-                    "source": "s3_archive",
-                    "url": url,
-                    "error": f"The archived copy was truncated ({len(content)} of {declared} bytes); not saved.",
-                    "retryable": True,
-                }
-            metadata = response.get("Metadata", {})
+    Never raises — archive lookup is a best-effort fallback.
 
+    ``read_timeout`` bounds the S3 lookup and read only. The local write that
+    follows is never put under a deadline: a cancelled to_thread write would
+    keep running after this returned, so it is always awaited to completion."""
+    try:
+        if read_timeout is not None:
+            read = await asyncio.wait_for(_read_archived(url), timeout=read_timeout)
+        else:
+            read = await _read_archived(url)
+    except TimeoutError:
+        logger.warning(f"Archive fallback read for {url} ran out of time")
+        return None
+    except Exception as e:
+        logger.warning(f"Archive fallback lookup failed for {url}: {e}")
+        return None
+    if read is None or "status" in read:
+        return read
+    archive_key, archived_name, content, response, metadata = (
+        read["key"],
+        read["name"],
+        read["content"],
+        read["response"],
+        read["metadata"],
+    )
+    try:
         reserved = reserve_output_file(download_dir, filename or archived_name, f"archive:{url}")
         output_path = reserved.path
         await write_reserved(reserved, content)
@@ -2920,8 +2916,60 @@ async def _fetch_archived_link(
             ),
         }
     except Exception as e:
-        logger.warning(f"Archive fallback lookup failed for {url}: {e}")
+        logger.warning(f"Archive fallback write failed for {url}: {e}")
         return None
+
+
+async def _read_archived(url: str) -> dict[str, Any] | None:
+    """The archived copy's bytes (``{"key", "name", "content", "response",
+    "metadata"}``), a refusal dict (``status``), or None when not archived."""
+    url_hash = archive_hash_for_url(url)
+    prefix = f"{ARCHIVE_PREFIX}by-url/{url_hash}/"
+    async with session.client("s3", region_name=AWS_REGION) as s3_client:
+        listing = await s3_client.list_objects_v2(Bucket=S3_BUCKET, Prefix=prefix, MaxKeys=1)
+        contents = listing.get("Contents", [])
+        if not contents:
+            return None
+        archive_key = contents[0]["Key"]
+        archived_name = archive_key.rsplit("/", 1)[-1]
+        # The archived copy gets the same byte cap as the live link.
+        listed = contents[0].get("Size")
+        if isinstance(listed, int) and listed > LINK_DOWNLOAD_MAX_BYTES:
+            return _archive_too_large(url, listed)
+        response = await s3_client.get_object(Bucket=S3_BUCKET, Key=archive_key)
+        declared = response.get("ContentLength")
+        if isinstance(declared, int) and declared > LINK_DOWNLOAD_MAX_BYTES:
+            return _archive_too_large(url, declared)
+        # StreamingBody.read(n) may return fewer bytes than asked before EOF:
+        # read until EOF under a cumulative cap, then check it is complete.
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = await response["Body"].read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > LINK_DOWNLOAD_MAX_BYTES:
+                return _archive_too_large(url, total)
+            _charge_batch_budget(len(chunk))
+            chunks.append(chunk)
+        content = b"".join(chunks)
+        if isinstance(declared, int) and len(content) != declared:
+            return {
+                "status": "error",
+                "source": "s3_archive",
+                "url": url,
+                "error": f"The archived copy was truncated ({len(content)} of {declared} bytes); not saved.",
+                "retryable": True,
+            }
+        metadata = response.get("Metadata", {})
+    return {
+        "key": archive_key,
+        "name": archived_name,
+        "content": content,
+        "response": response,
+        "metadata": metadata,
+    }
 
 
 # Caps for a link found in an email body (attacker-controllable). Reports this
@@ -3031,7 +3079,8 @@ async def download_link_attachment(
     # starve the fallback that exists for exactly that case.
     started = asyncio.get_running_loop().time()
     deadline = started + effective_timeout
-    live_deadline = deadline - min(30.0, effective_timeout * 0.25)
+    archive_slice = min(30.0, effective_timeout * 0.25)
+    live_deadline = deadline - archive_slice
 
     async def _fetch(target_url: str) -> httpx.Response:
         # SSRF guard: the request event hook vets the host of EVERY hop
@@ -3092,14 +3141,13 @@ async def download_link_attachment(
             raise httpx.TimeoutException(f"no complete response within {effective_timeout}s") from exc
 
     async def _archived_within_deadline() -> dict[str, Any] | None:
-        # The archive fallback gets only what is left of the one deadline.
-        remaining = deadline - asyncio.get_running_loop().time()
+        # The archive read gets its reserved slice (min(30 s, 25%)), and never
+        # more than what is left of the one deadline, even when the live fetch
+        # failed fast. The local write is not bounded (see _fetch_archived_link).
+        remaining = min(archive_slice, deadline - asyncio.get_running_loop().time())
         if remaining <= 0:
             return None
-        try:
-            return await asyncio.wait_for(_fetch_archived_link(url, download_dir, filename), timeout=remaining)
-        except TimeoutError:
-            return None
+        return await _fetch_archived_link(url, download_dir, filename, read_timeout=remaining)
 
     def _redirect_chain(response: httpx.Response) -> list[str]:
         chain = [str(h.url) for h in response.history]
@@ -3363,6 +3411,15 @@ async def download_all_link_attachments(
         return {"status": "error", "s3_key": s3_key, "error": str(e)}
 
 
+def _merge_warning(warnings: list[dict[str, Any]], warning: dict[str, Any], day: str) -> None:
+    code = warning.get("code")
+    for existing in warnings:
+        if existing.get("code") == code:
+            existing.setdefault("days", []).append(day)
+            return
+    warnings.append({**warning, "days": [day]})
+
+
 @mcp.tool()
 async def find_latest_report(
     sender_contains: str | None = None,
@@ -3427,6 +3484,7 @@ async def find_latest_report(
         days_searched = 0
         first_match_date: str | None = None
         payload_flag = True if require_payload else None
+        warnings: list[dict[str, Any]] = []
 
         for offset in range(lookback_days):
             day = anchor_date - timedelta(days=offset)
@@ -3445,6 +3503,8 @@ async def find_latest_report(
                 include_body_preview=False,
             )
 
+            for warning in result.get("search_warnings") or []:
+                _merge_warning(warnings, warning, day_iso)
             if result.get("status") != "success":
                 continue
 
@@ -3465,6 +3525,9 @@ async def find_latest_report(
             "first_match_date": first_match_date,
             "match_count": len(collected),
             "emails": collected,
+            # The day searches' warnings (e.g. unauthenticated_sender_skipped), one
+            # per code, with the days they came from and summed counts in words.
+            "search_warnings": warnings,
             "search_criteria": {
                 "sender_contains": sender_contains,
                 "subject_contains": subject_contains,

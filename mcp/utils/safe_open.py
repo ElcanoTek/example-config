@@ -84,18 +84,40 @@ _ROOT_PINS: dict[str, _Root] = {}
 
 
 def _pin_one(root: str) -> _Root | None:
+    """Pin one CONFIGURED root, keyed by the literal string the caller configured.
+
+    The literal path is opened once with O_NOFOLLOW|O_DIRECTORY and its
+    (device, inode) recorded with its realpath; later calls reuse that pin and
+    never resolve the literal again, so swapping the configured path for a
+    symlink later changes nothing. A configured root whose own last component is
+    a symlink (operator config such as macOS /tmp) is resolved once, here, at
+    first use. Callers must pass the configured paths, not realpath()ed ones:
+    a resolved string would be a new cache key after a swap."""
     if isinstance(root, _Root) and root.ident is not None:
         return root
     cached = _ROOT_PINS.get(root)
     if cached is not None:
         return cached
-    real = _Root(os.path.realpath(root))
     try:
-        st = os.stat(real)
+        fd = os.open(root, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC)
+    except OSError as exc:
+        if exc.errno not in (errno.ELOOP, errno.ENOTDIR, errno.EMLINK):
+            return None  # not there yet: nothing to pin, nothing under it to open
+        fd = None  # the configured root is itself a symlink: resolved once, now
+    try:
+        real = _Root(os.path.realpath(root))
+        st = os.fstat(fd) if fd is not None else os.stat(real)
+        if not stat.S_ISDIR(st.st_mode):
+            return None
+        if fd is not None:
+            check = os.stat(real)
+            if (check.st_dev, check.st_ino) != (st.st_dev, st.st_ino):
+                return None  # it moved while being pinned: do not guess
     except OSError:
-        return None  # not there yet: nothing to pin, nothing under it to open
-    if not stat.S_ISDIR(st.st_mode):
         return None
+    finally:
+        if fd is not None:
+            os.close(fd)
     real.ident = (st.st_dev, st.st_ino)
     _ROOT_PINS[root] = real
     return real

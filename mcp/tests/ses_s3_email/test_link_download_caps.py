@@ -254,3 +254,35 @@ async def test_a_batch_is_bounded_in_count_and_shares_one_byte_budget(dest, monk
     assert result["downloaded_count"] == 5  # 5 x 400 bytes fit the 2000-byte budget
     assert result["error_count"] == 25  # 15 over budget + 10 over the link count
     assert sum("at most 20 links" in e["error"] for e in result["errors"]) == 10
+
+
+@respx.mock
+async def test_the_archive_gets_only_its_slice_even_when_live_fails_fast(dest, monkeypatch):
+    monkeypatch.setattr(ses_s3_email, "LINK_DOWNLOAD_MAX_SECONDS", 40)
+    seen: list = []
+
+    async def archive(url, download_dir, filename=None, *, read_timeout=None):
+        seen.append(read_timeout)
+        return None
+
+    monkeypatch.setattr(ses_s3_email, "_fetch_archived_link", archive)
+    respx.get(URL).mock(return_value=httpx.Response(500))
+    await ses_s3_email.download_link_attachment(url=URL, output_dir=str(dest), timeout_seconds=40)
+    assert seen and seen[0] <= 10.0 + 0.01  # min(30 s, 25% of 40 s), not the ~40 s left
+
+
+async def test_an_archive_write_is_never_left_running_past_the_deadline(dest, monkeypatch):
+    """Only the S3 read is under the deadline; the local write is awaited to completion."""
+    monkeypatch.setattr(ses_s3_email, "session", _archive_session(_ChunkedBody(b"a,b\n1,2\n"), length=8))
+    finished: list = []
+    real_write = ses_s3_email.write_reserved
+
+    async def slow_write(reserved, data):
+        await asyncio.sleep(0.3)
+        await real_write(reserved, data)
+        finished.append(True)
+
+    monkeypatch.setattr(ses_s3_email, "write_reserved", slow_write)
+    result = await ORIGINAL_ARCHIVE(URL, dest, read_timeout=0.2)
+    assert finished == [True]  # returned only after the write completed
+    assert result["status"] == "success"

@@ -370,3 +370,31 @@ def test_pinned_roots_are_not_re_resolved(tmp_path):
     root.symlink_to(other, target_is_directory=True)
     with pytest.raises(safe_open.UnsafePathError):
         safe_open.read_bytes(str(root / "a.txt"), pinned)
+
+
+@pytest.mark.asyncio
+async def test_a_root_swapped_between_two_calls_is_refused(workspace, sent, tmp_path):
+    """Roots are pinned by their CONFIGURED path for the process: the second call
+    does not resolve the now-symlinked CUTLASS_RUN_WORKDIR into a new root."""
+    ws = workspace["ws"]
+    (ws / "report.csv").write_bytes(b"date,revenue\n")
+    first = await ses_sender.send_email(
+        to_email="alice@example.com",
+        subject="Report",
+        content=framed("<p>Hi</p>"),
+        attachments=[str(ws / "report.csv")],
+    )
+    assert first.get("attachments_count") == 1, first
+    decoy = tmp_path / "decoy"
+    decoy.mkdir()
+    (decoy / "report.csv").write_bytes(SECRET)
+    ws.rename(tmp_path / "ws.orig")
+    ws.symlink_to(decoy, target_is_directory=True)
+    second = await ses_sender.send_email(
+        to_email="alice@example.com",
+        subject="Report 2",
+        content=framed("<p>Hi</p>"),
+        attachments=[str(ws / "report.csv")],
+    )
+    assert "error" in second, second
+    assert all(SECRET not in a["RawContent"] for r in sent for a in r["Content"]["Simple"].get("Attachments", []))

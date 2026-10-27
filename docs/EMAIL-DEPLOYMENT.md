@@ -77,7 +77,7 @@ root:root`, written by production-support's email provisioning):
   only through SES's own `dmarc=pass`. `sender_contains` takes the sender's DOMAIN (matching it
   and its subdomains on label boundaries) or a full address, several
   comma-separated, and matches the authenticated mailbox, never the display
-  name: a bare vendor name matches nothing. Each result carries
+  name (fuzzy sender keywords too): a bare vendor name matches nothing. Each result carries
   `sender_authenticated`; skipped mail is reported as an
   `unauthenticated_sender_skipped` warning.
   Optional knobs: `EMAIL_SENDER_AUTH=off` falls back to the forgeable
@@ -91,7 +91,8 @@ root:root`, written by production-support's email provisioning):
   `EMAIL_LINK_MAX_COUNT` (20) and `EMAIL_LINK_BATCH_MAX_BYTES` (200 MB) bound
   `download_all_link_attachments`, which fetches 3 links at a time. The debug
   log defaults to a private per-user file (`<tmp>/ses_s3_email-<uid>/debug.log`,
-  0600), and every URL query value and credential is redacted from log lines.
+  0600), and every URL query value (keyless components and `#fragment`s
+  included) and credential is redacted from log lines.
 - Outbound: `SES_OUTBOUND_AWS_ACCESS_KEY_ID`,
   `SES_OUTBOUND_AWS_SECRET_ACCESS_KEY`, `SES_OUTBOUND_AWS_REGION`,
   `SES_OUTBOUND_FROM_EMAIL`, `SES_OUTBOUND_REPLY_TO`,

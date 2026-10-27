@@ -354,3 +354,45 @@ def test_shared_hosting_suffixes_never_align_tenants():
     assert not inbox._aligned("evil.onmicrosoft.com", "vendor.onmicrosoft.com")
     genuine = "amazonses.com; dkim=pass header.d=vendor.onmicrosoft.com; dmarc=none"
     assert inbox.authenticated_sender_domain([genuine], ix) == "vendor.onmicrosoft.com"
+
+
+def test_redaction_masks_keyless_components_and_fragments():
+    assert inbox.redact_url_queries("https://b/x?eyJhbGciOi") == "https://b/x?***"
+    assert inbox.redact_url_queries("https://b/x?a=1&eyJ#token=z") == "https://b/x?a=***&***#token=***"
+    assert inbox.redact_url_queries("https://b/x#frag") == "https://b/x#***"
+    assert inbox.redact_url_queries("see https://b/x now") == "see https://b/x now"
+
+
+@pytest.mark.asyncio
+async def test_fuzzy_sender_keywords_never_match_the_display_name(monkeypatch):
+    raw = (
+        b"Authentication-Results: amazonses.com; dmarc=pass header.from=evil.example\r\n"
+        b"From: Vendor <attacker@evil.example>\r\nTo: inbox@example.com\r\nSubject: Daily\r\n"
+        b"Date: Mon, 26 Oct 2026 10:00:00 +0000\r\n\r\nbody\r\n"
+    )
+    monkeypatch.setattr(inbox, "session", _FakeSession(_FakeS3({"emails/spoof": raw})))
+    monkeypatch.setattr(inbox, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(inbox, "S3_PREFIX", "emails/")
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "")
+    result = await inbox.search_emails_fuzzy(
+        keywords=["vendor"], search_fields=["sender"], date_from="2026-10-26", date_to="2026-10-26"
+    )
+    assert result["emails"] == [], result
+
+
+@pytest.mark.asyncio
+async def test_find_latest_report_carries_the_day_searches_warnings(monkeypatch):
+    async def day_search(**kwargs):
+        return {
+            "status": "success",
+            "emails": [],
+            "search_warnings": [{"code": "unauthenticated_sender_skipped", "severity": "high", "message": "m"}],
+        }
+
+    monkeypatch.setattr(inbox, "search_emails", day_search)
+    result = await inbox.find_latest_report(
+        sender_contains="vendor.example", on_or_before="2026-10-26", lookback_days=2
+    )
+    codes = [w["code"] for w in result["search_warnings"]]
+    assert codes == ["unauthenticated_sender_skipped"]
+    assert result["search_warnings"][0]["days"] == ["2026-10-26", "2026-10-25"]

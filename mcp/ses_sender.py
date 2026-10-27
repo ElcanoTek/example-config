@@ -123,9 +123,9 @@ def _pinned_call(fn):
 
 
 def _allowed_dirs() -> list[str]:
-    """This call's pinned roots when a tool call is running, else freshly configured ones."""
+    """The pinned allowed roots: this call's when a tool call is running."""
     pinned = _CALL_ROOTS.get()
-    return list(pinned) if pinned is not None else _configured_dirs()
+    return list(pinned) if pinned is not None else safe_open.pin_roots(_configured_dirs())
 
 
 def _configured_dirs() -> list[str]:
@@ -143,7 +143,7 @@ def _configured_dirs() -> list[str]:
     # attachment source: the deal sheets and reports the run just produced.
     run_workdir = os.environ.get("CUTLASS_RUN_WORKDIR", "").strip()
     if run_workdir:
-        allowed_dirs.append(os.path.realpath(run_workdir))
+        allowed_dirs.append(run_workdir)
 
     # cwd, but never when it IS the bundle checkout. Older fleets spawned every
     # stdio server with cwd = the bundle root, which made the whole checkout —
@@ -152,19 +152,22 @@ def _configured_dirs() -> list[str]:
     # that tree is a deliberate attachment source. cwd stays allowed otherwise
     # because these servers are also run by a local coding agent
     # (docs/TESTING-LOCALLY.md), where cwd is the operator's own project dir.
-    cwd = os.path.realpath(os.getcwd())
-    if cwd != _BUNDLE_ROOT:
+    cwd = os.getcwd()
+    if os.path.realpath(cwd) != _BUNDLE_ROOT:
         allowed_dirs.append(cwd)
 
-    allowed_dirs.append(os.path.realpath(tempfile.gettempdir()))
+    allowed_dirs.append(tempfile.gettempdir())
 
     extra = os.environ.get("CUTLASS_ALLOWED_DIRS", "")
     if extra:
         for d in extra.split(":"):
             d = d.strip()
             if d:
-                allowed_dirs.append(os.path.realpath(d))
+                allowed_dirs.append(d)
 
+    # The CONFIGURED paths, unresolved: utils.safe_open.pin_roots keys its
+    # process-wide pins by them, so a root swapped for a symlink later is never
+    # re-resolved into a new root.
     return list(dict.fromkeys(allowed_dirs))
 
 
