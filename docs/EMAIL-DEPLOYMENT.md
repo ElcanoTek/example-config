@@ -88,8 +88,7 @@ root:root`, written by production-support's email provisioning):
   From-substring match, fuzzy sender keywords included (every search then warns);
   `EMAIL_TRUSTED_LEGACY_PREFIXES` (comma-separated S3 key prefixes, off by
   default) admits operator-imported legacy mail that has no
-  `Authentication-Results` (mail in the dated tree is windowed by its partition
-  day); `EMAIL_AUTHSERV_ID` (default `amazonses.com`) names
+  `Authentication-Results` (mail in the dated tree is windowed by a valid Date header on its partition's own day, else by the partition day); `EMAIL_AUTHSERV_ID` (default `amazonses.com`) names
   the receiver. Email-link download limits:
   `EMAIL_LINK_MAX_BYTES` (200 MB per file) and `EMAIL_LINK_MAX_SECONDS` (240 s)
   cap each download, every redirect hop and the archive fallback (which gets at
@@ -102,7 +101,7 @@ root:root`, written by production-support's email provisioning):
   240 s deadline and one `EMAIL_LINK_BATCH_MAX_BYTES` budget (1 GB, each file
   still under 200 MB). The debug
   log defaults to a private per-user file (`<tmp>/ses_s3_email-<uid>/debug.log`,
-  0600; refused if another user owns it or it has extra hard links), and in log lines a URL keeps only its scheme, host and last path segment (only when it is an ordinary filename such as report.csv; a token-like segment becomes `***`): earlier path segments become `…`, userinfo (up to the last `@` in the authority) becomes `***@`, and the whole query and fragment become `?***` and `#***` (no query keys are kept), so presigned signatures, tokens and capability paths (`/download/<secret>/report.csv`) never reach a log. A masked URL is followed by `[url-sha256:<12 hex>]`, a short hash of the full original URL, so operators can still tell links apart. Live fetch, HTML chase and archive fallback share one byte budget
+  0600; refused if another user owns it or it has extra hard links), and in log lines a URL keeps only its scheme and host: the path collapses to `…` and its last segment keeps only a short alphabetic extension (`/…/***.csv`, else `***`; even a filename-shaped segment can be a token), userinfo (up to the last `@` in the authority) becomes `***@`, and the whole query and fragment become `?***` and `#***` (no query keys are kept), so presigned signatures, tokens and capability paths (`/download/<secret>.csv`) never reach a log. A masked URL is followed by `[url-id:<12 hex>]`, an HMAC-SHA256 of the full original URL under a random per-process key (so a short secret cannot be brute-forced back out of it), so operators can still tell links apart within one process's logs. Live fetch, HTML chase and archive fallback share one byte budget
   per link.
 - Outbound: `SES_OUTBOUND_AWS_ACCESS_KEY_ID`,
   `SES_OUTBOUND_AWS_SECRET_ACCESS_KEY`, `SES_OUTBOUND_AWS_REGION`,

@@ -21,7 +21,7 @@ import ses_s3_email as inbox
 
 FROM = "Vendor Reports <reports@vendor.example>"
 
-_URL_HASH_RE = __import__("re").compile(r" \[url-sha256:[0-9a-f]{12}\]")
+_URL_HASH_RE = __import__("re").compile(r" \[url-id:[0-9a-f]{12}\]")
 
 
 def _redacted(text: str) -> str:
@@ -160,9 +160,9 @@ def test_httpx_request_lines_never_carry_a_query_value():
         httpx_logger.setLevel(old_level)
     text = stream.getvalue()
     assert "SECRET1" not in text and "SECRET2" not in text
-    assert "https://b/x.csv?***" in text and "upn" not in text
+    assert "https://b/***.csv?***" in text and "upn" not in text
     # Idempotent over already-masked values.
-    assert _redacted("https://b/x.csv?***") == "https://b/x.csv?***"
+    assert _redacted("https://b/***.csv?***") == "https://b/***.csv?***"
 
 
 def test_a_quoted_mail_from_cannot_inject_a_verdict():
@@ -311,7 +311,7 @@ def test_url_query_strings_are_redacted_from_logs(caplog):
     with caplog.at_level(logging.INFO, logger=inbox.logger.name):
         inbox.logger.info("downloading %s", url)
     assert "deadbeef" not in caplog.text and "AKIAEXAMPLE" not in caplog.text
-    assert "https://bucket.s3.amazonaws.com/report.csv?***" in caplog.text
+    assert "https://bucket.s3.amazonaws.com/***.csv?***" in caplog.text
 
 
 def test_default_debug_log_is_private(monkeypatch, tmp_path):
@@ -392,14 +392,14 @@ def test_shared_hosting_suffixes_never_align_tenants():
 
 
 def test_redaction_masks_keyless_components_and_fragments():
-    assert _redacted("https://b/x.csv?eyJhbGciOi") == "https://b/x.csv?***"
-    assert _redacted("https://b/x.csv?a=1&eyJ#token=z") == "https://b/x.csv?***#***"
+    assert _redacted("https://b/x.csv?eyJhbGciOi") == "https://b/***.csv?***"
+    assert _redacted("https://b/x.csv?a=1&eyJ#token=z") == "https://b/***.csv?***#***"
     # A credential used as the parameter NAME (empty value) is not kept either.
-    assert _redacted("https://b/x.csv?eyJhbGciOiJIUzI1NiJ9.e30.sig=") == "https://b/x.csv?***"
+    assert _redacted("https://b/x.csv?eyJhbGciOiJIUzI1NiJ9.e30.sig=") == "https://b/***.csv?***"
     # An apostrophe inside the query does not end the redaction.
-    assert _redacted("https://b/x.csv?t=ab'cd") == "https://b/x.csv?***"
-    assert _redacted("https://b/x.csv#frag") == "https://b/x.csv#***"
-    assert _redacted("see https://b/x.csv now") == "see https://b/x.csv now"
+    assert _redacted("https://b/x.csv?t=ab'cd") == "https://b/***.csv?***"
+    assert _redacted("https://b/x.csv#frag") == "https://b/***.csv#***"
+    assert _redacted("see https://b/x.csv now") == "see https://b/***.csv now"
 
 
 @pytest.mark.asyncio
@@ -446,12 +446,12 @@ async def test_find_latest_report_carries_the_day_searches_warnings(monkeypatch)
 
 def test_url_userinfo_is_masked_with_or_without_a_query():
     assert _redacted("GET https://user:pa55@example.com/report.csv done") == (
-        "GET https://***@example.com/report.csv done"
+        "GET https://***@example.com/***.csv done"
     )
-    assert _redacted("https://user:pa55@example.com/r.csv?sig=1#t=2") == ("https://***@example.com/r.csv?***#***")
+    assert _redacted("https://user:pa55@example.com/r.csv?sig=1#t=2") == ("https://***@example.com/***.csv?***#***")
     # Every RFC 3986 userinfo character, apostrophe and sub-delims included.
     for userinfo in ("user:pa'ss", "u(s)er:p*a+s,s;=!$&~", "us%40er:p.a_s-s"):
-        assert _redacted(f"https://{userinfo}@example.com/x.csv") == "https://***@example.com/x.csv", userinfo
+        assert _redacted(f"https://{userinfo}@example.com/x.csv") == "https://***@example.com/***.csv", userinfo
     assert _redacted("mail me at reports@example.com") == "mail me at reports@example.com"
 
 
@@ -804,8 +804,8 @@ async def test_the_newest_match_in_a_partition_wins_even_when_its_key_sorts_last
 
 
 def test_a_query_after_an_apostrophe_in_the_path_is_redacted():
-    assert _redacted("https://example.com/o'clock.csv?token=secret") == "https://example.com/o'clock.csv?***"
-    assert _redacted("GET https://example.com/a'b/c.csv#t=1 done") == "GET https://example.com/\u2026/c.csv#*** done"
+    assert _redacted("https://example.com/o'clock.csv?token=secret") == "https://example.com/***.csv?***"
+    assert _redacted("GET https://example.com/a'b/c.csv#t=1 done") == "GET https://example.com/\u2026/***.csv#*** done"
 
 
 @pytest.mark.asyncio
@@ -941,16 +941,19 @@ async def test_non_sender_keywords_with_dots_or_at_still_match_the_subject(monke
 @pytest.mark.parametrize(
     ("line", "expected"),
     [
-        ("https://josé:sécret@example.com/r.csv", "https://***@example.com/r.csv"),
+        ("https://josé:sécret@example.com/r.csv", "https://***@example.com/***.csv"),
         (
             "https://us'er:pa'ss@example.com/o'clock.csv?token=s3cr3t#frag",
-            "https://***@example.com/o'clock.csv?***#***",
+            "https://***@example.com/***.csv?***#***",
         ),
-        ("GET https://ü:p@exämple.com/a;b=c.csv?x=1 done", "GET https://***@exämple.com/a;b=c.csv?*** done"),
-        ("https://a@b@example.com/x.csv", "https://***@example.com/x.csv"),  # the LAST '@' ends userinfo
-        ("https://example.com/path@not-userinfo.csv?t=1", "https://example.com/path@not-userinfo.csv?***"),
-        ("https://files.example/download/SECRET/report.csv", "https://files.example/\u2026/report.csv"),
-        ("https://***@example.com/\u2026/x.csv?***#***", "https://***@example.com/\u2026/x.csv?***#***"),  # idempotent
+        ("GET https://ü:p@exämple.com/a;b=c.csv?x=1 done", "GET https://***@exämple.com/***.csv?*** done"),
+        ("https://a@b@example.com/x.csv", "https://***@example.com/***.csv"),  # the LAST '@' ends userinfo
+        ("https://example.com/path@not-userinfo.csv?t=1", "https://example.com/***.csv?***"),
+        ("https://files.example/download/SECRET/report.csv", "https://files.example/\u2026/***.csv"),
+        (
+            "https://***@example.com/\u2026/***.csv?***#***",
+            "https://***@example.com/\u2026/***.csv?***#***",
+        ),  # idempotent
         ("plain reports@example.com text", "plain reports@example.com text"),
     ],
 )
@@ -1114,44 +1117,61 @@ def test_capability_paths_are_masked_and_tagged_with_a_short_hash():
     url = "https://files.example/download/SECRET-TOKEN/report.csv?sig=abc"
     out = inbox.redact_url_queries(f"GET {url} done")
     assert "SECRET-TOKEN" not in out and "abc" not in out
-    digest = __import__("hashlib").sha256(url.encode()).hexdigest()[:12]
-    assert out == f"GET https://files.example/\u2026/report.csv?*** [url-sha256:{digest}] done"
+    digest = __import__("hmac").new(inbox._URL_TAG_KEY, url.encode(), "sha256").hexdigest()[:12]
+    assert out == f"GET https://files.example/\u2026/***.csv?*** [url-id:{digest}] done"
     # Idempotent: a second pass (logger filter + root handler) adds nothing.
     assert inbox.redact_url_queries(out) == out
     # Two different secret paths stay distinguishable.
     other = inbox.redact_url_queries("https://files.example/download/OTHER/report.csv?sig=abc")
     assert other.split(" [")[0] == out.split(" ")[1]  # same visible form...
-    assert other.split("url-sha256:")[1] != out.split("url-sha256:")[1]  # ...different hash
+    assert other.split("url-id:")[1] != out.split("url-id:")[1]  # ...different hash
     # Nothing to mask: no tag.
-    assert inbox.redact_url_queries("https://files.example/report.csv") == "https://files.example/report.csv"
+    assert inbox.redact_url_queries("https://files.example/") == "https://files.example/"
 
 
 @pytest.mark.parametrize(
     ("url", "shown"),
     [
-        # Token-only and single-segment paths: the token never survives.
-        ("https://files.example/download/eyJhbGciOiJIUzI1NiJ9.e30.abcdef", "https://files.example/…/***"),
+        # The stem never survives, filename-shaped or not; a short alphabetic
+        # extension is all that is kept of the last segment.
+        ("https://files.example/download/eyJhbGciOiJIUzI1NiJ9.e30.abcdef", "https://files.example/\u2026/***"),
         ("https://files.example/AbC9dEf8GhI7jKl6MnO5pQ4", "https://files.example/***"),
-        ("https://files.example/s/9f86d081884c7d659a2feaa0c55ad015.csv", "https://files.example/…/***"),
-        ("https://files.example/s/x9Y2z8W1v7U3t6S5.pdf", "https://files.example/…/***"),
-        ("https://files.example/s/" + "a" * 70 + ".csv", "https://files.example/…/***"),
-        # Ordinary filenames stay.
-        ("https://files.example/download/SECRET/report.csv", "https://files.example/…/report.csv"),
-        (
-            "https://files.example/a/Weekly_Report_2026-10-26.xlsx",
-            "https://files.example/…/Weekly_Report_2026-10-26.xlsx",
-        ),
-        ("https://files.example/a/Daily%20Report.zip", "https://files.example/…/Daily%20Report.zip"),
-        ("https://files.example/export.json", "https://files.example/export.json"),
+        ("https://files.example/download/deadbeef1234.csv", "https://files.example/\u2026/***.csv"),
+        ("https://files.example/s/token=secret.csv", "https://files.example/\u2026/***.csv"),
+        ("https://files.example/a/Weekly_Report_2026-10-26.xlsx", "https://files.example/\u2026/***.xlsx"),
+        ("https://files.example/export.json", "https://files.example/***.json"),
+        ("https://files.example/a/archive.tar.gz", "https://files.example/\u2026/***.gz"),
+        ("https://files.example/a/x.123", "https://files.example/\u2026/***"),
+        ("https://files.example/", "https://files.example/"),
     ],
 )
-def test_last_path_segment_is_kept_only_when_it_is_an_ordinary_filename(url, shown):
+def test_the_last_path_segment_keeps_only_its_extension(url, shown):
     out = inbox.redact_url_queries(url)
     assert _redacted(url) == shown, out
-    secret = url.rsplit("/", 1)[-1]
-    if shown.endswith("***"):
-        assert secret not in out and "[url-sha256:" in out
+    secret = url.rsplit("/", 1)[-1].rpartition(".")[0] or url.rsplit("/", 1)[-1]
+    if len(secret) >= 3:
+        assert secret not in out and "[url-id:" in out  # any path segment: masked and tagged
     assert inbox.redact_url_queries(out) == out  # idempotent
+
+
+def test_the_url_tag_is_a_per_process_keyed_hmac():
+    import hashlib
+    import hmac
+
+    url = "https://files.example/verify/123456"
+    out = inbox.redact_url_queries(url)
+    tag = out.split("[url-id:")[1].rstrip("]")
+    assert tag == hmac.new(inbox._URL_TAG_KEY, url.encode(), hashlib.sha256).hexdigest()[:12]
+    assert tag != hashlib.sha256(url.encode()).hexdigest()[:12]  # never an unkeyed hash
+    assert len(inbox._URL_TAG_KEY) == 32
+
+
+def test_content_disposition_filenames_still_parse():
+    """The log-redaction regexes never shadow the Content-Disposition parser."""
+    import httpx
+
+    response = httpx.Response(200, headers={"content-disposition": 'attachment; filename="report.csv"'})
+    assert inbox.get_filename_from_response(response, "https://files.example/x") == "report.csv"
 
 
 def test_ss_and_sharp_s_domains_never_align():

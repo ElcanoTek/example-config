@@ -255,7 +255,7 @@ async def test_a_batch_is_bounded_in_count_and_shares_one_byte_budget(dest, monk
     assert result["downloaded_count"] == 5  # 5 x 400 bytes fit the 2000-byte budget
     assert result["error_count"] == 15  # over budget; links over the count are summarized
     assert result["skipped_count"] == 10 and "at most 20 links" in result["skipped_reason"]
-    assert result["skipped_sample"] == [f"https://reports.example.com/{i}.csv" for i in range(20, 25)]
+    assert [u.split(" [url-id:")[0] for u in result["skipped_sample"]] == ["https://reports.example.com/***.csv"] * 5
 
 
 @respx.mock
@@ -540,7 +540,7 @@ async def test_skipped_links_are_a_count_and_a_small_redacted_sample(dest, monke
     result = await ses_s3_email.download_all_link_attachments("emails/k", output_dir=str(dest))
     assert result["skipped_count"] == 4997
     assert len(result["skipped_sample"]) == 5
-    assert all(u.split(" [url-sha256:")[0].endswith("?***") for u in result["skipped_sample"])
+    assert all(u.split(" [url-id:")[0].endswith("?***") for u in result["skipped_sample"])
     assert len(result["errors"]) == 3  # only the attempted links
     assert "secret" not in str(result["skipped_sample"])
 
@@ -697,4 +697,20 @@ async def test_an_archive_crossing_the_file_cap_is_charged_to_the_batch(dest, mo
     finally:
         ses_s3_email._BATCH_BUDGET.reset(token)
     assert result["status"] == "error"
+    assert batch == [10_000 - 1200]
+
+
+async def test_an_archive_crossing_the_call_cap_is_refused_as_too_large_not_missing(dest, monkeypatch):
+    """Unknown length: the crossing chunk is charged, and the refusal says too large."""
+    monkeypatch.setattr(ses_s3_email, "LINK_DOWNLOAD_MAX_BYTES", 1000)
+    monkeypatch.setattr(ses_s3_email, "session", _archive_session(_ChunkedBody(b"y" * 1800, step=600)))
+    batch = [10_000]
+    b_token = ses_s3_email._BATCH_BUDGET.set(batch)
+    c_token = ses_s3_email._CALL_BUDGET.set([1000])
+    try:
+        result = await ORIGINAL_ARCHIVE(URL, dest)
+    finally:
+        ses_s3_email._CALL_BUDGET.reset(c_token)
+        ses_s3_email._BATCH_BUDGET.reset(b_token)
+    assert result is not None and result["status"] == "error" and "cap" in result["error"], result
     assert batch == [10_000 - 1200]

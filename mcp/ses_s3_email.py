@@ -31,10 +31,12 @@ import contextvars
 import email
 import email.utils
 import hashlib
+import hmac
 import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import stat
 import tempfile
@@ -75,12 +77,13 @@ logger = logging.getLogger(__name__)
 # capability links carry their credential in the query (X-Amz-Signature,
 # token=..., or the token AS a parameter name), in the fragment, in the
 # userinfo, or as a PATH segment (https://files.example/download/<secret>/x.csv).
-# So a logged URL keeps its scheme and host, and its LAST path segment only
-# when that is an ordinary filename (report.csv; a token-like segment becomes
-# ***); every earlier segment, the whole query, the whole fragment and any
-# userinfo are masked (https://***@host/…/report.csv?***#***), followed by a
-# short sha256 of the full original URL ([url-sha256:…]) so operators can
-# still tell links apart.
+# So a logged URL keeps only its scheme and host: the path collapses to "…"
+# and its last segment keeps only a short alphabetic extension ("***.csv",
+# else "***"; even a filename-shaped segment can be a token), and the whole
+# query, the whole fragment and any userinfo are masked
+# (https://***@host/…/***.csv?***#***), followed by a per-process keyed
+# HMAC-SHA256 tag of the full original URL ([url-id:…]) so operators can
+# still tell links apart within one process's logs.
 #
 # Structural, not one regex per part: each URL candidate (scheme to the next
 # whitespace, quote-mark " or angle bracket) is split by the URL grammar
@@ -90,56 +93,38 @@ logger = logging.getLogger(__name__)
 # nothing: over-redacting a closing quote beats leaking a token. Idempotent:
 # an already-redacted URL is left as it is (no second hash).
 _URL_CANDIDATE_RE = re.compile(r"https?://[^\s\"<>]+", re.IGNORECASE)
-_URL_HASH_TAG = " [url-sha256:"
+_URL_HASH_TAG = " [url-id:"
+# Keyed per process: the tag only correlates links within one process's logs,
+# and an unkeyed hash of a short secret (a six-digit code) could be brute-forced.
+_URL_TAG_KEY = secrets.token_bytes(32)
 _MASKED_SEGMENT = "\u2026"  # "…"
 
 
-_FILENAME_RE = re.compile(r"(?P<stem>[^/]{1,59})\.(?P<ext>[A-Za-z][A-Za-z0-9]{0,4})")
-_TOKEN_RUN_RE = re.compile(r"[A-Za-z0-9+/=]{24,}")
+_LOG_SEGMENT_EXT_RE = re.compile(r"\.([A-Za-z]{1,5})")
 
 
-def _looks_random(stem: str) -> bool:
-    """A stem that reads like a token: mostly letters-and-digits soup (many
-    digit/letter switches, or long with no separator and mixed case)."""
-    alnum = [c for c in stem if c.isalnum()]
-    if len(alnum) < 12:
-        return False
-    switches = sum(1 for a, b in zip(alnum, alnum[1:], strict=False) if a.isdigit() != b.isdigit())
-    if switches >= len(alnum) // 3:
-        return True
-    mixed = any(c.isupper() for c in alnum) and any(c.islower() for c in alnum) and any(c.isdigit() for c in alnum)
-    return mixed and not any(c in "_- .%" for c in stem) and len(alnum) >= 16
-
-
-def _keepable_last_segment(segment: str) -> bool:
-    """An ordinary filename may stay in a log line: at most 64 characters, a
-    short alphabetic extension (.csv, .xlsx, .zip, .pdf, .json, ...), and a
-    stem with no token-like run (24+ base64 / hex characters) that is not
-    mostly random characters. Anything else may be a bearer token."""
-    if not segment or len(segment) > 64 or segment == _MASKED_SEGMENT:
-        return False
-    match = _FILENAME_RE.fullmatch(segment)
-    if not match:
-        return False
-    stem = match.group("stem")
-    return not _TOKEN_RUN_RE.search(stem) and not _looks_random(stem)
+def _masked_last_segment(segment: str) -> str:
+    """The last path segment as logged: never its stem (a filename-shaped
+    segment can still be a token: /download/deadbeef1234.csv), only a short
+    alphabetic extension: "report.csv" -> "***.csv", anything else -> "***"."""
+    if segment in ("", "***") or (segment.startswith("***.") and _LOG_SEGMENT_EXT_RE.fullmatch(segment[3:])):
+        return segment
+    stem, dot, ext = segment.rpartition(".")
+    if dot and stem and _LOG_SEGMENT_EXT_RE.fullmatch("." + ext):
+        return "***." + ext
+    return "***"
 
 
 def _mask_path(path: str) -> str:
-    """ "/a/b/report.csv" -> "/…/report.csv": every segment but the last masked,
-    and the last kept only when it is an ordinary filename ("/…/***" when it
-    may be a token: /download/<token>, /<token>)."""
+    """ "/a/b/report.csv" -> "/…/***.csv": every earlier segment collapses to
+    "…" and the last keeps only its extension ("/token" -> "/***")."""
     if path in ("", "/"):
         return path
     segments = path.split("/")  # path starts with "/"
-    last = segments[-1]
-    earlier = segments[1:-1]
-    if earlier == [_MASKED_SEGMENT] and (last == "***" or _keepable_last_segment(last)):
-        return path  # already redacted
-    shown = last if _keepable_last_segment(last) else ("" if last == "" else "***")
-    if not earlier:
-        return "/" + shown
-    return "/" + _MASKED_SEGMENT + "/" + shown
+    last = _masked_last_segment(segments[-1])
+    if len(segments) == 2:
+        return "/" + last
+    return "/" + _MASKED_SEGMENT + "/" + last
 
 
 def _redact_one_url(url: str) -> str:
@@ -167,14 +152,14 @@ def _redact_one_url(url: str) -> str:
 def redact_url_queries(text: str) -> str:
     """Mask URL credentials in a log line: userinfo (https://user:pass@host ->
     https://***@host), every path segment but the last, the whole query and the
-    whole fragment; a changed URL is tagged with a short sha256 of the original."""
+    whole fragment; a changed URL is tagged with a keyed HMAC of the original."""
 
     def _sub(match: re.Match[str]) -> str:
         url = match.group(0)
         redacted = _redact_one_url(url)
         if redacted == url or text.startswith(_URL_HASH_TAG, match.end()):
             return redacted
-        digest = hashlib.sha256(url.encode("utf-8", "surrogatepass")).hexdigest()[:12]
+        digest = hmac.new(_URL_TAG_KEY, url.encode("utf-8", "surrogatepass"), hashlib.sha256).hexdigest()[:12]
         return f"{redacted}{_URL_HASH_TAG}{digest}]"
 
     return _URL_CANDIDATE_RE.sub(_sub, text)
@@ -3375,7 +3360,13 @@ async def _read_archived(url: str) -> dict[str, Any] | None:
                 if not chunk:
                     break
                 total += len(chunk)
-                _charge_batch_budget(len(chunk))  # charged before the per-file cap
+                try:
+                    _charge_batch_budget(len(chunk))  # charged before the per-file cap
+                except LinkDownloadTooLarge as exc:
+                    spool.close()
+                    if exc.batch:
+                        raise  # the BATCH budget is spent: not this copy's size
+                    return _archive_too_large(url, total)
                 if total > LINK_DOWNLOAD_MAX_BYTES:
                     spool.close()
                     return _archive_too_large(url, total)
@@ -3525,6 +3516,7 @@ class LinkDownloadTooLarge(Exception):
             message = f"The download is larger than the {LINK_DOWNLOAD_MAX_BYTES}-byte cap ({size}+ bytes)."
         super().__init__(message)
         self.size = size
+        self.batch = batch
 
 
 @mcp.tool()
