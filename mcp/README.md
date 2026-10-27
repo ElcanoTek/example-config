@@ -22,10 +22,14 @@ pinned (`O_NOFOLLOW|O_DIRECTORY`, by device and inode) when the server starts,
 before any tool call, and never re-resolved; each path is then one
 symlink-refusing walk from its root and that descriptor (never the name a
 second time), and files it created are removed only through the helper. The
-inbound server (`ses_s3_email.py`) does not use `safe_open`: it confines a
-model-supplied `output_dir` to its own allowed roots (`resolve_download_dir`),
-walks to it without following a symlink and creates each download fresh
-(`O_CREAT|O_EXCL|O_NOFOLLOW`), but its roots are resolved per call, not pinned. Lens and Pages are remote (http) servers on the client's
+inbound server (`ses_s3_email.py`) uses `safe_open` only to reach its private
+debug-log directory (`walk_trusted`, which follows nothing but trusted system
+symlinks such as macOS `/tmp`); it confines a model-supplied `output_dir` to
+its own allowed roots (`resolve_download_dir`), walks to it without following
+a symlink and creates each download fresh (`O_CREAT|O_EXCL|O_NOFOLLOW`), but
+those roots are resolved per call, not pinned. Only symlinks directly under
+`/`, owned by root in a root-owned directory nobody else can write (macOS
+`/tmp`, `/var`), are trusted as system symlinks. Lens and Pages are remote (http) servers on the client's
 own boxes, so they have manifest entries but no code here.
 
 To stand up a client's SES/S3 email tenant (infrastructure, least-privilege

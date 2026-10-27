@@ -906,10 +906,15 @@ async def test_domain_shaped_fuzzy_keywords_bind_to_the_sender(monkeypatch, send
         ("v1.2.3", False),
         ("streaming", False),
         ("a@b", False),
+        ("reports@example.xn--p1ai", True),
+        ("example.xn--p1ai", True),
+        ("bücher.example", True),
+        ("reports@отчёты.рф", True),
+        ("2.0.1", False),
     ],
 )
 def test_only_whole_mailboxes_or_domains_are_sender_shaped(keyword, sender_shaped):
-    assert bool(inbox._SENDER_SHAPED_KEYWORD_RE.fullmatch(keyword)) is sender_shaped
+    assert inbox.sender_shaped(keyword) is sender_shaped
 
 
 @pytest.mark.asyncio
@@ -959,3 +964,87 @@ def test_a_configured_debug_log_under_a_planted_parent_symlink_is_refused(tmp_pa
     plain.mkdir()
     inbox._open_private_log(str(plain / "debug.log")).close()
     assert (plain / "debug.log").exists()
+
+
+def test_the_debug_log_walk_uses_the_trusted_system_link_rule(monkeypatch, tmp_path):
+    seen: list = []
+
+    def fake_walk(path):
+        seen.append(path)
+        return os.open(str(tmp_path), os.O_RDONLY)
+
+    monkeypatch.setattr(inbox.safe_open, "walk_trusted", fake_walk)
+    inbox._open_private_log(str(tmp_path / "debug.log")).close()
+    assert seen == [str(tmp_path)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("keyword", "subject", "expected"),
+    [
+        ("media", "Daily", False),  # a plain word is never a sender suffix
+        ("foo.media", "Daily", True),  # a domain matches the sender
+        ("media", "Media summary", True),  # a plain word still matches the subject
+    ],
+)
+async def test_plain_words_never_match_a_sender_domain_suffix(monkeypatch, keyword, subject, expected):
+    raw = (
+        "Authentication-Results: amazonses.com; dmarc=pass header.from=foo.media\r\n"
+        f"From: Reports <reports@foo.media>\r\nTo: inbox@example.com\r\nSubject: {subject}\r\n"
+        "Date: Mon, 26 Oct 2026 10:00:00 +0000\r\n\r\nbody\r\n"
+    ).encode()
+    monkeypatch.setattr(inbox, "session", _FakeSession(_FakeS3({"emails/m": raw})))
+    monkeypatch.setattr(inbox, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(inbox, "S3_PREFIX", "emails/")
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "")
+    monkeypatch.setattr(inbox, "EMAIL_SENDER_AUTH", "required")
+    result = await inbox.search_emails_fuzzy(keywords=[keyword], date_from="2026-10-26", date_to="2026-10-26")
+    assert bool(result["emails"]) is expected, result
+
+
+@pytest.mark.asyncio
+async def test_an_idn_keyword_in_the_subject_does_not_select_foreign_mail(monkeypatch):
+    raw = (
+        b"Authentication-Results: amazonses.com; dmarc=pass header.from=evil.example\r\n"
+        b"From: Reports <attacker@evil.example>\r\nTo: inbox@example.com\r\n"
+        b"Subject: from reports@example.xn--p1ai\r\n"
+        b"Date: Mon, 26 Oct 2026 10:00:00 +0000\r\n\r\nbody\r\n"
+    )
+    monkeypatch.setattr(inbox, "session", _FakeSession(_FakeS3({"emails/m": raw})))
+    monkeypatch.setattr(inbox, "S3_BUCKET", "bucket")
+    monkeypatch.setattr(inbox, "S3_PREFIX", "emails/")
+    monkeypatch.setattr(inbox, "DATE_PREFIX_FORMAT", "")
+    monkeypatch.setattr(inbox, "EMAIL_SENDER_AUTH", "required")
+    result = await inbox.search_emails_fuzzy(
+        keywords=["reports@example.xn--p1ai"], date_from="2026-10-26", date_to="2026-10-26"
+    )
+    assert result["emails"] == []
+
+
+def test_debug_dir_is_chmodded_through_its_verified_descriptor(monkeypatch, tmp_path):
+    import tempfile
+
+    monkeypatch.delenv("EMAIL_DEBUG_LOG_FILE", raising=False)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    calls: list = []
+    monkeypatch.setattr(inbox.os, "chmod", lambda *a, **_k: calls.append(("chmod", a)))
+    real_fchmod = os.fchmod
+    monkeypatch.setattr(inbox.os, "fchmod", lambda fd, mode: (calls.append(("fchmod", mode)), real_fchmod(fd, mode)))
+    base = tmp_path / f"ses_s3_email-{os.getuid()}"
+    base.mkdir(mode=0o755)
+    assert inbox._debug_log_path() == str(base / "debug.log")
+    assert calls == [("fchmod", 0o700)]  # never a path-based chmod
+    assert stat.S_IMODE(os.stat(base).st_mode) == 0o700
+
+
+def test_debug_dir_swapped_for_a_symlink_is_never_chmodded(monkeypatch, tmp_path):
+    import tempfile
+
+    monkeypatch.delenv("EMAIL_DEBUG_LOG_FILE", raising=False)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    victim = tmp_path / "victim"
+    victim.mkdir(mode=0o755)
+    os.chmod(victim, 0o755)
+    (tmp_path / f"ses_s3_email-{os.getuid()}").symlink_to(victim, target_is_directory=True)
+    assert inbox._debug_log_path() is None
+    assert stat.S_IMODE(os.stat(victim).st_mode) == 0o755

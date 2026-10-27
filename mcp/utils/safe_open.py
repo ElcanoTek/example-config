@@ -112,25 +112,73 @@ def _open_dir_last_nofollow(path: str) -> int:
         os.close(parent_fd)
 
 
-def _walk_nofollow(path: str) -> int:
-    """Open directory ``path`` from "/" one component at a time, each with
-    O_NOFOLLOW|O_DIRECTORY: no symlink anywhere on the path is followed. A ".."
-    component is refused (ELOOP): the walk only ever descends."""
-    flags = os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC
-    fd = os.open(os.sep, flags)
+def _trusted_system_symlink(dir_fd: int, name: str) -> str | None:
+    """The target of ``name`` (in directory ``dir_fd``) when it is a TRUSTED
+    system symlink, else None.
+
+    Trusted means the link itself is owned by root AND its directory is
+    root-owned and writable by nobody else (no group / other write bit): only
+    root could have planted it (macOS /tmp -> private/tmp, /var -> private/var).
+    Any other symlink, e.g. one in a sandbox-writable workspace, is refused.
+    Callers only ask this for links directly under "/" (see walk_trusted): a
+    process running as root (tests, some containers) owns every link it makes,
+    so ownership alone cannot vouch for a link deeper in the tree."""
     try:
-        for part in os.path.abspath(str(path)).split(os.sep):
-            if part in ("", "."):
-                continue
+        link = os.lstat(name, dir_fd=dir_fd)
+        if not stat.S_ISLNK(link.st_mode) or link.st_uid != 0:
+            return None
+        parent = os.fstat(dir_fd)
+        if parent.st_uid != 0 or parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            return None
+        return os.readlink(name, dir_fd=dir_fd)
+    except (OSError, TypeError, NotImplementedError):
+        return None
+
+
+def walk_trusted(path: str, *, _top: str = os.sep) -> int:
+    """Open directory ``path`` from "/" one component at a time with
+    O_NOFOLLOW|O_DIRECTORY. A symlink component is followed ONLY when it sits
+    directly under "/" and is a trusted system symlink
+    (:func:`_trusted_system_symlink`); any other symlink fails the walk (ELOOP). A ".." component is refused: the walk only descends."""
+    flags = os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW | _O_CLOEXEC
+    pending = [p for p in os.path.abspath(str(path)).split(os.sep) if p not in ("", ".")]
+    done: list[str] = []
+    followed = 0
+    fd = os.open(_top, flags)  # _top: the filesystem root ("/"; a test seam)
+    try:
+        while pending:
+            part = pending.pop(0)
             if part == "..":
                 raise OSError(errno.ELOOP, "'..' in a root path", str(path))
-            child = os.open(part, flags, dir_fd=fd)
+            try:
+                child = os.open(part, flags, dir_fd=fd)
+            except OSError as exc:
+                if exc.errno not in (errno.ELOOP, errno.ENOTDIR, errno.EMLINK):
+                    raise
+                # Only a top-level system link ("/tmp", "/var", "/home") may be
+                # followed; anything deeper is refused whoever owns it.
+                target = _trusted_system_symlink(fd, part) if not done else None
+                followed += 1
+                if target is None or followed > 8:
+                    raise
+                # Restart from "/" on the link's target (relative to its directory).
+                base = target if os.path.isabs(target) else os.path.join(os.sep, *done, target)
+                pending = [p for p in os.path.normpath(base).split(os.sep) if p not in ("", ".")] + pending
+                done = []
+                os.close(fd)
+                fd = os.open(_top, flags)
+                continue
             os.close(fd)
             fd = child
+            done.append(part)
         return fd
     except BaseException:
         os.close(fd)
         raise
+
+
+# Kept for callers in this module.
+_walk_nofollow = walk_trusted
 
 
 # Roots absent at startup: their nearest EXISTING ancestor is resolved and
@@ -142,20 +190,34 @@ _PENDING_ROOTS: dict[str, tuple[str, tuple[int, int], list[str]]] = {}
 
 
 def _record_pending_root(root: str) -> None:
-    path = os.path.abspath(str(root))
-    rest: list[str] = []
-    while not os.path.isdir(path):
-        parent, name = os.path.split(path)
-        if parent == path:
-            return
-        if name not in ("", "."):
-            rest.insert(0, name)
-        path = parent
-    if any(part == ".." for part in rest):
+    """Pin the nearest EXISTING ancestor of an absent root, found by a no-follow
+    walk from "/" (walk_trusted): an ancestor that is a symlink, other than a
+    trusted top-level system link, records nothing, so the root is later
+    refused instead of being pinned as the symlink's target."""
+    parts = [p for p in os.path.abspath(str(root)).split(os.sep) if p not in ("", ".")]
+    if ".." in parts:
         return
-    anc_real = os.path.realpath(path)
-    st = os.stat(anc_real)
-    _PENDING_ROOTS[root] = (anc_real, (st.st_dev, st.st_ino), rest)
+    for depth in range(len(parts), -1, -1):
+        prefix = os.sep + os.sep.join(parts[:depth])
+        try:
+            fd = walk_trusted(prefix)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return  # a symlinked (or non-directory) ancestor: never pinned
+        try:
+            st = os.fstat(fd)
+        finally:
+            os.close(fd)
+        anc_real = os.path.realpath(prefix)
+        try:
+            check = os.stat(anc_real)
+        except OSError:
+            return
+        if (check.st_dev, check.st_ino) != (st.st_dev, st.st_ino):
+            return  # it changed while being pinned: do not guess
+        _PENDING_ROOTS[root] = (anc_real, (st.st_dev, st.st_ino), parts[depth:])
+        return
 
 
 def _open_lazy_root(root: str) -> int:

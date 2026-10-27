@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import stat
 import tempfile
 from datetime import UTC, datetime, timedelta
@@ -50,7 +51,7 @@ import aioboto3
 import aiofiles
 import httpx
 from mcp.server.fastmcp import FastMCP
-from utils import url_guard
+from utils import safe_open, url_guard
 from utils.fsutil import ensure_dir
 
 _LINE_CONT_RE = re.compile(r"=[\r\n]+")
@@ -164,30 +165,35 @@ def _debug_log_path() -> str | None:
     try:
         with contextlib.suppress(FileExistsError):
             os.mkdir(base, 0o700)
-        st = os.lstat(base)
-        if not stat.S_ISDIR(st.st_mode) or (uid is not None and st.st_uid != uid):
-            return None  # a planted symlink or someone else's directory: do not log there
-        os.chmod(base, 0o700)
+        # Verify and chmod THROUGH a no-follow descriptor: a path-based chmod
+        # after an lstat could follow a symlink swapped in between and chmod
+        # an arbitrary directory. (The log itself is later opened by another
+        # no-follow walk that re-checks the directory's owner.)
+        fd = os.open(
+            base,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        )
+        try:
+            st = os.fstat(fd)
+            euid = os.geteuid() if hasattr(os, "geteuid") else uid
+            if not stat.S_ISDIR(st.st_mode) or (euid is not None and st.st_uid != euid):
+                return None  # someone else's directory: do not log there
+            os.fchmod(fd, 0o700)
+        finally:
+            os.close(fd)
     except OSError:
-        return None
+        return None  # a planted symlink (ELOOP / ENOTDIR) or unusable directory
     return os.path.join(base, "debug.log")
 
 
 def _open_dir_nofollow(real_dir: str) -> int:
-    """A descriptor for the already-resolved directory ``real_dir``, reached from
-    "/" one component at a time with O_NOFOLLOW|O_DIRECTORY: a component swapped
-    for a symlink after it was resolved is refused (OSError), never followed."""
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-    fd = os.open(os.sep, flags)
-    try:
-        for part in [p for p in real_dir.split(os.sep) if p]:
-            child = os.open(part, flags, dir_fd=fd)
-            os.close(fd)
-            fd = child
-        return fd
-    except BaseException:
-        os.close(fd)
-        raise
+    """A descriptor for directory ``real_dir``, reached from "/" one component
+    at a time with O_NOFOLLOW|O_DIRECTORY (safe_open.walk_trusted): a symlink
+    is followed only when it is a trusted system symlink (root-owned, in a
+    root-owned directory nobody else can write: macOS /var, /tmp); any other
+    symlink, such as one planted in a shared or sandbox-writable directory, is
+    refused (OSError), never followed."""
+    return safe_open.walk_trusted(real_dir)
 
 
 def _open_private_log(path: str, *, parent_real: str | None = None) -> IO[str]:
@@ -562,12 +568,17 @@ def build_collision_safe_output_path(download_dir: str | Path, filename: str, so
     return reserved.path
 
 
-def _write_fd(fd: int, data: bytes) -> None:
+def _write_fd(fd: int, data: Any) -> None:
+    """Write ``data`` (bytes, or a binary file object copied from its current
+    position in 1 MiB chunks) to ``fd``, which this takes ownership of."""
     with os.fdopen(fd, "wb") as fh:  # takes ownership: closes fd on exit
-        fh.write(data)
+        if hasattr(data, "read"):
+            shutil.copyfileobj(data, fh, 1024 * 1024)
+        else:
+            fh.write(data)
 
 
-async def write_reserved(reserved: ReservedFile, data: bytes) -> None:
+async def write_reserved(reserved: ReservedFile, data: Any) -> None:
     """Write through the reserved descriptor (closed afterwards), never by path.
 
     The descriptor is handed to a worker thread; if that hand-off itself
@@ -1070,8 +1081,30 @@ def _sender_needles(sender_filter: str) -> list[str]:
 # ("reports@vendor.example", "@vendor.example") or a domain name (two or more
 # LDH labels, alphabetic TLD: "vendor.example"). "version 2.0", "2.0" or
 # "report @ 10am" are not, and keep matching subject / body text.
-_DOMAIN_PATTERN = r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}"
-_SENDER_SHAPED_KEYWORD_RE = re.compile(rf"^(?:[^@\s]*@)?{_DOMAIN_PATTERN}$", re.IGNORECASE)
+_LDH_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+_TLD_RE = re.compile(r"[a-z]{2,63}|xn--[a-z0-9-]{1,59}")
+
+
+def sender_shaped(keyword: str) -> bool:
+    """True when the WHOLE keyword is a mailbox ("reports@vendor.example",
+    "@vendor.example") or a domain name: two or more LDH labels whose last is
+    alphabetic or a punycode ("xn--") label. Unicode domains are IDNA-encoded
+    first ("bücher.example", "отчёты.рф"). Version-like or numeric keywords
+    ("2.0", "v1.2.3") and anything with spaces ("report @ 10am") are not."""
+    k = str(keyword or "").strip()
+    if not k or any(ch.isspace() for ch in k):
+        return False
+    domain = k.rpartition("@")[2] if "@" in k else k
+    if not domain or "@" in domain:
+        return False
+    try:
+        ascii_domain = domain.encode("idna").decode("ascii").lower()
+    except (UnicodeError, ValueError):
+        return False
+    labels = ascii_domain.split(".")
+    if len(labels) < 2 or not all(_LDH_LABEL_RE.fullmatch(label) for label in labels):
+        return False
+    return bool(_TLD_RE.fullmatch(labels[-1]))
 
 
 def mailbox_matches(needle: str, mailbox: str) -> bool:
@@ -2770,16 +2803,19 @@ async def search_emails_fuzzy(
                             # ("vendor.example", "reports@vendor.example") is a SENDER
                             # constraint only: a subject saying "vendor.example" on mail
                             # from attacker@evil.example must not select it.
+                            # Conversely a plain word ("media") never matches a sender:
+                            # mailbox_matches would read it as a domain suffix
+                            # (reports@foo.media). Off mode keeps the whole-From substring.
                             sender_bound = "sender" in search_fields and not include_unauthenticated()
-                            matches = [
-                                original
-                                for original, normalized in keyword_pairs
-                                if _sender_hit(normalized)
-                                or (
-                                    not (sender_bound and _SENDER_SHAPED_KEYWORD_RE.fullmatch(normalized.strip()))
-                                    and normalized in searchable_text
-                                )
-                            ]
+                            matches = []
+                            for original, normalized in keyword_pairs:
+                                if sender_bound:
+                                    shaped = sender_shaped(normalized)
+                                    hit = _sender_hit(normalized) if shaped else normalized in searchable_text
+                                else:
+                                    hit = _sender_hit(normalized) or normalized in searchable_text
+                                if hit:
+                                    matches.append(original)
 
                             if match_all:
                                 # All keywords must match
@@ -3128,6 +3164,7 @@ async def _fetch_archived_link(
         read["response"],
         read["metadata"],
     )
+    size = read.get("size", 0)
     try:
         _check_batch_deadline()
         reserved = reserve_output_file(download_dir, filename or archived_name, f"archive:{url}")
@@ -3141,7 +3178,7 @@ async def _fetch_archived_link(
             "url": url,
             "filename": output_path.name,
             "saved_to": str(output_path),
-            "size_bytes": len(content),
+            "size_bytes": size,
             "content_type": response.get("ContentType", "unknown"),
             "archive_key": archive_key,
             "archived_at": metadata.get("archived-at"),
@@ -3156,6 +3193,9 @@ async def _fetch_archived_link(
     except Exception as e:
         logger.warning(f"Archive fallback write failed for {url}: {e}")
         return None
+    finally:
+        with contextlib.suppress(Exception):
+            content.close()
 
 
 async def _read_archived(url: str) -> dict[str, Any] | None:
@@ -3180,25 +3220,33 @@ async def _read_archived(url: str) -> dict[str, Any] | None:
             return _archive_too_large(url, declared)
         # StreamingBody.read(n) may return fewer bytes than asked before EOF:
         # read until EOF under a cumulative cap, then check it is complete.
-        with tempfile.SpooledTemporaryFile(max_size=1024 * 1024) as spool:
-            total = 0
+        # Spooled to disk and never read back whole: the caller copies the
+        # spool into the reserved file in chunks (write_reserved).
+        spool = _new_call_spool()
+        total = 0
+        try:
             while True:
                 chunk = await response["Body"].read(1024 * 1024)
                 if not chunk:
                     break
                 total += len(chunk)
                 if total > LINK_DOWNLOAD_MAX_BYTES:
+                    spool.close()
                     return _archive_too_large(url, total)
                 _charge_batch_budget(len(chunk))
                 spool.write(chunk)
-            spool.seek(0)
-            content = spool.read()  # held once
-        if isinstance(declared, int) and len(content) != declared:
+        except BaseException:
+            spool.close()
+            raise
+        spool.seek(0)
+        content = spool
+        if isinstance(declared, int) and total != declared:
+            spool.close()
             return {
                 "status": "error",
                 "source": "s3_archive",
                 "url": url,
-                "error": f"The archived copy was truncated ({len(content)} of {declared} bytes); not saved.",
+                "error": f"The archived copy was truncated ({total} of {declared} bytes); not saved.",
                 "retryable": True,
             }
         metadata = response.get("Metadata", {})
@@ -3206,6 +3254,7 @@ async def _read_archived(url: str) -> dict[str, Any] | None:
         "key": archive_key,
         "name": archived_name,
         "content": content,
+        "size": total,
         "response": response,
         "metadata": metadata,
     }
@@ -3217,9 +3266,9 @@ async def _read_archived(url: str) -> dict[str, Any] | None:
 LINK_DOWNLOAD_MAX_BYTES = int(os.environ.get("EMAIL_LINK_MAX_BYTES", "") or 200 * 1024 * 1024)
 LINK_DOWNLOAD_MAX_SECONDS = int(os.environ.get("EMAIL_LINK_MAX_SECONDS", "") or 240)
 LINK_DOWNLOAD_MAX_REDIRECTS = 10
-# How much of an HTML response is decoded and scanned for a chase target
-# (default 10 MB). It never limits a download: a larger HTML response is not
-# chased and is saved as the downloaded file, under EMAIL_LINK_MAX_BYTES.
+# How much of an HTML response is decoded and scanned for a chase target: the
+# first 10 MB by default. It never limits a download: with no link found in
+# that prefix, the response is saved as the file, under EMAIL_LINK_MAX_BYTES.
 LINK_HTML_SCAN_MAX_BYTES = int(os.environ.get("EMAIL_LINK_HTML_SCAN_MAX_BYTES", "") or 10 * 1024 * 1024)
 
 
@@ -3251,6 +3300,50 @@ def _check_batch_deadline() -> None:
         raise LinkBatchDeadlineExceeded(
             f"Not saved: the batch's {LINK_DOWNLOAD_MAX_SECONDS}-second deadline passed before the write began."
         )
+
+
+# Temp files holding this download_link_attachment call's response bodies;
+# closed (deleted) when the call returns. None outside such a call.
+_CALL_SPOOLS: contextvars.ContextVar[list[Any] | None] = contextvars.ContextVar("link_call_spools", default=None)
+# How much of a body is kept in memory on the response: enough to sniff for
+# HTML, and for an HTML page, the part the chase scan reads.
+_SNIFF_BYTES = 512
+
+
+def _new_call_spool() -> Any:
+    spool = tempfile.TemporaryFile()  # noqa: SIM115 - closed by the call wrapper / archive reader
+    spools = _CALL_SPOOLS.get()
+    if spools is not None:
+        spools.append(spool)
+    return spool
+
+
+def _spooled_body(response: httpx.Response, spool: Any, size: int) -> None:
+    """Attach a spooled body to ``response``: ``response.content`` becomes only a
+    bounded head (512 bytes; for an HTML page up to EMAIL_LINK_HTML_SCAN_MAX_BYTES),
+    and the full body stays on disk for _body_of / write_reserved."""
+    spool.seek(0)
+    head = spool.read(_SNIFF_BYTES)
+    content_type = (response.headers.get("content-type") or "").lower()
+    sniffed = head.lstrip().lower()
+    if (
+        "text/html" in content_type
+        or "application/xhtml" in content_type
+        or sniffed.startswith((b"<!doctype html", b"<html"))
+    ):
+        head += spool.read(max(0, LINK_HTML_SCAN_MAX_BYTES - len(head)))
+    response._content = head  # what Response.aread() stores (bounded head only)
+    response.extensions = {**response.extensions, "spooled_body": (spool, size)}
+
+
+def _body_of(response: httpx.Response) -> tuple[Any, int]:
+    """(file-or-bytes positioned at the start, size) for the response's full body."""
+    spooled = response.extensions.get("spooled_body")
+    if spooled is None:
+        return response.content, len(response.content)
+    spool, size = spooled
+    spool.seek(0)
+    return spool, size
 
 
 # One download_link_attachment call's remaining bytes across ALL its phases
@@ -3343,10 +3436,16 @@ async def download_link_attachment(
     # archive fallback), drawn on alongside the batch budget, so a single call
     # never transfers more than EMAIL_LINK_MAX_BYTES in total.
     token = _CALL_BUDGET.set([LINK_DOWNLOAD_MAX_BYTES])
+    spools: list[Any] = []
+    spools_token = _CALL_SPOOLS.set(spools)
     try:
         return await _download_link_attachment(url, output_dir, filename, timeout_seconds, chase_html)
     finally:
+        _CALL_SPOOLS.reset(spools_token)
         _CALL_BUDGET.reset(token)
+        for spool in spools:
+            with contextlib.suppress(Exception):
+                spool.close()
 
 
 async def _download_link_attachment(
@@ -3420,19 +3519,20 @@ async def _download_link_attachment(
                         declared = streamed.headers.get("content-length", "")
                         if declared.isdigit() and int(declared) > min(LINK_DOWNLOAD_MAX_BYTES, _call_budget_left()):
                             raise LinkDownloadTooLarge(int(declared))
-                        # Spooled to disk as it arrives (past 1 MiB), then read back
-                        # ONCE: a cap-sized body is held in memory a single time,
-                        # never as a chunk list plus its joined copy.
-                        with tempfile.SpooledTemporaryFile(max_size=1024 * 1024) as spool:
-                            total = 0
-                            async for chunk in streamed.aiter_bytes():
-                                total += len(chunk)
-                                if total > LINK_DOWNLOAD_MAX_BYTES:
-                                    raise LinkDownloadTooLarge(total)
-                                _charge_batch_budget(len(chunk))
-                                spool.write(chunk)
-                            spool.seek(0)
-                            streamed._content = spool.read()  # what Response.aread() stores
+                        # Spooled to disk as it arrives and NEVER read back whole:
+                        # the saved file is copied from the spool in chunks
+                        # (write_reserved), so concurrent near-cap downloads do
+                        # not each hold their body in memory. Only a bounded head
+                        # is kept on the response (_spooled_body).
+                        spool = _new_call_spool()
+                        total = 0
+                        async for chunk in streamed.aiter_bytes():
+                            total += len(chunk)
+                            if total > LINK_DOWNLOAD_MAX_BYTES:
+                                raise LinkDownloadTooLarge(total)
+                            _charge_batch_budget(len(chunk))
+                            spool.write(chunk)
+                        _spooled_body(streamed, spool, total)
                         streamed.history = history
                         return streamed
                 raise httpx.TooManyRedirects(f"more than {LINK_DOWNLOAD_MAX_REDIRECTS} redirects", request=None)
@@ -3470,18 +3570,16 @@ async def _download_link_attachment(
             and _looks_like_html_response(response)
             and (classification["is_click_tracker"] or len(response.history) > 0)
         ):
-            # Only an interstitial up to EMAIL_LINK_HTML_SCAN_MAX_BYTES is decoded
-            # and scanned: a cap-sized HTML body is never decoded to a str next
-            # to its bytes. A larger one is simply not chased; it is saved as
-            # the download like any other response (never refused for its size).
-            html = ""
-            if len(response.content) <= LINK_HTML_SCAN_MAX_BYTES:
-                try:
-                    html = response.content.decode(response.encoding or "utf-8", errors="replace")
-                except LookupError:
-                    html = response.content.decode("utf-8", errors="replace")
-            else:
-                logger.info("Not chasing an HTML page of %s bytes (over the chase cap)", len(response.content))
+            # Only the first EMAIL_LINK_HTML_SCAN_MAX_BYTES of the page are decoded
+            # and scanned for the real link: a cap-sized HTML body is never
+            # decoded whole. No link found there: the full response is saved as
+            # the download like any other (never refused for its size).
+            prefix = response.content[:LINK_HTML_SCAN_MAX_BYTES]
+            try:
+                html = prefix.decode(response.encoding or "utf-8", errors="replace")
+            except LookupError:
+                html = prefix.decode("utf-8", errors="replace")
+            del prefix
             if html:
                 next_url = _pick_chase_target(html, url)
                 if next_url:
@@ -3499,11 +3597,11 @@ async def _download_link_attachment(
         # Determine filename
         final_filename = filename or get_filename_from_response(response, str(response.url))
         safe_filename = Path(final_filename).name
-        content = response.content
+        body, body_size = _body_of(response)
         _check_batch_deadline()
         reserved = reserve_output_file(download_dir, safe_filename, url)
         output_path = reserved.path
-        await write_reserved(reserved, content)
+        await write_reserved(reserved, body)
 
         logger.info(f"Downloaded link attachment: {output_path}")
 
@@ -3513,7 +3611,7 @@ async def _download_link_attachment(
             "final_url": str(response.url),
             "filename": safe_filename,
             "saved_to": str(output_path),
-            "size_bytes": len(content),
+            "size_bytes": body_size,
             "content_type": response.headers.get("content-type", "unknown"),
             "http_status": response.status_code,
             "redirect_chain": _redirect_chain(response),
@@ -3530,7 +3628,7 @@ async def _download_link_attachment(
             # Release the live body before the archive read: never the HTML page
             # and the archived payload in memory at once (and both together
             # stay within the one per-call byte budget).
-            content = response = None
+            body = response = None
             archived = await _archived_within_deadline()
             if archived is not None:
                 # The live login-page HTML stays where it was saved: deleting

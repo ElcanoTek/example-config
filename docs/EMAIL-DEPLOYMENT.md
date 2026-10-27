@@ -94,9 +94,10 @@ root:root`, written by production-support's email provisioning):
   `EMAIL_LINK_MAX_BYTES` (200 MB per file) and `EMAIL_LINK_MAX_SECONDS` (240 s)
   cap each download, every redirect hop and the archive fallback (which gets at
   most 30 s or a quarter of the deadline) included;
-  `EMAIL_LINK_HTML_SCAN_MAX_BYTES` (10 MB) is only how much of an HTML
-  click-tracker page is scanned for its real link, never a download limit (a
-  larger HTML response is saved as the file); `download_all_link_attachments`
+  `EMAIL_LINK_HTML_SCAN_MAX_BYTES`: the first 10 MB of an HTML click-tracker
+  page is scanned for its real link; never a download limit (with no link
+  found there, the response is saved whole as the file). Downloads stream to a
+  temp file and are copied out in chunks; `download_all_link_attachments`
   takes at most `EMAIL_LINK_MAX_COUNT` (20) links, 3 at a time, within one
   240 s deadline and one `EMAIL_LINK_BATCH_MAX_BYTES` budget (1 GB, each file
   still under 200 MB). The debug
@@ -111,9 +112,11 @@ root:root`, written by production-support's email provisioning):
   `SES_OUTBOUND_ALLOW_UNLISTED_RECIPIENTS`.
   `ses_outbound` pins its configured roots when the server starts (a root not
   created yet is reached later from its nearest existing ancestor, pinned
-  then). A root it did not know at startup is opened with no-follow on every
-  path component, so one under a symlinked ancestor (macOS `/tmp`, say) is
-  refused: configure it before start, or by its resolved path.
+  then, by a no-follow walk). A root it did not know at startup is opened with
+  no-follow on every path component; trusted system symlinks directly under
+  `/` (root-owned, in a root-owned directory nobody else can write: macOS
+  `/tmp`, `/var`) are followed, so only a root under any OTHER symlinked
+  ancestor is refused: configure it before start, or by its resolved path.
 
 Inbound must work with no outbound variables set.
 

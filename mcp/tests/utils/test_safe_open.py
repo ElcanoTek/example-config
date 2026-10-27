@@ -375,3 +375,86 @@ def test_a_root_never_seen_at_startup_refuses_a_symlinked_ancestor(tree, tmp_pat
     link = tmp_path / "anc-link"
     link.symlink_to(tree["root"], target_is_directory=True)
     assert safe_open.pin_roots([str(link / "sub")]) == []
+
+
+def _fake_ownership(monkeypatch, *, link_uid, parent_uid, parent_mode=0o755):
+    """Simulate who owns symlinks and their directory (root ownership cannot be
+    created reliably in tests): every symlink lstat reports ``link_uid``, every
+    directory fstat ``parent_uid`` / ``parent_mode``."""
+    import stat as _stat
+    from types import SimpleNamespace
+
+    real_lstat, real_fstat = os.lstat, os.fstat
+
+    def lstat(name, *, dir_fd=None):
+        st = real_lstat(name, dir_fd=dir_fd)
+        if _stat.S_ISLNK(st.st_mode):
+            return SimpleNamespace(st_mode=st.st_mode, st_uid=link_uid)
+        return st
+
+    def fstat(fd):
+        st = real_fstat(fd)
+        if _stat.S_ISDIR(st.st_mode):
+            return SimpleNamespace(
+                st_mode=_stat.S_IFDIR | parent_mode, st_uid=parent_uid, st_dev=st.st_dev, st_ino=st.st_ino
+            )
+        return st
+
+    monkeypatch.setattr(safe_open.os, "lstat", lstat)
+    monkeypatch.setattr(safe_open.os, "fstat", fstat)
+
+
+def _top_with_system_link(tmp_path):
+    top = tmp_path / "fsroot"
+    (top / "private" / "var" / "folders").mkdir(parents=True)
+    (top / "var").symlink_to("private/var", target_is_directory=True)
+    return top
+
+
+def test_a_root_owned_top_level_system_link_is_followed(tmp_path, monkeypatch):
+    top = _top_with_system_link(tmp_path)
+    _fake_ownership(monkeypatch, link_uid=0, parent_uid=0)
+    fd = safe_open.walk_trusted("/var/folders", _top=str(top))
+    try:
+        assert os.path.samestat(os.fstat(fd), os.stat(top / "private" / "var" / "folders"))
+    finally:
+        os.close(fd)
+
+
+@pytest.mark.parametrize(
+    ("link_uid", "parent_uid", "parent_mode"),
+    [(1000, 0, 0o755), (0, 1000, 0o755), (0, 0, 0o777), (0, 0, 0o775)],
+)
+def test_an_untrusted_system_link_is_refused(tmp_path, monkeypatch, link_uid, parent_uid, parent_mode):
+    top = _top_with_system_link(tmp_path)
+    _fake_ownership(monkeypatch, link_uid=link_uid, parent_uid=parent_uid, parent_mode=parent_mode)
+    with pytest.raises(OSError):
+        os.close(safe_open.walk_trusted("/var/folders", _top=str(top)))
+
+
+def test_a_root_owned_link_below_the_top_level_is_refused(tmp_path, monkeypatch):
+    """Ownership alone never vouches for a deeper link (a root sandbox owns its links)."""
+    top = tmp_path / "fsroot2"
+    (top / "work" / "real").mkdir(parents=True)
+    (top / "work" / "run").symlink_to("real", target_is_directory=True)
+    _fake_ownership(monkeypatch, link_uid=0, parent_uid=0)
+    with pytest.raises(OSError):
+        os.close(safe_open.walk_trusted("/work/run", _top=str(top)))
+
+
+def test_a_symlinked_ancestor_of_an_absent_root_is_never_pinned(tmp_path):
+    """A stale attacker symlink above an absent root: nothing is pinned at
+    startup, and the root stays refused once the target tree appears."""
+    workspace = tmp_path / "ws-stale"
+    workspace.mkdir()
+    elsewhere = tmp_path / "elsewhere-stale"
+    elsewhere.mkdir()
+    (workspace / "run").symlink_to(elsewhere, target_is_directory=True)
+    root = workspace / "run" / "out"  # absent; its parent is the planted link
+    assert safe_open.pin_at_startup([str(root)]) == []
+    assert str(root) not in safe_open._PENDING_ROOTS
+    (elsewhere / "out").mkdir()
+    (elsewhere / "out" / "a.txt").write_bytes(b"secret")
+    assert safe_open.pin_roots([str(root)]) == []
+    with pytest.raises(safe_open.UnsafePathError):
+        safe_open.read_bytes(str(root / "a.txt"), [str(root)])

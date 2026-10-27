@@ -8,6 +8,7 @@ server could stream an unbounded file or drip bytes forever.
 from __future__ import annotations
 
 import asyncio
+import os
 
 import httpx
 import pytest
@@ -501,15 +502,16 @@ def test_a_chunk_crossing_the_call_cap_is_still_charged_to_the_batch():
 
 
 @respx.mock
-async def test_an_oversized_html_interstitial_is_not_decoded_or_chased(dest, monkeypatch):
+async def test_only_the_html_scan_prefix_is_searched_for_the_chase_link(dest, monkeypatch):
     monkeypatch.setattr(ses_s3_email, "LINK_HTML_SCAN_MAX_BYTES", 200)
     tracker = "https://click.example.com/ls/click?upn=abc"
-    page = b'<html><a href="https://reports.example.com/report.csv">Download</a></html>' + b" " * 400
+    # The link sits past the scanned prefix: not chased, the page is saved.
+    page = b"<html>" + b" " * 400 + b'<a href="https://reports.example.com/report.csv">Download</a></html>'
     respx.get(tracker).mock(return_value=httpx.Response(200, content=page, headers={"content-type": "text/html"}))
     chased = respx.get(URL).mock(return_value=httpx.Response(200, content=b"a,b\n"))
     result = await ses_s3_email.download_link_attachment(url=tracker, output_dir=str(dest))
     assert not chased.called
-    assert "chased_to" not in result
+    assert "chased_to" not in result and result["size_bytes"] == len(page)
 
 
 @respx.mock
@@ -544,19 +546,65 @@ async def test_skipped_links_are_a_count_and_a_small_redacted_sample(dest, monke
 
 
 @respx.mock
-async def test_a_15_mb_html_report_downloads_without_a_chase(dest, monkeypatch):
-    """The scan cap (10 MB default) only skips the chase: the file still downloads."""
+async def test_a_15_mb_html_page_with_its_link_near_the_top_is_chased(dest, monkeypatch):
+    """The first 10 MB are scanned: a large click-tracker page still chases."""
     monkeypatch.setattr(ses_s3_email, "LINK_DOWNLOAD_MAX_BYTES", 200 * 1024 * 1024)
     assert ses_s3_email.LINK_HTML_SCAN_MAX_BYTES == 10 * 1024 * 1024
     tracker = "https://click.example.com/ls/click?upn=abc"
     head = b'<html><a href="https://reports.example.com/report.csv">Download</a>'
     page = head + b"x" * (15 * 1024 * 1024 - len(head))
     respx.get(tracker).mock(return_value=httpx.Response(200, content=page, headers={"content-type": "text/html"}))
-    chased = respx.get(URL).mock(return_value=httpx.Response(200, content=b"a,b\n"))
+    respx.get(URL).mock(return_value=httpx.Response(200, content=b"a,b\n", headers={"content-type": "text/csv"}))
+    result = await ses_s3_email.download_link_attachment(url=tracker, output_dir=str(dest))
+    assert result["status"] == "success" and result.get("chased_to") == URL, result
+
+
+@respx.mock
+async def test_a_15_mb_html_report_without_a_link_downloads_as_is(dest, monkeypatch):
+    monkeypatch.setattr(ses_s3_email, "LINK_DOWNLOAD_MAX_BYTES", 200 * 1024 * 1024)
+    tracker = "https://click.example.com/ls/click?upn=abc"
+    page = b"<html><p>report</p>" + b"x" * (15 * 1024 * 1024)
+    respx.get(tracker).mock(return_value=httpx.Response(200, content=page, headers={"content-type": "text/html"}))
     result = await ses_s3_email.download_link_attachment(url=tracker, output_dir=str(dest))
     assert result["status"] == "success", result
-    assert result["size_bytes"] == len(page)
-    assert not chased.called and "chased_to" not in result
+    assert result["size_bytes"] == len(page) and "chased_to" not in result
+    with open(result["saved_to"], "rb") as fh:
+        assert fh.read() == page
+
+
+@respx.mock
+async def test_a_large_download_is_never_materialised_in_memory(dest, monkeypatch):
+    import tracemalloc
+
+    size = 16 * 1024 * 1024
+    monkeypatch.setattr(ses_s3_email, "LINK_DOWNLOAD_MAX_BYTES", size + 1)
+
+    async def body():
+        block = b"y" * (256 * 1024)
+        for _ in range(size // len(block)):
+            yield block
+
+    respx.get(URL).mock(return_value=httpx.Response(200, content=body(), headers={"content-type": "text/csv"}))
+    tracemalloc.start()
+    try:
+        result = await ses_s3_email.download_link_attachment(url=URL, output_dir=str(dest))
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert result["status"] == "success" and result["size_bytes"] == size
+    assert peak < 4 * 1024 * 1024, peak  # chunks and copy buffers only, never the 16 MB body
+    assert os.path.getsize(result["saved_to"]) == size
+
+
+@respx.mock
+async def test_three_concurrent_near_cap_downloads_work(dest, monkeypatch):
+    size = 4 * 1024 * 1024
+    monkeypatch.setattr(ses_s3_email, "LINK_DOWNLOAD_MAX_BYTES", size + 10)
+    urls = [f"https://reports.example.com/r{i}.csv" for i in range(3)]
+    for u in urls:
+        respx.get(u).mock(return_value=httpx.Response(200, content=b"z" * size, headers={"content-type": "text/csv"}))
+    results = await asyncio.gather(*(ses_s3_email.download_link_attachment(url=u, output_dir=str(dest)) for u in urls))
+    assert all(r["status"] == "success" and r["size_bytes"] == size for r in results), results
 
 
 @pytest.mark.skipif(

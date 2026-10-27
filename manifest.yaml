@@ -479,8 +479,8 @@ mcp_servers:
       EMAIL_LINK_MAX_COUNT: "${EMAIL_LINK_MAX_COUNT}"
       EMAIL_LINK_BATCH_MAX_BYTES: "${EMAIL_LINK_BATCH_MAX_BYTES}"
       # How much of an HTML click-tracker page is scanned for its real download
-      # link (default 10 MB). Never a download limit: a larger HTML response is
-      # saved as the file, under EMAIL_LINK_MAX_BYTES.
+      # link: the first 10 MB by default. Never a download limit: with no link
+      # found there, the response is saved as the file, under EMAIL_LINK_MAX_BYTES.
       EMAIL_LINK_HTML_SCAN_MAX_BYTES: "${EMAIL_LINK_HTML_SCAN_MAX_BYTES}"
     optional_env:
       - EMAIL_SENDER_AUTH
