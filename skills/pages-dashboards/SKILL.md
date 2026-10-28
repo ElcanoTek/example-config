@@ -28,8 +28,9 @@ only adds what is specific to this deployment.
 Bind each input to a connector this deployment actually has, and name the
 server and tool in any refresh you prepare:
 
-- **Email reports:** the `email` connector reads this deployment's inbound
-  report archive (search, open, download attachments).
+- **Email reports:** the `explorer` connector (Elcano Explorer) reads this
+  deployment's inbound report archive (search, open, download attachments and
+  cached report links).
 - **Files the user supplies** in the conversation, and files already in the
   workspace.
 - **Lens results:** the `lens` connector's job results and downloads, when a

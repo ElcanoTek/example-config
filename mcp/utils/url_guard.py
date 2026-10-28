@@ -1,11 +1,13 @@
-"""SSRF guard for agent-facing URL fetches (ses_s3_email).
+"""SSRF guard for agent-facing URL fetches.
 
-Both inbox MCPs expose ``download_link_attachment``, which fetches URLs taken
-from EMAIL BODIES — attacker-controlled input for anyone who can email the
-mailbox. Without a host check the tool is an SSRF primitive: a link to
+No server in this bundle fetches a model-supplied URL today (inbound email,
+and its links, moved to Elcano Explorer); the guard stays for the next one. A
+tool that fetches URLs taken from EMAIL BODIES handles attacker-controlled
+input for anyone who can email the mailbox. Without a host check such a tool
+is an SSRF primitive: a link to
 ``http://169.254.169.254/latest/meta-data/`` reads cloud metadata, a link to
 ``http://10.x.x.x/`` reaches internal services, and a public host can 302 to
-either. This module centralizes the policy both servers apply:
+either. This module centralizes the policy such a fetcher applies:
 
 - http/https only (checked again on every hop — a redirect can change scheme);
 - the host of EVERY request must resolve exclusively to public, globally

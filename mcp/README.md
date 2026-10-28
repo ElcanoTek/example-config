@@ -2,14 +2,14 @@
 
 This directory holds the bundle's MCP (Model Context Protocol) servers, wired
 into the agent catalog in `manifest.yaml`. Two are examples that show the two
-shapes every fleet MCP server takes; two are the standard client stack's email
-connectors, dark until their host env is set:
+shapes every fleet MCP server takes; one is the standard client stack's
+outbound email connector, dark until its host env is set (inbound mail is
+Elcano Explorer's `explorer` connector, a remote server):
 
 | Server | File | Shape | Credentials |
 | --- | --- | --- | --- |
 | Demo Handbook | `knowledge_base.py` | always registered, off by default (demo content) | none |
 | Example REST API | `example_api.py` | credential-gated | `EXAMPLE_API_KEY` |
-| Email Reports (`email`) | `ses_s3_email.py` | credential-gated, read-only | `EMAIL_S3_BUCKET` (+ `EMAIL_AWS_*` keys or an instance role) |
 | Amazon SES Email (`ses_outbound`) | `ses_sender.py` (+ `email_render.py`, `email_lint.py`) | credential-gated, every send approval-gated | `SES_OUTBOUND_AWS_*`, `SES_OUTBOUND_FROM_EMAIL` |
 
 All are stdio servers built on `mcp.server.fastmcp.FastMCP`. fleet launches
@@ -21,15 +21,9 @@ rendered email only through `utils/safe_open.py`: its configured roots are
 pinned (`O_NOFOLLOW|O_DIRECTORY`, by device and inode) when the server starts,
 before any tool call, and never re-resolved; each path is then one
 symlink-refusing walk from its root and that descriptor (never the name a
-second time), and files it created are removed only through the helper. The
-inbound server (`ses_s3_email.py`) uses `safe_open` only to reach its private
-debug-log directory (`walk_trusted`, which follows nothing but trusted system
-symlinks such as macOS `/tmp`); it confines a model-supplied `output_dir` to
-its own allowed roots (`resolve_download_dir`), walks to it without following
-a symlink and creates each download fresh (`O_CREAT|O_EXCL|O_NOFOLLOW`), but
-those roots are resolved per call, not pinned. Only symlinks directly under
+second time), and files it created are removed only through the helper. Only symlinks directly under
 `/`, owned by root in a root-owned directory nobody else can write (macOS
-`/tmp`, `/var`), are trusted as system symlinks. Lens and Pages are remote (http) servers on the client's
+`/tmp`, `/var`), are trusted as system symlinks. Lens, Pages and Explorer are remote (http) servers on the client's
 own boxes, so they have manifest entries but no code here.
 
 To stand up a client's SES/S3 email tenant (infrastructure, least-privilege
@@ -38,13 +32,6 @@ use the canonical
 [new-client email-report runbook](https://github.com/ElcanoTek/production-support/blob/main/ses-s3/docs/NEW-CLIENT-EMAIL-SETUP.md).
 Record real identifiers in the forked client bundle's `docs/EMAIL-DEPLOYMENT.md`,
 not in this generic template.
-
-`ses_s3_email.py` log redaction. In every log line (stderr and the debug log) a
-URL keeps only its scheme and host: the path collapses to `…` and its last segment keeps only a short alphabetic extension (`/…/***.csv`, else `***`; even a filename-shaped segment can be a token), userinfo (up to the last `@` in the authority) becomes `***@`, and
-the whole query and fragment become `?***` and `#***` (no query keys are kept),
-so presigned signatures, tokens and capability paths
-(`/download/<secret>.csv`) never reach a log. A masked URL is followed by
-`[url-id:<12 hex>]`, an HMAC-SHA256 of the full original URL under a random per-process key (so a short secret cannot be brute-forced back out of it), so operators can still tell links apart within one process's logs.
 
 ## `knowledge_base.py` — always-on, no credentials
 
