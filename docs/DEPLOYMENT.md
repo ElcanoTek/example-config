@@ -57,7 +57,7 @@ Tick each with its evidence (command and result, date).
 - [ ] auth: password mode, `auth doctor` clean, `/healthz` ok
 - [ ] auth: apps registered (fleet, lens, explorer, pages) with back-channel logout,
   via `scripts/register-auth-apps.sh` (no secret shown or stored)
-- [ ] auth: first admin created, admin MFA policy on, granted fleet, lens, explorer, pages
+- [ ] auth: first admin created with team `Elcano`, admin MFA policy on, granted fleet, lens, explorer, pages
 - [ ] lens: central auth, `lens doctor` clean, fleet token minted
 - [ ] explorer: central auth, email bucket wired, `explorer doctor` clean
 - [ ] pages: both hosts, central auth, host split verified, fleet's token installed
