@@ -18,7 +18,7 @@ protocols, skills, and the Python MCP servers under `mcp/`.
 
 It is also the starting point for every Elcano client bundle. Besides the two
 demo servers it ships the standard client stack's connectors (Pages, Lens,
-inbound `email` and `ses_outbound`), each dark until its host env is set, and
+`explorer` for inbound mail and `ses_outbound`), each dark until its host env is set, and
 two brand helpers (`assets/make-palette.py`, `assets/make-share-card.py`). A
 client fork changes branding, persona and docs and nothing else to start; see
 the README's "Make it yours".
@@ -37,8 +37,9 @@ special-case a customer in fleet, and not to special-case Northwind either.
 This template was never a mirror of another repo's servers. The two demo
 servers (`knowledge_base.py`, `example_api.py`) and the example Agent Plugin's
 server (`plugins/example-plugin/server/plugin_notes.py`) were written here. The
-email servers (`ses_s3_email.py`, `ses_sender.py` and their helpers) were
-hand-ported from a client bundle once, in 2026-10, as a reviewed change; this is
+outbound email server (`ses_sender.py` and its helpers) was
+hand-ported from a client bundle once, in 2026-10, as a reviewed change (the
+inbound one has since left the bundle for Elcano Explorer); this is
 their home now, and client bundles receive fixes from here by hand. Keep it
 that way.
 
@@ -118,11 +119,11 @@ manifest never provides means the subprocess never receives it.
   (`personas/victoria.yaml`). fleet's stock default for both is `assistant`,
   which this bundle does not ship; `bundle-preflight.yml` passes the same
   values through `bundle_env`.
-- **Standard connectors stay dark and generic.** Pages and Lens keep their
-  reserved `.invalid` default URLs; `email` and `ses_outbound` read unprefixed
-  host variables (`EMAIL_*`, `SES_OUTBOUND_*`, the names production-support's
-  email provisioning writes), carry no `account_vars` (the named-account overlay
-  would not isolate their shared `AWS_*` keys), and default to refusing
+- **Standard connectors stay dark and generic.** Pages, Lens
+  and Explorer keep their reserved `.invalid` default URLs; `ses_outbound` reads
+  unprefixed host variables (`SES_OUTBOUND_*`, the names production-support's
+  email provisioning writes), carries no `account_vars` (the named-account
+  overlay would not isolate its `AWS_*` keys), and defaults to refusing
   unlisted recipients. Fixtures use `example.com` / `.example` addresses only:
   no real sender, customer, vendor account or tracking host.
 - **Colors stay contrast-checked.** Change `branding.colors` with

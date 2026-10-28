@@ -416,24 +416,28 @@ mcp_servers:
       - get_options
 
   # explorer: this deployment's own Elcano Explorer (ElcanoTek/explorer
-  #   docs/API.md), which searches the SES email archive in S3. HTTP MCP; dark
-  #   until BOTH variables below are set in fleet's env. The default is
+  #   docs/API.md), the only inbound-mail connector: it searches the SES email
+  #   archive in S3, reads messages by s3_key and hands out their attachments
+  #   and body links. Report links expire about 48 hours after delivery; the
+  #   archive's link archiver caches them in S3 on arrival and get_download_link
+  #   serves the cached copy (a signed Explorer URL, valid 15 minutes, that the
+  #   native download_url tool fetches into the workspace). HTTP MCP; dark until
+  #   BOTH variables below are set in fleet's env. The default is
   #   `explorer.invalid`, a reserved name that never resolves: fleet needs a
   #   non-empty url to load the bundle, and an unset URL must never fall back to
   #   another organisation's Explorer. EXPLORER_MCP_URL is
   #   https://<this deployment's Explorer host>/mcp and EXPLORER_API_TOKEN is a
   #   token minted on that host with `explorer token create --label
-  #   fleet-<deployment>` (scope email:search: read-only searches; Explorer
-  #   stores only its hash). Results carry the s3_key the `email` server's
-  #   get_email / download_attachment / extract_download_links /
-  #   download_link_attachment take. Only mail whose sender the receiver
-  #   authenticated is returned (Explorer's EMAIL_SENDER_AUTH, default required);
-  #   skipped mail is reported in search_warnings.
+  #   fleet-<deployment>` (scopes email:search and email:read, both read-only;
+  #   Explorer stores only its hash). Only mail whose sender the receiver
+  #   authenticated is returned (Explorer's EMAIL_SENDER_AUTH, default
+  #   required); skipped mail is reported in search_warnings. Outbound mail is
+  #   ses_outbound's.
   - name: explorer
     optional: true
     enabled_by_default: true
-    display_name: "Explorer email search"
-    description: "Search the inbound email archive for report emails by sender, subject and date with Elcano Explorer; read and download them with the Email Reports tools."
+    display_name: "Explorer email reports"
+    description: "Find, read and download inbound email reports (attachments and cached report links) from the SES archive in S3 with Elcano Explorer."
     category: data-storage
     type: http
     url: "${EXPLORER_MCP_URL:-https://explorer.invalid/mcp}"
@@ -444,85 +448,20 @@ mcp_servers:
       - search_emails
       - search_emails_fuzzy
       - find_latest_report
+      - get_email
+      - extract_download_links
+      - list_archived_attachments
+      - get_download_link
 
-  # 5) email — inbound email reports that Amazon SES deposits in this
-  #    deployment's isolated S3 bucket (one SES/S3 email tenant per client).
-  #    Independent of outbound email: this connector lights up when
-  #    EMAIL_S3_BUCKET is set even when outbound SES is absent. AWS credentials
-  #    are optional here so an instance/task role can be used instead of static
-  #    keys. The keys belong to the tenant's read-only runtime IAM user, never
-  #    to the sender or the provisioner. The host variables are unprefixed
-  #    (EMAIL_*, SES_OUTBOUND_*): one fleet box serves one client. No
-  #    account_vars: fleet's named-account overlay suffixes the SUBPROCESS keys
-  #    below (AWS_*), which both email connectors share, so a named email
-  #    account would not isolate its credentials.
-  - name: email
-    optional: true
-    enabled_by_default: true
-    display_name: "Email Reports"
-    description: "Read inbound email reports stored by Amazon SES in this deployment's S3 archive, and download their attachments and links (find them with the Explorer search tools)."
-    category: data-storage
-    type: stdio
-    command: python3
-    args: ["mcp/ses_s3_email.py"]
-    enabled_env: ["EMAIL_S3_BUCKET"]
-    probe:
-      tool: get_inbox_stats
-      contains: '"status": "success"'
-    env:
-      EMAIL_S3_BUCKET: "${EMAIL_S3_BUCKET}"
-      EMAIL_S3_PREFIX: "${EMAIL_S3_PREFIX:-emails/}"
-      EMAIL_S3_ARCHIVE_PREFIX: "${EMAIL_S3_ARCHIVE_PREFIX:-emails/attachments/}"
-      AWS_ACCESS_KEY_ID: "${EMAIL_AWS_ACCESS_KEY_ID}"
-      AWS_SECRET_ACCESS_KEY: "${EMAIL_AWS_SECRET_ACCESS_KEY}"
-      AWS_SESSION_TOKEN: "${EMAIL_AWS_SESSION_TOKEN}"
-      AWS_REGION: "${EMAIL_AWS_REGION:-us-east-2}"
-      EMAIL_ATTACHMENT_DIR: "${FLEET_WORKSPACE}/email_attachments"
-      # Extra root a model-supplied output_dir may point into: the deployment
-      # workspace root (fleet's reserved token, as for ses_outbound below).
-      # The server also allows the attachment dir and its parent, the temp
-      # dir and a non-bundle cwd; it always refuses the bundle checkout.
-      EMAIL_ALLOWED_DIRS: "${FLEET_WORKSPACE_ROOT}"
-      EMAIL_LAST_CHECK_FILE: "${FLEET_WORKSPACE}/email_last_checked.txt"
-      EMAIL_DEBUG_LOG_FILE: "${EMAIL_DEBUG_LOG_FILE}"
-      # Searching (and its sender-authentication rules: EMAIL_SENDER_AUTH,
-      # EMAIL_TRUSTED_LEGACY_PREFIXES) moved to the `explorer` server; this
-      # server reads and downloads by s3_key. Link downloads are capped at
-      # EMAIL_LINK_MAX_BYTES (default 200 MB) and EMAIL_LINK_MAX_SECONDS (240).
-      EMAIL_LINK_MAX_BYTES: "${EMAIL_LINK_MAX_BYTES}"
-      EMAIL_LINK_MAX_SECONDS: "${EMAIL_LINK_MAX_SECONDS}"
-      # download_all_link_attachments: at most this many links (default 20), 3 at a
-      # time, sharing one byte budget (default 1 GB; each file stays under 200 MB).
-      EMAIL_LINK_MAX_COUNT: "${EMAIL_LINK_MAX_COUNT}"
-      EMAIL_LINK_BATCH_MAX_BYTES: "${EMAIL_LINK_BATCH_MAX_BYTES}"
-      # How much of an HTML click-tracker page is scanned for its real download
-      # link: the first 10 MB by default. Never a download limit: with no link
-      # found there, the response is saved as the file, under EMAIL_LINK_MAX_BYTES.
-      EMAIL_LINK_HTML_SCAN_MAX_BYTES: "${EMAIL_LINK_HTML_SCAN_MAX_BYTES}"
-    optional_env:
-      - EMAIL_LINK_MAX_BYTES
-      - EMAIL_LINK_MAX_SECONDS
-      - EMAIL_LINK_MAX_COUNT
-      - EMAIL_LINK_BATCH_MAX_BYTES
-      - EMAIL_LINK_HTML_SCAN_MAX_BYTES
-      - AWS_ACCESS_KEY_ID
-      - AWS_SECRET_ACCESS_KEY
-      - AWS_SESSION_TOKEN
-      - AWS_REGION
-      - EMAIL_ATTACHMENT_DIR
-      - EMAIL_ALLOWED_DIRS
-      - EMAIL_LAST_CHECK_FILE
-      - EMAIL_DEBUG_LOG_FILE
-
-  # 6) ses_outbound — outbound only. Dark until the dedicated, send-only
+  # 5) ses_outbound — outbound only. Dark until the dedicated, send-only
   #    sender IAM credentials and the From address are in fleet's host
-  #    environment. Its absence does not affect the inbound `email` connector
-  #    above. From is SES_OUTBOUND_FROM_EMAIL (IAM enforces it too; there is no
-  #    default, so an unset address keeps the connector dark), and every
+  #    environment. Its absence does not affect inbound mail, which Explorer
+  #    (above) reads. From is SES_OUTBOUND_FROM_EMAIL (IAM enforces it too;
+  #    there is no default, so an unset address keeps the connector dark), and every
   #    send_email call needs a human approval (critical_tools below).
   #    Unlisted recipients are refused unless the host sets
   #    SES_OUTBOUND_ALLOW_UNLISTED_RECIPIENTS=true.
-  #    Once present it is ON by default, like the inbound `email` connector:
+  #    Once present it is ON by default, like the inbound `explorer` connector:
   #    new chats start with it selected and new Operations tasks pre-select
   #    it, so a report a chat produces (or a task scheduled from that chat)
   #    can actually be delivered. Every send still passes the approval card /
@@ -579,7 +518,7 @@ mcp_servers:
       - validate_email_content
       - validate_email_address
 
-  # 7) An OPTIONAL, opt-in server — chat's per-conversation Optional-server
+  # 6) An OPTIONAL, opt-in server — chat's per-conversation Optional-server
   #    semantics. `optional: true` keeps a connector out of conversations until
   #    a user switches it on (Settings → Connections); `enabled_by_default`
   #    picks the initial toggle state and `beta: true` badges it in the
@@ -813,16 +752,15 @@ agent_policy:
     - mcp_knowledge_base_kb_list_categories
     - mcp_example_api_api_get_record
     - mcp_example_api_api_list_records
-    # SES/S3 email reads follow Victoria's read-only report workflow. Download
-    # tools only materialize files into fleet's managed workspace.
+    # Explorer email reads follow Victoria's read-only report workflow.
+    # get_download_link only hands out a URL; download_url saves the file.
     - mcp_explorer_search_emails
     - mcp_explorer_search_emails_fuzzy
-    - mcp_email_get_email
-    - mcp_email_download_attachment
-    - mcp_email_download_link_attachment
-    - mcp_email_extract_download_links
     - mcp_explorer_find_latest_report
-    - mcp_email_list_archived_attachments
+    - mcp_explorer_get_email
+    - mcp_explorer_extract_download_links
+    - mcp_explorer_list_archived_attachments
+    - mcp_explorer_get_download_link
     # render_email only writes a uniquely named HTML file into the agent's own
     # working directory; nothing leaves the host until send_email is approved.
     - mcp_ses_outbound_render_email

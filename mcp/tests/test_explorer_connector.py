@@ -9,8 +9,8 @@ Offline checks over manifest.yaml:
 - the connector stays dark until both the URL and the token are set;
 - the tool allowlist is the reviewed Explorer catalog (ElcanoTek/explorer
   internal/mcp/tools.json), all read-only and parallel-safe;
-- the search tools left the stdio `email` server, and nothing in the bundle
-  still calls them there.
+- Explorer is the only inbound-mail connector: the stdio `email` server is
+  gone, and nothing in the bundle still calls its tools.
 """
 
 from __future__ import annotations
@@ -26,7 +26,15 @@ MANIFEST_PATH = ROOT / "manifest.yaml"
 
 # Pinned on purpose: when Explorer adds or retires a tool, this list changes
 # with it, by a person.
-CATALOG = {"search_emails", "search_emails_fuzzy", "find_latest_report"}
+CATALOG = {
+    "search_emails",
+    "search_emails_fuzzy",
+    "find_latest_report",
+    "get_email",
+    "extract_download_links",
+    "list_archived_attachments",
+    "get_download_link",
+}
 
 
 @pytest.fixture(scope="module")
@@ -65,14 +73,20 @@ def test_tools_are_the_reviewed_catalog_and_parallel_safe(explorer, manifest):
         assert f"mcp_explorer_{tool}" not in critical
 
 
-def test_nothing_still_calls_the_search_tools_on_the_email_server():
-    pattern = re.compile(r"mcp_email_(search_emails|search_emails_fuzzy|find_latest_report)\b")
+def test_the_python_email_server_is_gone(manifest):
+    assert "email" not in {s["name"] for s in manifest["mcp_servers"]}
+    assert not (ROOT / "mcp" / "ses_s3_email.py").exists()
+
+
+def test_nothing_still_calls_the_email_server():
+    pattern = re.compile(r"\bmcp_email_\w+|\bses_s3_email\b")
     offenders = []
     for path in ROOT.rglob("*"):
         if (
             path.is_dir()
             or ".git" in path.parts
             or ".venv" in path.parts
+            or "docs" in path.parts  # dated design notes and run records
             or path.suffix not in {".yaml", ".yml", ".md", ".json"}
         ):
             continue

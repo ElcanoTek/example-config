@@ -1,4 +1,4 @@
-"""Contract tests for independent inbound and credential-gated outbound email."""
+"""Contract tests for the credential-gated outbound SES connector (inbound mail is Explorer's)."""
 
 from pathlib import Path
 
@@ -12,26 +12,13 @@ def _servers() -> dict[str, dict]:
     return {server["name"]: server for server in manifest["mcp_servers"]}
 
 
-def test_s3_inbound_is_independent_of_outbound_ses() -> None:
+def test_inbound_mail_is_explorer_and_independent_of_outbound_ses() -> None:
     servers = _servers()
-    inbound = servers["email"]
-    assert inbound["optional"] is True
-    assert inbound["enabled_by_default"] is True
-    assert inbound["enabled_env"] == ["EMAIL_S3_BUCKET"]
-    assert inbound["env"]["EMAIL_S3_BUCKET"] == "${EMAIL_S3_BUCKET}"
+    assert "email" not in servers
+    inbound = servers["explorer"]
+    assert inbound["type"] == "http"
     assert "SES_OUTBOUND" not in str(inbound)
-    # Named accounts would not isolate credentials (both connectors map AWS_*).
-    assert "account_vars" not in inbound
-    # enabled_env must be the only gate: fleet enables an `always` server
-    # before it ever looks at enabled_env (clientconfig.go), and an
-    # enabled_groups entry would add a second way on.
-    assert not inbound.get("always")
-    assert "enabled_groups" not in inbound
-    assert inbound["probe"] == {"tool": "get_inbox_stats", "contains": '"status": "success"'}
-    # Static keys stay optional so an instance role can stand in, and downloads
-    # are confined to the workspace root.
-    assert {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "EMAIL_ALLOWED_DIRS"} <= set(inbound["optional_env"])
-    assert inbound["env"]["EMAIL_ALLOWED_DIRS"] == "${FLEET_WORKSPACE_ROOT}"
+    assert "EMAIL_S3_BUCKET" not in str(servers["ses_outbound"]["env"])
 
 
 def test_ses_outbound_requires_sender_credentials_and_address() -> None:

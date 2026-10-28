@@ -1,8 +1,8 @@
-"""Unit tests for the SSRF guard used by ses_s3_email
+"""Unit tests for the SSRF guard for the bundle's URL fetchers
 (utils.url_guard).
 
-download_link_attachment fetches URLs taken from email bodies — attacker
-controlled for anyone who can email the mailbox — so the guard's contract is
+A fetcher of URLs taken from email bodies handles input that is attacker
+controlled for anyone who can email the mailbox, so the guard's contract is
 pinned tightly here:
 
 * non-http(s) schemes are refused;

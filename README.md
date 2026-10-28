@@ -14,7 +14,8 @@ engineering, analytics, …) can fork it and swap in their own content.
 
 It is also the starting point for every Elcano client bundle: it ships the
 standard client stack's connectors (the deployment's own **Pages** and **Lens**,
-and **inbound and outbound email** through Amazon SES/S3), each dark until its
+**inbound email** through Elcano Explorer and **outbound email** through
+Amazon SES), each dark until its
 credentials are in fleet's host environment, plus two helpers that turn a
 client's brand colors and logo into the palette, email theme and link card. A
 client fork changes branding, persona and docs; it never copies another
@@ -133,7 +134,6 @@ example-config/
   mcp/                   # the bundle's Python MCP servers (+ tests, requirements.txt)
     knowledge_base.py    #   searches mcp/data/handbook.json (off by default: demo content)
     example_api.py       #   credential-gated generic REST connector
-    ses_s3_email.py      #   inbound email reports from the SES/S3 archive (`email`)
     ses_sender.py        #   render, lint and send audited outbound email (`ses_outbound`)
     email_render.py      #   render_email's HTML builder; email_lint.py its checks
     utils/               #   shared run ledger, URL guard and filesystem helpers
@@ -227,7 +227,8 @@ catches up.
 ### MCP servers — connect agents to your data
 
 This bundle ships two demo servers that show the two shapes you will use for
-everything else, and the four connectors of the standard Elcano client stack.
+everything else, and the four connectors of the standard Elcano client stack
+(Pages, Lens, Explorer for inbound mail, `ses_outbound` for outbound).
 
 | Server | Gate | Credentials | What it does |
 | --- | --- | --- | --- |
@@ -235,14 +236,13 @@ everything else, and the four connectors of the standard Elcano client stack.
 | `example_api` | `enabled_env: [EXAMPLE_API_KEY]` | brokered host-side | The **gated connector** pattern — listed as **Needs setup** and never launched until the key is set. |
 | `pages` | `enabled_env: [PAGES_MCP_URL, PAGES_API_TOKEN]` | token in the header, host-side | Build, publish and refresh dashboards on the deployment's own Pages. Page changes wait for approval; data refreshes (`update_page_data`, `update_page_data_upload`) run at once and post a card (`critical_tool_modes: notify`). |
 | `lens` | `enabled_env: [LENS_MCP_URL, LENS_API_TOKEN]` | token in the header, host-side | Classify sites, apps and CTV apps into quality tiers on the deployment's own Lens. Starting or cancelling a job needs approval. |
-| `explorer` | `enabled_env: [EXPLORER_MCP_URL, EXPLORER_API_TOKEN]` | token in the header, host-side | Search the inbound email archive on the deployment's own Explorer (`search_emails`, `search_emails_fuzzy`, `find_latest_report`). Only mail SES authenticated (DMARC / aligned SPF or DKIM) is returned; `sender_contains` takes sender domains or addresses and matches the authenticated mailbox, not From text. |
-| `email` | `enabled_env: [EMAIL_S3_BUCKET]` | read-only IAM user, host-side | Read inbound report mail that SES stores in the client's S3 bucket by `s3_key` (from an Explorer search), and download its attachments and links; link downloads (single and batch) are size-, count- and time-capped. |
+| `explorer` | `enabled_env: [EXPLORER_MCP_URL, EXPLORER_API_TOKEN]` | token in the header, host-side | The only inbound-mail connector, on the deployment's own Explorer: `search_emails`, `search_emails_fuzzy` and `find_latest_report` find report emails; `get_email`, `extract_download_links` and `list_archived_attachments` read them by `s3_key`; `get_download_link` returns a URL for an attachment or body link that the native `download_url` tool fetches. Report links expire about 48 hours after delivery, so the archive caches them in S3 on arrival and Explorer serves the cached copy. Only mail SES authenticated (DMARC / aligned SPF or DKIM) is returned; `sender_contains` takes sender domains or addresses and matches the authenticated mailbox, not From text. |
 | `ses_outbound` | `enabled_env: [SES_OUTBOUND_AWS_ACCESS_KEY_ID, …SECRET_ACCESS_KEY, SES_OUTBOUND_FROM_EMAIL]` | send-only IAM user, host-side | Render and send audited email as the client's sender. Every `send_email` needs approval; unlisted recipients are refused unless `SES_OUTBOUND_ALLOW_UNLISTED_RECIPIENTS=true`. |
 
 The Lens, Explorer and Pages entries default their `url` to a reserved `.invalid` host:
 fleet needs a non-empty URL to load the bundle, and an unset one must never
-reach another organisation's box. The email host variables are unprefixed
-(`EMAIL_*`, `SES_OUTBOUND_*`) because one fleet box serves one client; the
+reach another organisation's box. The outbound email host variables are unprefixed
+(`SES_OUTBOUND_*`) because one fleet box serves one client; the
 production-support email provisioning writes exactly these names.
 
 - **`knowledge_base`** is the canonical "answer from our docs" pattern. It serves

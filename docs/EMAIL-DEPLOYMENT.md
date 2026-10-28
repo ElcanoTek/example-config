@@ -18,7 +18,7 @@ evidence; it does not fork the procedure.
 | Item | Status |
 |---|---|
 | Inbound `@<domain>` mail | Planned; MX not yet changed |
-| Fleet `email` connector | In the bundle, dark until `EMAIL_S3_BUCKET` is set |
+| Fleet `explorer` connector (inbound) | In the bundle, dark until `EXPLORER_MCP_URL` and `EXPLORER_API_TOKEN` are set |
 | Fleet `ses_outbound` connector | In the bundle, dark until the sender keys and `SES_OUTBOUND_FROM_EMAIL` are set |
 | Historical import | <none, or the mailbox and date range to migrate> |
 | Outbound recipient policy | <unrestricted with per-send approval, or the allowlist> |
@@ -26,7 +26,7 @@ evidence; it does not fork the procedure.
 
 The AWS/Lambda deployment is owned by production-support's `ses-s3/` (tenant
 `<tenant>`, `config/tenants/<tenant>.json`). This bundle owns `manifest.yaml`,
-`mcp/ses_s3_email.py`, `mcp/ses_sender.py`, `mcp/email_render.py`,
+`mcp/ses_sender.py`, `mcp/email_render.py`,
 `mcp/email_lint.py`, `protocols/email-style.yaml`, the client's email theme and
 their tests. There is no automated cross-repository sync.
 
@@ -56,7 +56,7 @@ INBOUND: anything@<domain>
        -> s3://<tenant>-victoria-email/emails/raw/<message-id>
        -> StopAction
   -> <tenant>-ses-email-date-partitioner -> emails/YYYY/MM/DD/<message-id>
-  -> Fleet `email` connector (<tenant>-email-runtime, read-only)
+  -> Explorer (<tenant>-email-runtime, read-only) -> Fleet `explorer` connector
 
 OUTBOUND: Fleet `ses_outbound` connector
   -> IAM user <tenant>-email-sender
@@ -69,32 +69,22 @@ OUTBOUND: Fleet `ses_outbound` connector
 Host variables (names only; values live in `/etc/fleet/fleet.env`, `0600
 root:root`, written by production-support's email provisioning):
 
-- Inbound: `EMAIL_S3_BUCKET`, `EMAIL_AWS_ACCESS_KEY_ID`,
-  `EMAIL_AWS_SECRET_ACCESS_KEY` (optional `EMAIL_AWS_REGION`).
-  This server reads and downloads by `s3_key`. Searching moved to the
-  `explorer` connector (Elcano Explorer's MCP server; host variables
-  `EXPLORER_MCP_URL` and `EXPLORER_API_TOKEN`, the token minted on the
-  Explorer host with `explorer token create`). Explorer returns only mail SES
-  inbound authenticated (DMARC, or an SPF / DKIM pass for exactly the From
-  domain), matches `sender_contains` against the authenticated mailbox, never
-  the display name, and reports skipped mail in `search_warnings`
+- Inbound: the `explorer` connector (Elcano Explorer's MCP server; host
+  variables `EXPLORER_MCP_URL` and `EXPLORER_API_TOKEN`, the token minted on
+  the Explorer host with `explorer token create`, scopes `email:search` and
+  `email:read`). It is the only inbound-mail connector: it searches the
+  archive, reads emails by `s3_key`, and `get_download_link` hands out a URL
+  for an attachment or a body link that the agent fetches with the native
+  `download_url` tool. Report links expire about 48 hours after delivery, so
+  the archive caches them in S3 on arrival and Explorer serves the cached
+  copy. The bucket and the read-only runtime keys are set on the Explorer
+  host, not in Fleet. Explorer returns only mail SES inbound authenticated
+  (DMARC, or an SPF / DKIM pass for exactly the From domain), matches
+  `sender_contains` against the authenticated mailbox, never the display
+  name, and reports skipped mail in `search_warnings`
   (`unauthenticated_sender_skipped` / `_unchecked`). Its sender settings
   (`EMAIL_SENDER_AUTH`, `EMAIL_TRUSTED_LEGACY_PREFIXES`, `EMAIL_AUTHSERV_ID`)
   are set on the Explorer host; see ElcanoTek/explorer `docs/API.md`.
-  Email-link download limits:
-  `EMAIL_LINK_MAX_BYTES` (200 MB per file) and `EMAIL_LINK_MAX_SECONDS` (240 s)
-  cap each download, every redirect hop and the archive fallback (which gets at
-  most 30 s or a quarter of the deadline) included;
-  `EMAIL_LINK_HTML_SCAN_MAX_BYTES`: the first 10 MB of an HTML click-tracker
-  page is scanned for its real link; never a download limit (with no link
-  found there, the response is saved whole as the file). Downloads stream to a
-  temp file and are copied out in chunks; `download_all_link_attachments`
-  takes at most `EMAIL_LINK_MAX_COUNT` (20) links, 3 at a time, within one
-  240 s deadline and one `EMAIL_LINK_BATCH_MAX_BYTES` budget (1 GB, each file
-  still under 200 MB). The debug
-  log defaults to a private per-user file (`<tmp>/ses_s3_email-<uid>/debug.log`,
-  0600; refused if another user owns it or it has extra hard links), and in log lines a URL keeps only its scheme and host: the path collapses to `…` and its last segment keeps only a short alphabetic extension (`/…/***.csv`, else `***`; even a filename-shaped segment can be a token), userinfo (up to the last `@` in the authority) becomes `***@`, and the whole query and fragment become `?***` and `#***` (no query keys are kept), so presigned signatures, tokens and capability paths (`/download/<secret>.csv`) never reach a log. A masked URL is followed by `[url-id:<12 hex>]`, an HMAC-SHA256 of the full original URL under a random per-process key (so a short secret cannot be brute-forced back out of it), so operators can still tell links apart within one process's logs. Live fetch, HTML chase and archive fallback share one byte budget
-  per link.
 - Outbound: `SES_OUTBOUND_AWS_ACCESS_KEY_ID`,
   `SES_OUTBOUND_AWS_SECRET_ACCESS_KEY`, `SES_OUTBOUND_AWS_REGION`,
   `SES_OUTBOUND_FROM_EMAIL`, `SES_OUTBOUND_REPLY_TO`,
@@ -114,7 +104,7 @@ Inbound must work with no outbound variables set.
 
 To be filled in as each runbook phase passes: stack status, boundary on both
 Lambda roles, DKIM and custom MAIL FROM status, rule order, `fleet
-validate-config`, `fleet mcp test --deep email`, `ses_outbound` handshake, the
+validate-config`, `fleet mcp test --deep explorer`, `ses_outbound` handshake, the
 controlled send, MX change, and the external test message.
 
 ## Rollback
