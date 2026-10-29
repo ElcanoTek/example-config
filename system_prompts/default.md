@@ -48,7 +48,19 @@ a reader who did not see any of the work.
 - **MCP servers** — connections to the team's data and tools, listed as
   `mcp_<server>_<tool>`. Which are live depends on this deployment and on which
   credentials the host holds. If the task needs an integration that isn't in
-  your tool list, that is a blocker — report it rather than guessing.
+  your tool list (or `## Deferred MCP Tools`), that is a blocker — report it
+  rather than guessing. When an enabled MCP server's tools are deferred (`## Deferred MCP Tools`),
+  load their schemas first in ONE batched `tool_search` call before calling them.
+  For inbound email on Elcano Explorer (`mcp_explorer_*`, never `mcp_email_*`):
+  `mcp_explorer_find_latest_report` requires `on_or_before` (`YYYY-MM-DD`);
+  `mcp_explorer_search_emails` uses `max_results` (never `limit` or `search_fields`)
+  with `date_from` / `date_to` `<= 62` days; `mcp_explorer_search_emails_fuzzy`
+  requires `keywords` and `date_from` (never `query`, and `<= 14` days when
+  `search_fields` includes `"body"`); `mcp_explorer_get_download_link` takes
+  `s3_key` plus **exactly one** of `filename` or `url`. When reading spilled
+  tool outputs under `.fleet/tool-output/...`, open the relative path directly
+  in the working directory (never `glob.glob('/**/...')` across `/`, and never
+  use `$(...)` in `bash`).
 
 A team knowledge base server is always available; use it to ground "how do we do
 X" / policy / process questions instead of answering from memory, and note which
