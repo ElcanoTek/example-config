@@ -215,14 +215,12 @@ the rest of the file and refuses to start on a bundle it cannot read, so run
 [docs/DEPLOY.md](https://github.com/ElcanoTek/auth/blob/main/docs/DEPLOY.md)
 ("Branding from the client bundle").
 
-The browser **tab title** and PWA name follow `branding.app_name` too, but only
-on a fleet at or past #899 (`f793c6e`, 2026-07-30): from there the web layer
-resolves the name server-side per request (via the token-gated `/brand/meta`),
-so no web rebuild is needed, and the build-time `NEXT_PUBLIC_APP_NAME` env
-survives only as the fallback shown when the backend is unreachable. On an
-older fleet the tab title is *only* `NEXT_PUBLIC_APP_NAME`, baked at web build
-time and defaulting to "Fleet" — keep setting it there until the deployment
-catches up.
+The browser **tab title** and PWA name follow `branding.app_name` too. Fleet
+serves the web UI itself (fleet ADR-0091, #1838, 2026-10-22) and takes the
+name from the bundle it loaded at start, so a branding change needs a restart
+(`fleet update` does one), never a rebuild. The old build-time
+`NEXT_PUBLIC_APP_NAME` is no longer read; without `branding.app_name` the
+title is "Fleet".
 
 ### MCP servers — connect agents to your data
 
@@ -526,22 +524,20 @@ client bundles in their own PRs.
 
 ### Deployment-level knobs (host env, not bundle)
 
-Two web **build-time** env vars deliberately stay outside the bundle, because
-they are properties of the host, not of the client whose branding it wears
-(one bundle can be deployed at more than one origin):
+One runtime setting deliberately stays outside the bundle, because it is a
+property of the host, not of the client whose branding it wears (one bundle
+can be deployed at more than one origin):
 
-- **`NEXT_PUBLIC_PUBLIC_ORIGIN`** — the deployment's public origin, e.g.
-  `https://chat.yourco.com`. fleet's web layer resolves relative unfurl URLs
-  (the OG/share image, icons) against it via `metadataBase`. Left unset it
-  falls back to the placeholder `https://chat.example.com`, so links pasted
-  into Slack/Teams unfurl with image URLs pointing at a host that isn't yours
-  — **silently**, since nothing errors. fleet's `bootstrap.sh` / `update.sh`
-  set it at web build time; set it yourself on any hand-rolled deploy.
-- **`NEXT_PUBLIC_APP_NAME`** — on a fleet at or past #899 (`f793c6e`), only the
-  fallback name shown when the backend is unreachable; `branding.app_name` wins
-  whenever fleet can be reached. On an older fleet it is the *only* source of
-  the browser tab title and PWA name, so set it to match `branding.app_name`
-  or the tab keeps saying "Fleet".
+- **`FLEET_PUBLIC_BASE_URL`** in `/etc/fleet/fleet.env`: the deployment's
+  public origin, e.g. `https://chat.yourco.com`. Fleet resolves the share
+  image and icon URLs in link previews against it, and prefers it for
+  redirects, the Secure-cookie decision, the OIDC redirect URI and the CSRF
+  host check. Left unset, links pasted into Slack or Teams unfurl with image
+  URLs on the placeholder `https://chat.example.com`, **silently**, since
+  nothing errors. fleet's `bootstrap.sh --domain` sets it; set it yourself on
+  any hand-rolled deploy, then restart fleet. A box set up before fleet served
+  the web UI itself may still carry `NEXT_PUBLIC_PUBLIC_ORIGIN`, which fleet
+  reads only as a fallback.
 
 ### Provisioning baseline (what the reference client deployments run)
 
@@ -583,12 +579,12 @@ specifics — names, domains, IPs — stay out of this public template.
     limit** set at creation — the cap turns a runaway loop or leaked key into
     a bounded incident; size it to the client's expected usage. Set on the box
     with `fleet config set-openrouter-key` (fleet exits by design until it
-    exists, and `fleet-web` dependency-fails alongside — expected pre-key
-    state, not a broken deploy).
+    exists, and the web UI with it, since fleet serves it: the expected
+    pre-key state, not a broken deploy).
 - **First-boot env**: `FLEET_PERSONA_DEFAULT=victoria`,
   `FLEET_PERSONA=personas/victoria.yaml` and
   `FLEET_SANDBOX_MEMORY=2g` (pandas-sized jobs are OOM-killed at the 512 MiB
-  default) in `fleet.env`; `NEXT_PUBLIC_APP_NAME=<Client>` in `fleet-web.env`
+  default) in `fleet.env`, where bootstrap also sets `FLEET_PUBLIC_BASE_URL`
   (see the knob above).
 - **Verify before declaring it live**: `fleet doctor` at 0 advisories
   (including the sandbox smoke test), `fleet mcp test --all`, a valid cert on
