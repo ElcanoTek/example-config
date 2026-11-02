@@ -365,7 +365,7 @@ instead of being re-derived. The optional `allowed-tools` frontmatter field is
 advisory metadata only — fleet does **not** enforce it as an authorization gate;
 govern consequential tools through `agent_policy` instead.
 
-This bundle ships four:
+This bundle ships six:
 
 | Skill | What it shows |
 | --- | --- |
@@ -373,6 +373,8 @@ This bundle ships four:
 | `csv-profiler` | A genuinely useful skill with a real **standard-library-only** script that profiles a CSV (row/col counts, per-column type inference, null counts, basic stats) — so it runs even without pandas. |
 | `lens-classification` | How to run and read Lens jobs (site, app and CTV quality tiers) through the `lens` connector. |
 | `pages-dashboards` | How to build, publish and update dashboards through the `pages` connector. |
+| `campaign-optimization-log` | Interactive `show_ui` CampaignConfig onboarding, Optimization Workbench, and Client Optimization Story & Spend Elasticity Builder (`protocols/optimization-log-protocol.md`). |
+| `ssp-deal-capabilities` | Per-SSP reference catalog of deal parameters and targeting capabilities across SSPs and buyer DSPs. |
 
 ### Agent Plugins — the portable package for skills + MCP servers
 
