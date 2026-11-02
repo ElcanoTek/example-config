@@ -1,0 +1,25 @@
+---
+name: "Review campaign optimizations (Workbench)"
+description: "Open the interactive Chat-First Optimization Workbench card (show_ui) for one campaign or across all of your active campaigns to vet, question, edit target lists, and stage additive SSP deal updates."
+# Interactive form prompt: opens the show_ui Optimization Workbench in Chat (protocols/optimization-log-protocol.md Section 6).
+mode: interactive
+fields:
+  - key: scope
+    label: "Campaign name / code (or type 'my opts' for all your active campaigns)"
+    type: "text"
+    required: true
+    default: "my opts"
+    placeholder: "Northwind Outdoors CMP00128 — or 'my opts' for your full multi-campaign queue"
+  - key: run_fresh_scan
+    label: "Run a fresh Optimization Day scan on the latest reports before opening the Workbench"
+    type: "toggle"
+    default: false
+  - key: focus_note
+    label: "Optional question or focus area to check first"
+    type: "text"
+    placeholder: "Optional, e.g. Check 28d domain performance or pacing headroom"
+promptTemplate: |-
+  Open the interactive Chat-First Optimization Workbench card (show_ui) by following skills/campaign-optimization-log/SKILL.md (Flow 2) and protocols/optimization-log-protocol.md (Section 6).
+  Scope: {scope}
+  Run fresh Optimization Day scan first: {run_fresh_scan}
+  Initial question / focus note: {focus_note}

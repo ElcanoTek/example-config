@@ -1,0 +1,37 @@
+---
+name: "Client-facing optimization story & budget pitch"
+description: "Open the interactive Client Optimization Story Builder (show_ui) to craft a zero-jargon showcase email or run the 4-Test Spend Elasticity & Incremental Budget Evaluator."
+# Interactive form prompt: opens the show_ui Client Story Builder in Chat (protocols/optimization-log-protocol.md Section 7).
+mode: interactive
+fields:
+  - key: client
+    label: "Campaign / Client name (or campaign code)"
+    type: "text"
+    required: true
+    placeholder: "Contoso Home (CMP00166)"
+  - key: archetype
+    label: "Story archetype"
+    type: "select"
+    required: true
+    default: "1. Just Executed — Proactive Curation Showcase"
+    options:
+      - "1. Just Executed — Proactive Curation Showcase"
+      - "2. Proven Lift — 7-Day Before-vs-After Readout"
+      - "3. Strategic Allocation & Incremental Budget Pitch (4-Test Spend Elasticity)"
+  - key: audience
+    label: "Audience framing"
+    type: "select"
+    default: "Curation Partner Showcase"
+    options:
+      - "Curation Partner Showcase"
+      - "Agency / End-Client Buyer"
+  - key: recipient
+    label: "Recipient email(s)"
+    type: "text"
+    placeholder: "Leave blank to default to your own email for review/forwarding"
+promptTemplate: |-
+  Open the interactive Client-Facing Optimization Story Builder (show_ui) by following skills/campaign-optimization-log/SKILL.md (Flow 3) and protocols/optimization-log-protocol.md (Section 7).
+  Campaign / Client: {client}
+  Preferred Story Archetype: {archetype}
+  Audience framing: {audience}
+  Recipient email(s): {recipient}

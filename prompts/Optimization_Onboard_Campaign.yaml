@@ -1,0 +1,60 @@
+---
+name: "Onboard campaign to Optimization Log"
+description: "Auto-discover DSP reports and SSP deals, run Day-1 Preflight QA, and open the interactive CampaignConfig Builder card (show_ui) to initialize CampaignConfig, OptLog, and OptTargets."
+# Interactive form prompt: opens a form in Chat and invokes the show_ui CampaignConfig Builder (protocols/optimization-log-protocol.md Section 2).
+mode: interactive
+fields:
+  - key: client
+    label: "Client display name"
+    type: "text"
+    required: true
+    placeholder: "Acme Outdoor"
+  - key: campaign_code
+    label: "Campaign code"
+    type: "text"
+    required: true
+    placeholder: "CMP00166"
+  - key: trader
+    label: "Trader owner"
+    type: "text"
+    required: true
+    placeholder: "Alex Rivera"
+  - key: kpi
+    label: "Primary KPI & benchmark (or 'no benchmark yet')"
+    type: "text"
+    required: true
+    placeholder: "ROAS >= 33.0x (or CTR >= 0.08%, CPA <= $45)"
+  - key: flight
+    label: "Flight dates (start to end)"
+    type: "text"
+    placeholder: "2026-07-16 to 2026-12-31 (leave blank to infer from reports/deals)"
+  - key: channel_overrides
+    label: "Per-channel KPI / benchmark overrides"
+    type: "text"
+    placeholder: "Optional, e.g. Display: CTR >= 0.08%, OLV: VCR >= 75%"
+  - key: storage
+    label: "Where to save CampaignConfig, OptLog & OptTargets"
+    type: "select"
+    default: "Fleet Shared Workspace Files (shared/Optimizations/) (Recommended)"
+    options:
+      - "Fleet Shared Workspace Files (shared/Optimizations/) (Recommended)"
+      - "Fast.io /Optimizations/"
+      - "Fast.io /Optimizations/<Client>_<Code>/ subfolder"
+      - "Fast.io Workspace Root (/)"
+      - "Conversation Workspace Only (Download in chat)"
+  - key: report_source
+    label: "DSP report folder or mailbox hint"
+    type: "text"
+    placeholder: "Leave blank to auto-discover from report inbox and workspace storage"
+    advanced: true
+promptTemplate: |-
+  Onboard this campaign to the Optimization Log by following skills/campaign-optimization-log/SKILL.md (Flow 1) and protocols/optimization-log-protocol.md (Section 2).
+  Run Auto-Discovery & Day-1 DSP Report Preflight QA first, then present the interactive show_ui Campaign Config Builder card pre-filled with the discovered reports, deals, and these inputs:
+  Client: {client}
+  Campaign code: {campaign_code}
+  Trader owner: {trader}
+  Primary KPI & benchmark: {kpi}
+  Flight dates: {flight}
+  Channel overrides: {channel_overrides}
+  Preferred save location: {storage}
+  Report source hint: {report_source}
