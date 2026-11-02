@@ -22,7 +22,6 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
   - `cycle.max_deal_volume_cut_share = max_volume_cut_pct / 100.0` (e.g. `40` → `0.40`)
 - Write `cycle.min_sample.impressions = int(min_impression_threshold)` and `cycle.min_sample.spend_usd = float(min_spend_usd)`.
 - When `use_baseline_fallback == true`, write `kpi.primary.benchmark = null` (ignoring the hidden `kpi_benchmark` input value) and compute `kpi.primary.baseline` from the initial report window.
-- Persist `campaign.deal_plan_client_id` with the bundle's Deal Planner profile key when `deal_plan` is registered in `manifest.yaml` (from `deal_profiles/<id>.yaml`), or `null` when Deal Planner is not registered in this bundle.
 
 ```json
 {
@@ -50,7 +49,7 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
         {
           "label": "Active SSP Deals Linked ({{ count(active_deals) }} deals selected)",
           "status": "pass",
-          "detail": "Primary seat: default (Index Exchange + Magnite DV+)"
+          "detail": "Primary seat: default (2 SSPs configured)"
         }
       ]
     },
@@ -182,7 +181,8 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
               "label": "Where should CampaignConfig, OptLog & OptTargets be saved?",
               "options": [
                 {"value": "workspace_default", "label": "Persistent Conversation Workspace — Optimizations/<Client> (<Code>)/ (Recommended)"},
-                {"value": "custom", "label": "Custom Workspace Subfolder (specify below)"}
+                {"value": "connected_storage", "label": "Connected Cloud / Shared Storage (configured storage connector, bucket, or drive)"},
+                {"value": "custom", "label": "Custom Storage Location / Path (specify below)"}
               ],
               "value": "workspace_default",
               "required": true
@@ -190,9 +190,9 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
             {
               "type": "text_input",
               "id": "storage_custom_path",
-              "label": "Custom workspace subfolder path",
-              "placeholder": "Optimizations/CustomFolder",
-              "visible_if": "storage_target == \"custom\""
+              "label": "Storage connector / bucket / custom path",
+              "placeholder": "e.g., Optimizations/CustomFolder or connected bucket/drive path",
+              "visible_if": "storage_target != \"workspace_default\""
             }
           ]
         },
@@ -369,23 +369,23 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
               ],
               "rows": [
                 {
-                  "deal_id": "IX176164622210051708",
-                  "deal_name": "DV360::PMP_DemandCo_WinterGear_OLV_IndexExchange_DV360",
-                  "ssp_seat": "Index Exchange (default)",
+                  "deal_id": "DEAL-OLV-1001",
+                  "deal_name": "DSP1::PMP_DemandCo_WinterGear_OLV_SSPA",
+                  "ssp_seat": "SSP-A (default)",
                   "channel": "OLV",
                   "spend_7d": "$2,410.20"
                 },
                 {
-                  "deal_id": "MGNI-MD-9001-90286",
-                  "deal_name": "DV360::PMP_DemandCo_TrailApparel_Display_Magnite_DV360",
-                  "ssp_seat": "Magnite DV+ (default)",
+                  "deal_id": "DEAL-DIS-1002",
+                  "deal_name": "DSP1::PMP_DemandCo_TrailApparel_Display_SSPB",
+                  "ssp_seat": "SSP-B (default)",
                   "channel": "Display",
                   "spend_7d": "$1,800.30"
                 }
               ],
               "value": [
-                "DV360::PMP_DemandCo_WinterGear_OLV_IndexExchange_DV360",
-                "DV360::PMP_DemandCo_TrailApparel_Display_Magnite_DV360"
+                "DSP1::PMP_DemandCo_WinterGear_OLV_SSPA",
+                "DSP1::PMP_DemandCo_TrailApparel_Display_SSPB"
               ]
             },
             {
@@ -394,9 +394,10 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
                 {
                   "type": "choice",
                   "id": "report_source_type",
-                  "label": "Primary DSP Report Source",
+                  "label": "Primary Report Source",
                   "options": [
-                    {"value": "mailbox", "label": "Report Email Inbox (Explorer)"},
+                    {"value": "mailbox", "label": "Report Email Inbox"},
+                    {"value": "connected_feed", "label": "Connected Storage / Data Feed"},
                     {"value": "uploaded_file", "label": "Uploaded Report CSV/XLSX in Chat"}
                   ],
                   "value": "mailbox",
@@ -405,9 +406,9 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
                 {
                   "type": "text_input",
                   "id": "report_mailbox",
-                  "label": "Report Mailbox Address",
+                  "label": "Report Mailbox or Feed Identifier",
                   "value": "demandco.reports@example.com",
-                  "visible_if": "report_source_type == \"mailbox\""
+                  "visible_if": "report_source_type != \"uploaded_file\""
                 },
                 {
                   "type": "text_input",
@@ -516,14 +517,14 @@ Present this card when a trader says `"review <Client> opts"`, `"open <Client> w
               "rows": [
                 {
                   "opt_id": "ACM-004.1",
-                  "deal": "Acme Display (Index Exchange · default)",
+                  "deal": "Acme Display (SSP-A · default)",
                   "change": "Domain Block List: Add 3 zero-click domains",
                   "spend_impact": "$412.80 (14.2%)",
                   "projected_lift": "0.09% -> 0.11% CTR (+22%)"
                 },
                 {
                   "opt_id": "ACM-005.1",
-                  "deal": "Acme OLV (Magnite DV+ · default)",
+                  "deal": "Acme OLV (SSP-B · default)",
                   "change": "Domain Block List: Add 2 low-VCR domains [SCALE WARNING: removes 44% of deal volume]",
                   "spend_impact": "$890.00 (44.1%)",
                   "projected_lift": "78.4% -> 84.1% VCR (+5.7 pts)"
@@ -570,8 +571,8 @@ Present this card when a trader says `"review <Client> opts"`, `"open <Client> w
                 {
                   "opt_id": "ACM-006",
                   "path": "[Client Request]",
-                  "deal": "DV360 Display vs. OLV Insertion Order",
-                  "recommendation": "Shift 15% of weekly budget toward Acme Display (IX), which is beating the CTR benchmark by +38%"
+                  "deal": "Display vs. OLV Insertion Order",
+                  "recommendation": "Shift 15% of weekly budget toward Acme Display (SSP-A), which is beating the CTR benchmark by +38%"
                 }
               ]
             },
@@ -606,7 +607,7 @@ Present this card when a trader says `"review <Client> opts"`, `"open <Client> w
               "rows": [
                 {
                   "opt_id": "ACM-007.1",
-                  "deal": "Acme Display (Index Exchange · default)",
+                  "deal": "Acme Display (SSP-A · default)",
                   "candidate": "Daypart: Exclude 01:00–04:59 UTC (0.03% CTR across $84 spend)",
                   "spend": "$84.20"
                 }

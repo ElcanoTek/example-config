@@ -64,8 +64,9 @@ def test_reference_show_ui_blueprints_are_valid_genui_cards() -> None:
         assert errors == [], f"Blueprint {idx} ({spec.get('title')}) failed genui validation: {errors}"
 
 
-def test_protocol_and_skill_cover_core_guardrails() -> None:
+def test_protocol_and_skill_cover_core_guardrails_and_stay_partner_generic() -> None:
     skill = _text(SKILL_DIR / "SKILL.md")
+    ref = _text(SKILL_DIR / "REFERENCE.md")
     protocol = _text(PROTOCOL)
     quickstart = _text(QUICKSTART)
     template = _text(TEMPLATE)
@@ -73,10 +74,12 @@ def test_protocol_and_skill_cover_core_guardrails() -> None:
     for required in [
         "Day-1 DSP Report Preflight QA",
         "storage_target",
+        "connected_storage",
+        "connected_feed",
         "review <Client> opts",
         "review my opts",
         "[SCALE WARNING]",
-        "Magnite DV+",
+        "Shared Targeting-List Isolation Rule",
         "_Optimization_Block_List",
         "Post-Execution Verification Receipt",
         "Read-Before-Write Merge Guardrail",
@@ -85,8 +88,19 @@ def test_protocol_and_skill_cover_core_guardrails() -> None:
         assert required in skill, f"SKILL.md missing {required!r}"
         assert required in protocol, f"optimization-log-protocol.md missing {required!r}"
 
+    for doc_name, content in [
+        ("SKILL.md", skill),
+        ("REFERENCE.md", ref),
+        ("optimization-log-protocol.md", protocol),
+        ("optimization-trader-quickstart.md", quickstart),
+        ("CampaignConfig_TEMPLATE.yaml", template),
+    ]:
+        assert not re.search(r"fast\.?io", content, re.I), f"{doc_name} must not reference fast.io"
+
     assert 'schema_version: "3.0"' in template
     assert "storage:" in template
+    assert "connected_storage" in template
+    assert "connected_feed" in template
     assert "ssp_seats:" in template
     assert "deals:" in template
     assert "review <Client> opts" in quickstart
