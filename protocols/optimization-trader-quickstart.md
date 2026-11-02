@@ -1,25 +1,25 @@
 # Optimization Log & Workbench — Trader Quick-Start (v3.0)
 
-Everything you need to onboard any campaign with an interactive **`show_ui` Campaign Config Builder**, review and manage optimizations from the **Optimization Workbench card**, and craft **Client-Facing Optimization Story & Budget Elasticity Emails** in one click.
+Everything you need to onboard any campaign with an interactive **`show_ui` Campaign Config Builder**, choose where your optimization data is stored and which SSPs/DSPs and report sources you work with, review and manage optimizations from the **Optimization Workbench card**, and craft **Client-Facing Optimization Story & Budget Elasticity Emails** in one click.
 
 ---
 
 ## 1. Setting Up a New Campaign (`show_ui` Config Builder + Day-1 Preflight QA)
-You never need to write or edit a YAML file by hand. Once DSP reports are flowing to the report inbox (`mcp_explorer_*`) or attached in chat, open Fleet Chat (or pick **"Onboard campaign to Optimization Log"** from the Prompt Library book icon) and say:
+You never need to write or edit a YAML file by hand. Once delivery reports are available (from a report inbox, a connected cloud storage / S3 / BI data feed, or files attached in chat), open Fleet Chat (or pick **"Onboard campaign to Optimization Log"** from the Prompt Library book icon) and say:
 
 > **"Onboard `<Client Name>` (`<CampaignCode>`) to the optimization log"**
-> *(Optional details you can include upfront: Trader owner, Flight dates, Primary KPI & Benchmark, or eligibility thresholds.)*
+> *(Optional details you can include upfront: Trader owner, Preferred storage location, SSPs/DSPs, Flight dates, Primary KPI & Benchmark, or eligibility thresholds.)*
 
 **What happens during onboarding:**
-1. **Auto-Discovers Reports & Deals:** Finds your DSP reports in the report inbox (`mcp_explorer_*`) or attached files, inspects the columns in Python, and maps active deals.
+1. **Auto-Discovers Reports & Deals:** Finds your DSP/SSP reports from your configured source (report inbox, connected data/storage feed, or uploaded files), inspects the columns in Python, and maps active deals across whichever SSPs and DSPs your campaign uses.
 2. **Runs Day-1 Preflight QA:** Checks whether all 5 dimensional report types (`overall`, `domain`, `geo`, `time_of_day`, `system`) and KPI conversion/revenue columns are present, flagging any missing report or truncated filename on Day 1.
 3. **Opens the Interactive `show_ui` Campaign Config Builder Card:**
-   - **Tab 1 — Campaign, Team & Save Location:** Confirm flight dates, optimization/light days, and the workspace folder (`Optimizations/<Client> (<CampaignCode>)/`).
-   - **Tab 2 — KPI, Benchmarks & Eligibility Thresholds:** Confirm your KPI benchmark (or toggle *"compute initial baseline from report"*), per-channel overrides (e.g. Display CTR vs. OLV VCR), trader-confirmed eligibility thresholds (`min_spend_share_pct`, `min_impression_threshold`, `min_projected_kpi_lift_pct`, and `max_volume_cut_pct`), and allowed SSP/DSP levers.
-   - **Tab 3 — Active Deals & Report Sources:** Confirm the mapped SSP deals and report sources (`mailbox` via Explorer or `uploaded_file`).
-4. Click **Save Config & Initialize Log** (or **Save Config & Run First Optimization Review Now**) to create `CampaignConfig_<Client>_<Code>.yaml`, `OptLog_<Client>_<Code>.csv`, and `OptTargets_<Client>_<Code>.csv` in the campaign's `Optimizations/` folder.
+   - **Tab 1 — Campaign, Team & Save Location:** Confirm flight dates, optimization/light days, and **where to store your optimization files** (`workspace_default` for `Optimizations/<Client> (<CampaignCode>)/` in the persistent conversation workspace, `connected_storage` for a partner-configured cloud/shared storage connector or bucket, or `custom` for a custom storage path).
+   - **Tab 2 — KPI, Benchmarks & Eligibility Thresholds:** Confirm your KPI benchmark (or toggle *"compute initial baseline from report"*), per-channel overrides (e.g. Display CTR vs. OLV VCR), trader-confirmed eligibility thresholds (`min_spend_share_pct`, `min_impression_threshold`, `min_spend_usd`, `min_projected_kpi_lift_pct`, and `max_volume_cut_pct`), and allowed SSP/DSP levers.
+   - **Tab 3 — Active Deals & Report Sources:** Confirm the mapped SSP deals and report sources (`mailbox`, `connected_feed`, or `uploaded_file`).
+4. Click **Save Config & Initialize Log** (or **Save Config & Run First Optimization Review Now**) to create `CampaignConfig_<Client>_<Code>.yaml`, `OptLog_<Client>_<Code>.csv`, and `OptTargets_<Client>_<Code>.csv` in your chosen storage location.
 5. **Schedule Your Weekday Review Runner (One-Time Setup per Trader):**
-   - To enable automatic weekday scans and notification emails, click **"Make recurring task…"** on the thread (or create a task in Operations Center) set to weekdays at `15:00 UTC` (`0 15 * * 1-5`) scoped to your `team.digest_to` email address. Because `mcp_ses_outbound_send_email` sends at most one email per task run, create one weekday runner task per `team.digest_to` trader recipient.
+   - To enable automatic weekday scans and notification emails, click **"Make recurring task…"** on the thread (or create a task in Operations Center) set to weekdays at `15:00 UTC` (`0 15 * * 1-5`) scoped to your `team.digest_to` email address (one weekday runner task per `team.digest_to` trader recipient).
 
 ---
 
@@ -27,16 +27,16 @@ You never need to write or edit a YAML file by hand. Once DSP reports are flowin
 1. **Scheduled Optimization Day Reviews (Once Scheduled via "Make recurring task…"):**
    - On each campaign's configured `optimization_days` and `light_days`, your scheduled task evaluates active campaigns for your `team.digest_to` address and sends a short **"Opts Ready in Chat"** notification email when recommendations or alerts are ready.
 2. **Open the Optimization Workbench in Fleet Chat:**
-   - Type **`review <Client> opts`** (for one campaign) or **`review my opts`** (for a unified Workbench across all active campaigns in your workspace).
+   - Type **`review <Client> opts`** (for one campaign) or **`review my opts`** (for a unified Workbench across all active campaigns).
    - The interactive **Optimization Workbench card (`show_ui`)** opens with three tabs:
-     - **Tab 1 — Proposed SSP & Deal Optimizations:** Clean recommendations are pre-checked; `[SCALE WARNING]` items (exceeding your configured `max_deal_volume_cut_share`) are unchecked by default so you consciously opt in. You can also **check/uncheck individual target domains inline** and set per-row status actions (`No status change`, `Sent to client`, or `Mark Live`).
+     - **Tab 1 — Proposed SSP & Deal Optimizations:** Clean recommendations are pre-checked; `[SCALE WARNING]` items (exceeding your configured `max_deal_volume_cut_share`) are unchecked by default so you consciously opt in. You can also **check/uncheck individual target domains inline** and set per-row status actions.
      - **Tab 2 — Console & Client DSP Requests:** Items requiring an SSP console toggle or client DSP shift, with 1-click controls to record `Sent to client` or `Mark Live`.
      - **Tab 3 — Backlog & Signals:** Queued candidates you can check to promote into `Proposed` (automatically materializing their `OptTargets.csv` rows).
 3. **Ask Questions First OR Apply Updates Immediately:**
-   - **Want to gut-check something first?** Type a question in the card's **"Ask a Question or Validate Before Executing"** box (e.g., *"How did example.com perform over 20 days?"*) and click **Ask / Validate First**. The agent answers with exact numbers and re-renders the card (resetting any already-applied status selectors back to `"none"`).
+   - **Want to gut-check something first?** Type a question in the card's **"Ask a Question or Validate Before Executing"** box (e.g., *"How did example.com perform over 20 days?"*) and click **Ask / Validate First**. The agent answers with exact numbers and re-renders the card without mutating `OptLog.csv` or `OptTargets.csv`.
    - **Ready to apply changes?** Click **Apply Selected Updates**:
-     - Across all deployments, the agent persists your status updates (`Live` / `Sent to client`), saves your edited `OptTargets.csv` target lists (unioned with prior `Kept`/`Live` targets), and outputs copy-paste-ready target lists and operator instructions.
-     - In deployments where `manifest.yaml` registers Deal Planner (`deal_plan`) and SSP seat connectors, the agent also routes selected SSP API updates through the Deal Planner recommendation/update flow behind its approval card, then verifies the live deal and updates `OptLog.csv`.
+     - Across all deployments and any SSP/DSP, the agent persists your status updates (`Live` / `Sent to client`), saves your edited `OptTargets.csv` target lists, computes the deal-level effective target union, and outputs copy-paste-ready target lists and operator instructions.
+     - In deployments where `manifest.yaml` registers SSP write connectors (and/or Deal Planner), the agent can also stage approved SSP API updates, verify the live deal, and update `OptLog.csv`.
 
 ---
 
@@ -47,7 +47,7 @@ Want to show a client or partner the impact of your curation work — or pitch i
   - Pick a **Story Archetype**: (1) *"Just Executed" Proactive Curation Showcase*, (2) *"Proven Lift" Before-vs-After Readout*, or (3) *Strategic Allocation & Incremental Budget Pitch*.
   - Toggle **Modular Email Sections** (2-Sentence Executive Summary, KPI Cards, Single-Panel `1088x420` Deal Lift Chart rendered in your brand's `protocols/email-style.yaml` `chart_colors` palette, Deal Table, 4-Column "Optimizations Implemented" Domain Table with Full/Representative/Summary granularity, Phase 2 Roadmap, and the **4-Test Spend Elasticity & Incremental Budget Pitch**).
   - Optionally attach a **client-safe KPI & channel summary `.xlsx`** (containing aggregated KPI metrics with zero raw SSP deal IDs or targeting-list IDs).
-  - Click **Generate & Stage Email** to render the branded HTML email via `mcp_ses_outbound_render_email` and stage `mcp_ses_outbound_send_email` with the rendered `content_file` and `inline_attachments` behind the approval gate.
+  - Click **Generate & Stage Client Story Email** to render the branded HTML email and stage outbound delivery behind the approval gate (or download the package directly in chat).
 
 ---
 
@@ -74,6 +74,6 @@ Want to show a client or partner the impact of your curation work — or pitch i
 
 1. **Customize & Share the `/campaign-optimization-log` Skill in `Settings → Skills`:**
    - Open **Settings → Skills**, find **`campaign-optimization-log`** under **Workspace pack**, and click **Clone & edit**.
-   - Edit the instructions, check **Share with this workspace**, and click **Create skill** (or **Save changes**). Your override takes precedence immediately for your runs and appears in the Workspace pack for teammates to adopt or sync in one click.
+   - Edit the instructions (e.g., to set default storage connectors, preferred SSPs/DSPs, or custom KPI rules), check **Share with this workspace**, and click **Create skill** (or **Save changes**). Your override takes precedence immediately for your runs and appears in the Workspace pack for teammates to adopt or sync in one click.
 2. **Clone & Edit Any Prompt Library Starter (Book Icon):**
    - Click the **Prompt library** book icon in Chat or Tasks, select any Optimization workflow, click **Clone & edit**, tweak the prompt, and check **Share with this workspace**.

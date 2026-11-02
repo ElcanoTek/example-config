@@ -2,100 +2,89 @@
 # Ask in chat: "onboard <Client> <CampaignCode> to the optimization log"
 # (or pick "Onboard campaign to Optimization Log" from the Prompt Library)
 # to launch the interactive show_ui Campaign Config Builder card.
-#
-# NOTE: All placeholder values below (including `cycle` eligibility thresholds)
-# are template starting examples only — they must be presented to and explicitly
-# confirmed by the trader in the CampaignConfig Builder card during onboarding
-# before saving `CampaignConfig_<ClientShortName>_<CampaignCode>.yaml`.
 
 schema_version: "3.0"
 
 storage:
-  type: workspace             # workspace: saved in Optimizations/<Client> (<CampaignCode>)/ in the persistent conversation working directory
-  folder_path: "Optimizations"
+  type: <workspace | connected_storage | custom> # workspace (default), connected_storage (when a writable storage connector is in manifest.yaml), or custom
+  backend: <null | optional connected storage connector/bucket name>
+  folder_path: "Optimizations"                   # folder or path in the chosen storage location
 
 campaign:
   client: <Client display name>
   client_short_name: <ClientShortNameNoSpaces>
   campaign_code: <CMP#####>
   deal_plan_client_id: <null | bundle deal_plan profile ID when deal_plan is registered in manifest.yaml>
-  curator: <default | partner_seat>
+  curator: <default | seat_name>
   partner: <Optional partner name>
   agency: <Optional agency name>
   opt_id_prefix: <XX>         # 2-4 letters; IDs are shared across DSPs (XX-001, XX-002.1 ...)
   start_date: <YYYY-MM-DD>
   end_date: <YYYY-MM-DD>
-  active: true                # false = skipped by every review (auto-flipped to false after end-of-flight wrap)
+  active: true                # false = skipped by scheduled reviews
 
 team:
-  # Each scheduled runner task is scoped to one digest_to recipient (one outbound email per task run).
   trader: <Trader full name>
-  digest_to: <trader@example.com>     # internal only, never a client address
+  digest_to: <trader@example.com>     # internal notification recipient
   cc: []                              # optional standing internal CC emails
   backup_trader: null                 # optional backup trader email during PTO handoff
-  backup_until: null                  # optional ISO date (YYYY-MM-DD) when backup_trader coverage expires and auto-clears
-  optimization_days: [<TUE>]          # Optimization Days (MON-FRI): go-live, results, new opts, email
-  light_days: [<THU>]                 # optional mid-week check (go-live, results, pacing guardrails; emails ONLY if something changed)
+  backup_until: null                  # optional ISO date (YYYY-MM-DD) when backup_trader expires
+  optimization_days: [<TUE>]          # Optimization Days (MON-FRI): go-live, results, new opts, notification
+  light_days: [<THU>]                 # optional mid-week check (notifies only if something changed)
 
-levers:                       # the ONLY levers the review may recommend
-  ssp_direct:                 # SSP deal levers (applied via SSP console or via Deal Planner when registered in manifest.yaml)
+levers:                       # allowed optimization levers for this campaign
+  ssp_direct:
     - domain_block_list
     - domain_allow_list
     - deal_targeting
     - daypart
     - geo_targeting
     - device_os_browser_targeting
-  client_request:             # proposed to the client; they implement in the DSP
+  client_request:
     - bid_adjustment
     - budget_shift_between_line_items
     - budget_shift_between_insertion_orders
   prohibited: []
 
-ssp_constraints: {}           # optional platform limits
+ssp_constraints: {}           # optional platform or seat limits
 
 dsps:
-  - id: <DV>
-    name: <DV360>
+  - id: <DSP_ID>
+    name: <DSP Name>
     source:
-      type: mailbox           # mailbox (via mcp_explorer_*) | uploaded_file (CSV/XLSX attached in chat)
-    mailbox: <reports@example.com>
-    sender_contains: <sender>
+      type: <mailbox | connected_feed | uploaded_file> # report inbox, connected data/storage feed, or uploaded files
+    mailbox: <reports@example.com or null>
+    feed_source: <optional connected feed / bucket / table identifier or null>
     deal_field: <report column holding the deal name>
-    delivery: attachment      # attachment | download_link
-    types:                    # subject keyword -> report type
-      overall: "<subject keyword>"
-      domain:  "<subject keyword>"
-      geo:     "<subject keyword>"
-      time_of_day: "<subject keyword>"
-      system:  "<subject keyword>"
+    types:
+      overall: "<keyword or pattern>"
+      domain:  "<keyword or pattern>"
+      geo:     "<keyword or pattern>"
+      time_of_day: "<keyword or pattern>"
+      system:  "<keyword or pattern>"
     notes: >
-      <Drop cadence, rolling window, filename/subject quirks verified during Day-1 Preflight QA.>
+      <Drop cadence, rolling window, or column notes verified during Day-1 Preflight QA.>
     kpi:
       primary:
         name: <ROAS | CTR | CPA | VCR | Viewability ...>
         formula: "<ratio of sums with NULLIF>"
-        benchmark: <target value>   # standard: captured from trader at onboarding (e.g. 0.08 for 0.08% CTR or 33.0 for 33x ROAS)
-        channel_benchmarks: {}      # optional per-channel benchmark overrides, e.g. {Display: 0.08, OLV: 0.25}
-        baseline: null              # fallback only: computed from latest report window ONLY when benchmark is null
+        benchmark: <target value or null>
+        channel_benchmarks: {}      # optional per-channel overrides, e.g. {Display: 0.08, OLV: 0.25}
+        baseline: null              # computed from initial report window when benchmark is null
         direction: higher_is_better # or lower_is_better
-        status: active              # active | blocked (add unblock_check) — no Proposed rows until active
-      channel_kpis: {}              # optional per-channel KPI override, e.g. {OLV: {name: VCR, formula: "...", benchmark: 75.0, direction: higher_is_better}}
-      secondary: []                 # optional
-      guardrail_metrics: []         # optional
-      no_conversion_tracking: false # true = never report ROAS/CPA for this DSP
+        status: active              # active | blocked
+      channel_kpis: {}              # optional per-channel KPI override
+      no_conversion_tracking: false
 
 cycle:
-  # TEMPLATE PLACEHOLDERS ONLY — must be explicitly confirmed by the trader in the
-  # CampaignConfig Builder card during onboarding before saving CampaignConfig.yaml.
-  materiality:                # an opt qualifies if it meets EITHER trader-confirmed test
+  materiality:
     min_addressable_spend_share: <trader_confirmed_fraction, e.g. 0.10>
     min_projected_kpi_change: <trader_confirmed_fraction, e.g. 0.05>
-  min_sample:                 # below this trader-confirmed floor a segment is not actionable
+  min_sample:
     impressions: <trader_confirmed_int, e.g. 1000>
     spend_usd: <trader_confirmed_usd, e.g. 25>
   max_new_opt_groups_per_run: 5
-  max_deal_volume_cut_share: <trader_confirmed_fraction, e.g. 0.40> # converted from max_volume_cut_pct / 100.0
-  prefer_unused_reports_on_tie: true
+  max_deal_volume_cut_share: <trader_confirmed_fraction, e.g. 0.40>
   auto_detect_live: true
   low_spend_lookback_days: 28
   evaluation_days: 7
@@ -104,29 +93,29 @@ files:
   opt_log: OptLog_<ClientShortName>_<CMP#####>.csv
   opt_targets: OptTargets_<ClientShortName>_<CMP#####>.csv
 
-state:                        # maintained automatically by the scheduled review runner & chat Workbench
-  last_optimization_run: null # ISO date of last completed Optimization Day run
-  last_light_review: null     # ISO date of last completed light review
-  carried_over: false         # true if deferred by the 5-campaign-per-run cap
-  carried_over_from: null     # ISO date when the run was first deferred
-  carried_over_run_type: null # "full" | "light" | "closeout" — preserves exact deferred run type
-  wrap_completed: false       # true once the post-end_date closeout wrap email has been sent
+state:
+  last_optimization_run: null
+  last_light_review: null
+  carried_over: false
+  carried_over_from: null
+  carried_over_run_type: null
+  wrap_completed: false
 
-ssp_seats:                    # maps each SSP on this campaign to its seat metadata
-  Index Exchange:
-    seat: <default | partner_seat>
-    connector_label: <Index Exchange>
-    mcp_prefix: <mcp_indexexchange_mcp>
-    account_id: <account_id>
+ssp_seats:                    # maps each SSP chosen for this campaign to its seat metadata
+  "<SSP Name>":
+    seat: <default | seat_name>
+    connector_label: <optional SSP or connector label>
+    mcp_prefix: <optional MCP tool prefix when an SSP connector is registered in manifest.yaml, else null>
+    account_id: <optional account or seat ID>
 
-deals:                        # keyed by "<dsp_id>::<Exact Deal Name in DSP Report>" (or "<Exact Deal Name>" on single-DSP campaigns) so multi-DSP campaigns never collide
-  "<dsp_id>::<Exact Deal Name in DSP Report>":
-    ssp: <Index Exchange | Magnite | Nexxen | OpenX | PubMatic>
-    seat: <default | partner_seat>
-    dsp: <DV360 | The Trade Desk | Amazon DSP>
+deals:                        # keyed by "<dsp_id>::<Exact Deal Name in Report>" (or "<Exact Deal Name>" on single-DSP campaigns)
+  "<dsp_id>::<Exact Deal Name in Report>":
+    ssp: <SSP name>
+    seat: <default | seat_name>
+    dsp: <DSP name>
     channel: <Display | OLV | CTV | Native>
-    deal_id: <Buyer-facing Deal ID, e.g. IX...>
+    deal_id: <Buyer-facing Deal ID>
     internal_deal_id: <SSP internal ID or null>
-    deal_url: <https://... direct SSP console link>
-    baseline_block_list_ids: []      # optional: preserved account-level baseline blocklist IDs on Magnite DV+
-    optimization_block_list_id: null # optional: campaign-dedicated list ID on Magnite DV+ (<Client>_<CMP#####>_Optimization_Block_List)
+    deal_url: <https://... optional console link or null>
+    baseline_block_list_ids: []      # optional: preserved account-level baseline blocklist IDs (when the SSP uses shared block lists)
+    optimization_block_list_id: null # optional: campaign-dedicated blocklist ID (when the SSP uses shared block lists)

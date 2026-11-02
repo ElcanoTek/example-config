@@ -1,24 +1,24 @@
 name: Review campaign optimizations (Workbench)
-description: Open the interactive Chat-First Optimization Workbench card (show_ui) for one campaign or across all active campaigns in the workspace to vet, question, edit target lists, and apply status or target updates.
+description: Open the interactive Chat-First Optimization Workbench card (show_ui) for one campaign or across all active campaigns to vet, question, edit target lists, and apply status or target updates.
 goal: >
   Load the current Optimization Log (OptLog.csv, OptTargets.csv, and
-  CampaignConfig.yaml) for the requested campaign or active campaign queue and
+  CampaignConfig.yaml) from the campaign's configured storage location and
   present the interactive Optimization Workbench card (show_ui) so the trader
   can review 7-day readouts, edit target lists inline, ask questions, and
-  update statuses or export target lists.
+  update statuses or export/stage SSP target lists and DSP recommendations.
 inputs:
   required:
-    - Campaign name or code (for example, Acme CMP00128), or "my opts" for all active campaigns in the workspace
+    - Campaign name or code (for example, Acme CMP00128), or "my opts" for all active campaigns owned by the requesting trader
   optional:
     - Whether to run a fresh Optimization Day scan on the latest reports before opening the Workbench
     - Initial question or focus area to check first
 instructions:
-  - Follow skills/campaign-optimization-log/SKILL.md (Flow 2) and protocols/optimization-log-protocol.md (Section 6).
-  - If the user asks to run a fresh scan first, execute the Full Optimization Day analysis from protocols/optimization-log-protocol.md (Section 5) before opening the Workbench card.
-  - Render the interactive Optimization Workbench card via show_ui (skills/campaign-optimization-log/REFERENCE.md Blueprint 2) with KPI summary metrics, 7-day readouts, proposed optimizations, inline editable target lists, and per-row status actions.
-  - Handle card submissions deterministically: answer questions and re-render without mutating OptLog/OptTargets on ask_questions, or persist status changes, backlog promotions, and edited target lists on execute_selected.
+  - Follow skills/campaign-optimization-log/SKILL.md (Flow 2) and protocols/optimization-log-protocol.md (Section 4).
+  - If the user asks to run a fresh scan first, execute the Full Optimization Review steps from protocols/optimization-log-protocol.md (Section 3) before opening the Workbench card.
+  - Render the interactive Optimization Workbench card via show_ui (skills/campaign-optimization-log/REFERENCE.md Blueprint 2) with KPI summary metrics, 7-day readouts, proposed optimizations across the campaign's configured SSPs and DSPs, inline editable target lists, and per-row status actions.
+  - Handle card submissions deterministically: answer questions and re-render without mutating OptLog/OptTargets on ask_questions, or persist status changes, backlog promotions, and edited target lists on execute_selected (exporting copy-paste target lists for console execution or staging API updates when SSP write tools are configured in manifest.yaml).
 output:
   sections:
     - Campaign KPI and 7-day readout summary
     - Interactive Optimization Workbench card (show_ui)
-    - Applied status updates and target-list export
+    - Applied status updates and target-list export or execution summary
