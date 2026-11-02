@@ -11,12 +11,12 @@ Each review answers four questions in order: **What did we recommend? Is it live
 
 ---
 
-## 1. Files & Storage Flexibility
+## 1. Files, Discovery & Storage Flexibility
 
 Every campaign uses **3 co-located files** stored wherever the team chooses (`storage` block in `CampaignConfig`):
-- **Persistent Conversation Workspace (`storage.type: workspace`, default):** Saved under `Optimizations/<Client> (<Code>)/`.
-- **Connected Cloud / Shared Storage (`storage.type: connected_storage`):** Saved in any connected cloud drive, bucket, or storage connector configured in the workspace (`storage.backend` + `storage.folder_path`).
-- **Custom Path (`storage.type: custom`):** Saved at the custom path in `storage.folder_path`.
+- **Persistent Conversation Workspace (`storage.type: workspace`, default):** Saved under `Optimizations/<Client> (<Code>)/` and indexed in `Optimizations/CampaignRegistry.yaml`.
+- **Connected Cloud / Shared Storage (`storage.type: connected_storage`):** Offered and used when a writable cloud/shared storage connector is registered in `manifest.yaml` (`storage.backend` + `storage.folder_path`).
+- **Custom Path (`storage.type: custom`):** Saved at the local workspace path in `storage.folder_path`.
 
 | File | Purpose |
 |---|---|
@@ -24,8 +24,9 @@ Every campaign uses **3 co-located files** stored wherever the team chooses (`st
 | `OptLog_<Client>_<Code>.csv` | 10-column lifecycle log: `Opt ID,DSP,Deal,Change,Status,Proposed,Live,Baseline,Result,Notes` |
 | `OptTargets_<Client>_<Code>.csv` | 5-column target values per `Opt ID`: `Opt ID,Lever,Value,Added,Source` (bare domain, app bundle ID, geo, OS, or hour range in `Value`; composite key `(Opt ID, Lever, Value)`) |
 
-### Read-Before-Write Merge Guardrail
-Before writing `OptLog.csv` or `OptTargets.csv`, re-read the latest file from storage, merge `OptLog` by `Opt ID` (preserving concurrent status or `Live` updates) and `OptTargets` by `(Opt ID, Lever, Value)` (keeping each `Opt ID`'s targets scoped to that `Opt ID`), and write atomically via a temporary file replacement.
+### Campaign Discovery & Read-Before-Write Merge Guardrail
+1. **Discovery Order:** Check the current conversation thread / attached files first, then look up `Optimizations/CampaignRegistry.yaml` (filtering `"review my opts"` to active campaigns matching the requesting trader's `team.trader` or `team.digest_to`).
+2. **Read-Before-Write Merge Guardrail:** Before writing `OptLog.csv` or `OptTargets.csv`, re-read the latest file from storage, merge `OptLog` by `Opt ID` (preserving concurrent status or `Live` updates) and `OptTargets` by `(Opt ID, Lever, Value)` (keeping each `Opt ID`'s targets scoped to that `Opt ID`). For local `workspace` / `custom` paths, write atomically with `fcntl.flock` + temp-file `os.replace`; for `connected_storage`, read from `storage.backend`, merge in memory, and write back through the storage connector.
 
 ---
 
@@ -34,36 +35,41 @@ Before writing `OptLog.csv` or `OptTargets.csv`, re-read the latest file from st
 When a user asks to onboard a campaign (e.g., `"onboard <Client> <CampaignCode>"`):
 1. **Auto-Discover Reports & Deals:**
    - Locate available delivery reports from any configured source: a connected report inbox (`mailbox`), a connected cloud storage / S3 / BI / warehouse feed (`connected_feed`), or files attached in chat (`uploaded_file`).
-   - Run **Day-1 DSP Report Preflight QA** in Python: inspect report columns, date coverage, active deals, dimensional report coverage (`overall`, `domain`/`app`, `geo`, `time_of_day`, `system`/`device`), and KPI numerator/denominator columns. Surface any gaps in the card's `status_list`.
+   - Run **Day-1 DSP Report Preflight QA** in Python: inspect report columns, date coverage, active deals, dimensional report coverage (`overall`, `domain`/`app`, `geo`, `time_of_day`, `system`/`device`), and KPI numerator/denominator columns. Surface any gaps in the card's `status_list` using dynamic counts from the inspected files.
 2. **Present the Interactive `show_ui` Campaign Config Builder Card** (Blueprint 1 in `skills/campaign-optimization-log/REFERENCE.md`):
-   - **Tab 1 — Campaign, Team & Save Location:** Client name, campaign code, `opt_id_prefix`, flight dates, optimization/light days, and `storage_target` (`workspace_default`, `connected_storage`, or `custom` + `storage_custom_path`).
+   - **Tab 1 — Campaign, Team & Save Location:** Client name, campaign code, `opt_id_prefix`, flight dates, optimization/light days, and `storage_target` (`workspace_default` or `custom`, plus `connected_storage` with `storage_backend` and `storage_custom_path` when a writable storage connector is registered in `manifest.yaml`).
    - **Tab 2 — KPI, Thresholds & Levers:** `primary_kpi`, `kpi_direction`, `kpi_benchmark` (or `use_baseline_fallback` toggle, which sets `benchmark: null`), optional `channel_overrides`, eligibility thresholds (`min_spend_share_pct`, `min_projected_kpi_lift_pct`, `min_impression_threshold`, `min_spend_usd`, `max_volume_cut_pct`), and allowed SSP/DSP levers.
-   - **Tab 3 — Active Deals & Report Sources:** Multi-select `active_deals` table (`row_key="deal_name"`), `report_source_type` (`mailbox`, `connected_feed`, or `uploaded_file`), and `deal_field`.
+   - **Tab 3 — Active Deals & Report Sources:** Multi-select `active_deals` table (`row_key="deal_name"`), `custom_deals_override` for manually adding/overriding any SSP/DSP/deal rows, `report_source_type` (`mailbox` with `report_mailbox`, `connected_feed` with `report_feed_source` / `<dsp_id>_feed_source`, or `uploaded_file`), and `deal_field`.
    - **Actions:** `save_config` (*Save Config & Initialize Log*) and `save_and_run` (*Save Config & Run First Optimization Review Now*).
-3. **Initialize & Save:**
+3. **Validate & Initialize:**
+   - Enforce KPI guardrails: if a numeric primary KPI benchmark is missing and `use_baseline_fallback` is false, set `kpi.primary.status: "blocked"` (which skips proposing new rows until resolved); if `no_conversion_tracking: true`, never configure or compute `CPA` or `ROAS`.
    - Convert percentage thresholds to decimal fractions (`min_spend_share_pct / 100.0`, `min_projected_kpi_lift_pct / 100.0`, `max_volume_cut_pct / 100.0`), write `CampaignConfig`, `OptLog`, and `OptTargets` to the selected storage location, index the campaign in `Optimizations/CampaignRegistry.yaml`, and if `save_and_run` was clicked, immediately run the initial review and open the Workbench card.
 
 ---
 
-## 3. Log Lifecycle & Review Runs
+## 3. Log Lifecycle, Scheduled Queue & Review Runs
 
-### Status Lifecycle
-`Backlog` → `Proposed` → `Live` → `Kept` / `Reverted` (or `Dropped`, with the reason recorded in `Notes`).
+### Status Lifecycle & Scheduled Queue Cap
+- **Statuses:** `Backlog` → `Proposed` → `Live` → `Kept` / `Dropped` (while regressed `Live` rows stay `Status = Live` with `[REVERT RECOMMENDED]` in `Notes` until the revert is executed and verified in the SSP).
+- **Scheduled Queue & Carryover (`max 5 campaigns per run`):** On scheduled runs, process `carried_over: true` campaigns first (honoring `carried_over_run_type`: `"full"`, `"light"`, or `"wrap"`), then oldest `state.last_full_opt_date`. Any remaining eligible campaigns are marked `carried_over: true` and `carried_over_from: "<YYYY-MM-DD>"`. Advance `state.*` dates and `wrap_completed: true` only after saving files and completing any outbound digest notification.
+- **Mid-Week Light Check (`cycle.light_days`):** Score active `Live` rows and check pacing (`>30%` spend drop); stay silent unless a `Live` row is regressing `>= 5%` at `>= 3` days in flight or pacing dropped `> 30%`.
 
 ### Full Optimization Review Steps
 1. **Load:** Read `CampaignConfig`, `OptLog`, `OptTargets`, and the latest delivery reports from each DSP's configured `source` (`mailbox`, `connected_feed`, or `uploaded_file`). Deduplicate overlapping dates and verify active deals.
 2. **Go-Live Check:** For each `Proposed` row, check whether targeted segments dropped ≥ 90% in impression share (for Block Lists / exclusions) or reached ≥ 90–95% share (for Allow Lists / inclusions) for 2+ consecutive days while remaining deal delivery stayed active. When `auto_detect_live` is `true`, mark `Status = Live`.
 3. **Results (3d Early Read / 7d Decision):** Compare pre-change vs. post-change KPI performance over equal windows using ratio of sums:
-   - Improved or held benchmark → `Status = Kept`.
-   - Inconclusive → `Status = Dropped` (with `"inconclusive"` in `Notes`).
-   - Materially regressed → prepend `"[REVERT RECOMMENDED]"` to `Notes` and surface at the top of the Workbench until reverted (`Status = Reverted`).
+   - **Days 3–6 (`3 <= days_in_flight < 7`):** Keep `Status = Live` (flagging `[EARLY WARNING]` if regressing `>= 5%`).
+   - **Day 7+ (`days_in_flight >= 7`):**
+     - Improved (`> +1%` toward goal) or held benchmark → `Status = Kept`.
+     - Inconclusive (`-1%` to `+1%`) → `Status = Dropped` (with `"inconclusive"` in `Notes`).
+     - Materially regressed (`< -1%`) → keep `Status = Live`, prepend `"[REVERT RECOMMENDED]"` to `Notes`, and surface at the top of the Workbench until `revert <Opt ID>` is verified in the SSP (then transition to `Dropped`).
 4. **What's Next (SSP vs. DSP Levers, Scale Protection & Supply Expansion):**
-   - Identify candidate optimizations across available dimensions using the campaign's configured levers (`levers.ssp_direct` and `levers.client_request`) and `ssp_constraints`:
-     - **SSP-Side Supply Shaping (`[SSP Console]` or `[Chat API]` when an SSP connector is configured):** Domain/app Block Lists & Allow Lists, geo targeting, device/OS/browser targeting, dayparting (where supported by the SSP), viewability/format filters, and deal floor adjustments.
+   - If `kpi.primary.status == "blocked"`, skip proposing new rows and prompt the trader to set a primary KPI benchmark.
+   - Identify candidate optimizations (capped at `cycle.max_new_opt_groups_per_run`, default `5`) meeting `cycle.min_sample` and `cycle.materiality` across the campaign's configured levers (`levers.ssp_direct` and `levers.client_request`) and `ssp_constraints`:
+     - **SSP-Side Supply Shaping (`[SSP Console]` or `[Chat API]` when an SSP connector is configured):** Domain/app Block Lists & Allow Lists, geo targeting, device/OS/browser targeting, dayparting, viewability/format filters, and deal floor adjustments.
      - **DSP-Side Spend Shaping (`[Client Request]` / `[DSP]`):** Bid adjustments, line-item or insertion-order budget shifts, frequency caps, and pacing controls.
    - **Scale Warning (`[SCALE WARNING]`):** If a proposed exclusion removes more than `cycle.max_deal_volume_cut_share` (default `0.40`) of a deal's volume, prepend `[SCALE WARNING: removes XX% of deal volume]` in `Notes`.
-   - **Supply Expansion:** Check for under-pacing high-performers, curated allow-list expansion opportunities, and cross-deal/line-item budget shifts toward top performers.
-5. **Save & Notify:** Persist `OptLog` and `OptTargets` via the Read-Before-Write Merge Guardrail and send a concise summary notification (via the workspace's configured email tool when running as a scheduled task) pointing the trader to `"review <Client> opts"`.
+5. **Save & Notify:** Persist `OptLog` and `OptTargets` via the Read-Before-Write Merge Guardrail and send a concise summary notification (via `ses_outbound` or the workspace's configured email tool when running as a scheduled task) pointing the trader to `"review <Client> opts"`.
 
 ### End-of-Flight Closeout (`today > campaign.end_date`)
 Resolve any remaining open rows (`Kept` or `Dropped`), send or display the final Campaign Optimization Wrap Summary, and set `campaign.active: false`, `state.wrap_completed: true`.
@@ -85,10 +91,12 @@ Triggered when a user says **`"review <Client> opts"`** (single campaign) or **`
 - **`ask_questions` (Side-Effect Free):** Do not mutate `OptLog` or `OptTargets`. Answer `trader_question` from the report data in Python and re-render the Workbench card preserving current selections.
 - **`execute_selected` (`Apply Selected Updates`):**
   1. Persist any `*_status_action` changes (`live` takes precedence over `sent`), promote checked `promote_backlog` rows to `Proposed` (materializing their `OptTargets` rows), and save inline `*_domains` edits to that `Opt ID` in `OptTargets.csv`.
-  2. **Compute Additive Deal-Level Targets & Execute / Export:**
-     - For Block Lists, compute the deal-level union of `Kept` + `Live` + selected `Proposed` targets in memory (keeping `OptTargets.csv` rows scoped per `Opt ID`). For Allow-List removals, include only the removal targets.
-     - **Shared Targeting-List Isolation Rule (Create-Then-Swap):** On any SSP where targeting lists are shared reusable objects across deals, never mutate a shared list used by other campaigns; use a campaign-dedicated list (`<Client>_<CampaignCode>_Optimization_Block_List`) alongside any preserved baseline lists.
-     - Output a copy-paste-ready **Target List & Operator Execution Summary** and **Post-Execution Verification Receipt** table (or stage API updates if the workspace configures SSP/deal write connectors for those platforms).
+  2. **Compute Additive Deal-Level Targets & Execute / Export (3 Execution Branches):**
+     - For Block Lists, compute the deal-level union of `Kept` + `Live` + selected `Proposed` targets in memory (keeping `OptTargets.csv` rows scoped per `Opt ID`) and union with the live deal's existing block list. For Allow-List removals, pass only the removal targets.
+     - **Shared Targeting-List Isolation Rule (Create-Then-Swap, Block-List Deals Only):** On any SSP where block lists are shared reusable objects across deals, never mutate a shared block list attached to other deals; create/attach a campaign-dedicated list (`<Client>_<CampaignCode>_Optimization_Block_List`) alongside preserved baseline lists.
+     - **Case A (No SSP write connector registered in `manifest.yaml`):** Output a copy-paste-ready **Target List & Operator Execution Summary** and **Post-Execution Verification Receipt** table in chat.
+     - **Case B (`deal_plan` + SSP connector registered in `manifest.yaml`):** Pre-flight read the live deal, stage the merged targets via `deal_plan`, execute on approval, and verify via a **Post-Execution Verification Receipt** before setting `Status = Live`.
+     - **Case C (Direct SSP write connector registered in `manifest.yaml` without `deal_plan`):** Pre-flight read the live deal, stage the merged targets on the SSP connector's write tool, and verify via a **Post-Execution Verification Receipt** before setting `Status = Live`.
 
 ---
 
@@ -97,10 +105,10 @@ Triggered when a user says **`"review <Client> opts"`** (single campaign) or **`
 Triggered on **`"craft a client email for <Client>"`** or **`"can <Client> take incremental budget?"`** (Blueprint 3 in `skills/campaign-optimization-log/REFERENCE.md`).
 
 ### Zero-Jargon Client-Facing Rules
-- Strip all internal campaign codes, `Opt ID`s, raw SSP deal IDs, and targeting list IDs from both the email body and any `.xlsx` attachment (`attach_kpi_summary_xlsx`).
+- Strip all internal campaign codes, `Opt ID`s, raw SSP deal IDs, and targeting list IDs from both the email body and any `.xlsx` attachment (`attach_kpi_summary_xlsx`), and include only `Live` and `Kept` rows.
 - Focus each chart/table section on a single coherent primary KPI (`primary_kpi_scope`).
 - Generate a single-panel horizontal bar chart (`1088x420`) styled with `protocols/email-style.yaml` (`chart_colors`: `secondary_series` for Actual, `primary_series` for Post-Curation, `text`, `background`, `grid`).
-- Render and stage via the workspace's configured outbound email tool (or provide the rendered HTML, chart PNG, and client-safe `.xlsx` directly in chat).
+- When `ses_outbound` (or another outbound email tool) is registered and enabled in `manifest.yaml`, stage/send the email with the chart PNG and client-safe `.xlsx`; otherwise provide the rendered HTML, chart PNG, and client-safe `.xlsx` directly in chat.
 
 ### The 4-Test Spend Elasticity & Incremental Budget Evaluator
 Run across the 28-day report window in Python before recommending budget changes:
@@ -111,5 +119,6 @@ Run across the 28-day report window in Python before recommending budget changes
 
 ---
 
-## 6. Self-Serve Customization
+## 6. Config Sync & Self-Serve Customization
+- Traders can say **`"sync all campaign configs"`** to re-check active campaigns in `Optimizations/CampaignRegistry.yaml` against the latest DSP reports and surface any newly active deals or report-feed gaps.
 - Traders can say `"update the optimization protocol: <change>"` in chat to update `Optimizations/Protocols/optimization-log-protocol.md` in place, or use **Clone & edit** in **Settings → Skills** / **Prompt Library** to customize and share workspace-wide overrides.

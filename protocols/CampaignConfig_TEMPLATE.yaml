@@ -6,14 +6,15 @@
 schema_version: "3.0"
 
 storage:
-  type: <workspace | connected_storage | custom> # where CampaignConfig, OptLog, and OptTargets are stored
-  backend: <null | optional connected storage / drive / bucket name>
+  type: <workspace | connected_storage | custom> # workspace (default), connected_storage (when a writable storage connector is in manifest.yaml), or custom
+  backend: <null | optional connected storage connector/bucket name>
   folder_path: "Optimizations"                   # folder or path in the chosen storage location
 
 campaign:
   client: <Client display name>
   client_short_name: <ClientShortNameNoSpaces>
   campaign_code: <CMP#####>
+  deal_plan_client_id: <null | bundle deal_plan profile ID when deal_plan is registered in manifest.yaml>
   curator: <default | seat_name>
   partner: <Optional partner name>
   agency: <Optional agency name>
@@ -78,7 +79,6 @@ dsps:
 cycle:
   materiality:
     min_addressable_spend_share: <trader_confirmed_fraction, e.g. 0.10>
-    min_spend_usd: <trader_confirmed_usd, e.g. 50>
     min_projected_kpi_change: <trader_confirmed_fraction, e.g. 0.05>
   min_sample:
     impressions: <trader_confirmed_int, e.g. 1000>
@@ -97,11 +97,15 @@ state:
   last_optimization_run: null
   last_light_review: null
   carried_over: false
+  carried_over_from: null
+  carried_over_run_type: null
   wrap_completed: false
 
 ssp_seats:                    # maps each SSP chosen for this campaign to its seat metadata
   "<SSP Name>":
     seat: <default | seat_name>
+    connector_label: <optional SSP or connector label>
+    mcp_prefix: <optional MCP tool prefix when an SSP connector is registered in manifest.yaml, else null>
     account_id: <optional account or seat ID>
 
 deals:                        # keyed by "<dsp_id>::<Exact Deal Name in Report>" (or "<Exact Deal Name>" on single-DSP campaigns)
@@ -109,6 +113,9 @@ deals:                        # keyed by "<dsp_id>::<Exact Deal Name in Report>"
     ssp: <SSP name>
     seat: <default | seat_name>
     dsp: <DSP name>
-    channel: <Display | OLV | CTV | Native | Audio ...>
+    channel: <Display | OLV | CTV | Native>
     deal_id: <Buyer-facing Deal ID>
+    internal_deal_id: <SSP internal ID or null>
     deal_url: <https://... optional console link or null>
+    baseline_block_list_ids: []      # optional: preserved account-level baseline blocklist IDs (when the SSP uses shared block lists)
+    optimization_block_list_id: null # optional: campaign-dedicated blocklist ID (when the SSP uses shared block lists)

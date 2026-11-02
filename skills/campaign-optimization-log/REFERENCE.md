@@ -16,12 +16,21 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
 `status_list`.
 
 **Normalization rule when saving `CampaignConfig.yaml` from Blueprint 1:**
+- Map `storage_target`:
+  - `"workspace_default"` → `storage.type = "workspace"`, `storage.backend = null`, `storage.folder_path = "Optimizations"`
+  - `"custom"` → `storage.type = "custom"`, `storage.backend = null`, `storage.folder_path = storage_custom_path`
+  - `"connected_storage"` (include this option in `storage_target.options` ONLY when `manifest.yaml` registers a writable cloud/shared storage connector) → `storage.type = "connected_storage"`, `storage.backend = storage_backend`, `storage.folder_path = storage_custom_path`
+- Map `report_source_type`:
+  - `"mailbox"` → `dsps[].source.type = "mailbox"`, `dsps[].mailbox = report_mailbox`, `dsps[].feed_source = null`
+  - `"connected_feed"` (include this option in `report_source_type.options` ONLY when `manifest.yaml` registers a data/storage feed connector) → `dsps[].source.type = "connected_feed"`, `dsps[].feed_source = report_feed_source`, `dsps[].mailbox = null`
+  - `"uploaded_file"` → `dsps[].source.type = "uploaded_file"`, `dsps[].mailbox = null`, `dsps[].feed_source = null`
 - Convert percentage controls to decimal shares (`0.0–1.0`) before writing `CampaignConfig.yaml`:
   - `cycle.materiality.min_addressable_spend_share = min_spend_share_pct / 100.0` (e.g. `10` → `0.10`)
   - `cycle.materiality.min_projected_kpi_change = min_projected_kpi_lift_pct / 100.0` (e.g. `5` → `0.05`)
   - `cycle.max_deal_volume_cut_share = max_volume_cut_pct / 100.0` (e.g. `40` → `0.40`)
 - Write `cycle.min_sample.impressions = int(min_impression_threshold)` and `cycle.min_sample.spend_usd = float(min_spend_usd)`.
 - When `use_baseline_fallback == true`, write `kpi.primary.benchmark = null` (ignoring the hidden `kpi_benchmark` input value) and compute `kpi.primary.baseline` from the initial report window.
+- Apply any entries in `custom_deals_override` so traders can add or override SSPs, DSPs, seats, or deal IDs not present in auto-discovery.
 
 ```json
 {
@@ -49,7 +58,7 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
         {
           "label": "Active SSP Deals Linked ({{ count(active_deals) }} deals selected)",
           "status": "pass",
-          "detail": "Primary seat: default (2 SSPs configured)"
+          "detail": "Discovered active deals ready for optimization tracking"
         }
       ]
     },
@@ -181,7 +190,6 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
               "label": "Where should CampaignConfig, OptLog & OptTargets be saved?",
               "options": [
                 {"value": "workspace_default", "label": "Persistent Conversation Workspace — Optimizations/<Client> (<Code>)/ (Recommended)"},
-                {"value": "connected_storage", "label": "Connected Cloud / Shared Storage (configured storage connector, bucket, or drive)"},
                 {"value": "custom", "label": "Custom Storage Location / Path (specify below)"}
               ],
               "value": "workspace_default",
@@ -189,9 +197,16 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
             },
             {
               "type": "text_input",
+              "id": "storage_backend",
+              "label": "Connected storage connector / backend identifier",
+              "placeholder": "e.g., storage connector name or bucket ID",
+              "visible_if": "storage_target == \"connected_storage\""
+            },
+            {
+              "type": "text_input",
               "id": "storage_custom_path",
-              "label": "Storage connector / bucket / custom path",
-              "placeholder": "e.g., Optimizations/CustomFolder or connected bucket/drive path",
+              "label": "Custom folder / path",
+              "placeholder": "e.g., Optimizations/CustomFolder",
               "visible_if": "storage_target != \"workspace_default\""
             }
           ]
@@ -389,6 +404,12 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
               ]
             },
             {
+              "type": "text_input",
+              "id": "custom_deals_override",
+              "label": "Additional or Override Deals / SSPs / DSPs (optional)",
+              "placeholder": "e.g., DSP::DealName | SSP (seat) | Channel | DealID"
+            },
+            {
               "type": "columns",
               "children": [
                 {
@@ -406,9 +427,16 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
                 {
                   "type": "text_input",
                   "id": "report_mailbox",
-                  "label": "Report Mailbox or Feed Identifier",
+                  "label": "Report Mailbox Address",
                   "value": "demandco.reports@example.com",
-                  "visible_if": "report_source_type != \"uploaded_file\""
+                  "visible_if": "report_source_type == \"mailbox\""
+                },
+                {
+                  "type": "text_input",
+                  "id": "report_feed_source",
+                  "label": "Connected Feed / Bucket / Table Identifier",
+                  "placeholder": "e.g., feed_name or s3://bucket/prefix",
+                  "visible_if": "report_source_type == \"connected_feed\""
                 },
                 {
                   "type": "text_input",
