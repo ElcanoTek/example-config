@@ -66,7 +66,7 @@ Before showing the onboarding card, auto-discover everything available so the fo
    - Any missing report type or missing conversion column becomes a clear `warn` item in the Onboarding Card's **Day-1 Preflight Checklist (`status_list`)** so the trader can fix the DSP scheduled report on Day 1 instead of discovering it a week later.
 3. **Auto-Resolve Deal Planner Profile, SSP Seats & Deal IDs:**
    - Populate `campaign.curator`, `campaign.deal_plan_client_id`, and `ssp_seats`:
-     - When `manifest.yaml` registers `deal_plan` and SSP connectors, set `campaign.deal_plan_client_id` to the bundle's Deal Planner profile ID in `deal_profiles/<id>.yaml` (for example `"reklaim"` — never an advertiser or campaign name) and query live SSP read tools (`*_find_deals` / `*_get_deal`) to populate `deals` with each deal's public buyer-facing `deal_id` (e.g. `IX...`, `OX-...`, `MGNI-...`), `internal_deal_id`, `channel` (`Display`, `OLV`, `CTV`, `Native`), direct console `deal_url`, and any preserved account-level baseline blocklist IDs (`baseline_block_list_ids`).
+     - When `manifest.yaml` registers `deal_plan` and SSP connectors, set `campaign.deal_plan_client_id` to the bundle's Deal Planner profile ID in `deal_profiles/<id>.yaml` (never an advertiser or campaign name) and query live SSP read tools (`*_find_deals` / `*_get_deal`) to populate `deals` with each deal's public buyer-facing `deal_id` (e.g. `IX...`, `OX-...`, `MGNI-...`), `internal_deal_id`, `channel` (`Display`, `OLV`, `CTV`, `Native`), direct console `deal_url`, and any preserved account-level baseline blocklist IDs (`baseline_block_list_ids`).
      - When `manifest.yaml` does not register `deal_plan` or SSP connectors, set `campaign.deal_plan_client_id: null` and populate `deals` from the discovered DSP report deal names and any user-provided deal metadata.
    - Key entries in `deals` as `"<dsp_id>::<Exact Deal Name in DSP Report>"` (or `"<Exact Deal Name in DSP Report>"` when the campaign has a single DSP) so multi-DSP campaigns never collide when two DSP reports share a deal name.
 
@@ -82,17 +82,18 @@ Present one structured `show_ui` card (`title: "Campaign Optimization Setup — 
      - `workspace_default`: `Persistent Conversation Workspace — Optimizations/<Client> (<Code>)/ (Recommended)`
      - `custom`: `Custom Workspace Subfolder (specify below)`
 3. **Tab 2 — `2. KPI, Thresholds & Levers`:**
-   - `primary_kpi` (`select`: `ROAS`, `CTR`, `CPA`, `VCR`, `Viewability`, `CPC`, `CPM`), `kpi_direction` (`choice`: `higher_is_better` vs `lower_is_better`), and `kpi_benchmark` (`number`, e.g. `33.0` for 33x ROAS or `0.08` for 0.08% CTR). When multiple DSPs are discovered during preflight (`len(dsps) > 1`), render **repeatable per-DSP KPI field groups** (`<dsp_id>_primary_kpi`, `<dsp_id>_kpi_direction`, `<dsp_id>_kpi_target`, `<dsp_id>_benchmark_ctv`, `<dsp_id>_benchmark_olv`, `<dsp_id>_benchmark_display`) for each DSP so every `dsps[]` entry receives its own KPI block.
-   - `use_baseline_fallback` (`toggle`, default `false`): *"No client benchmark yet — compute initial baseline from the first report window."*
+   - `primary_kpi` (`select`: `ROAS`, `CTR`, `CPA`, `VCR`, `Viewability`, `CPC`, `CPM`), `kpi_direction` (`choice`: `higher_is_better` vs `lower_is_better`), and `kpi_benchmark` (`number`, e.g. `33.0` for 33x ROAS or `0.08` for 0.08% CTR; optional when `use_baseline_fallback == true`). When multiple DSPs are discovered during preflight (`len(dsps) > 1`), render **repeatable per-DSP KPI field groups** (`<dsp_id>_primary_kpi`, `<dsp_id>_kpi_direction`, `<dsp_id>_kpi_target`, `<dsp_id>_benchmark_ctv`, `<dsp_id>_benchmark_olv`, `<dsp_id>_benchmark_display`) for each DSP so every `dsps[]` entry receives its own KPI block.
+   - `use_baseline_fallback` (`toggle`, default `false`): *"No client benchmark yet — compute initial baseline from the first report window."* (When `true`, save `kpi.primary.benchmark: null`.)
    - `channel_overrides` (`text_input`, optional): Per-channel benchmark or KPI overrides (e.g., `Display: CTR >= 0.08%, OLV: VCR >= 75%`).
    - **Trader-Confirmed Eligibility Thresholds (`number` + `slider`):**
      - `min_spend_share_pct` (`number`, e.g. `10` for `10%`, saved as `cycle.materiality.min_addressable_spend_share = min_spend_share_pct / 100.0`)
+     - `min_spend_usd` (`number`, e.g. `50`, saved as `cycle.materiality.min_spend_usd`)
      - `min_projected_kpi_lift_pct` (`number`, e.g. `5` for `5%`, saved as `cycle.materiality.min_projected_kpi_change = min_projected_kpi_lift_pct / 100.0`)
      - `min_impression_threshold` (`number`, e.g. `1000`, saved as `cycle.min_sample.impressions`)
      - `max_volume_cut_pct` (`slider`, `15..75`, e.g. `40` for `40%`, saved as `cycle.max_deal_volume_cut_share = max_volume_cut_pct / 100.0`)
    - `ssp_direct_levers` (`multi_select`) and `client_request_levers` (`multi_select`).
 4. **Tab 3 — `3. Active Deals & Report Sources (<N>)`:**
-   - Multi-select `table` (`id="active_deals"`, `select="multi"`, `row_key="deal_id"`, all active campaign deals pre-selected) showing `DSP :: Deal Name in Report`, `SSP (Seat)`, `Channel`, `Deal ID`, and `7d Spend`.
+   - Multi-select `table` (`id="active_deals"`, `select="multi"`, `row_key="deal_name"`, all active campaign deals pre-selected) showing `DSP :: Deal Name in Report`, `SSP (Seat)`, `Channel`, `Deal ID`, and `7d Spend`.
    - `report_source_type` (`choice`: `mailbox` vs `uploaded_file`), `report_mailbox` (`text_input`), and `deal_field` (`text_input`). When multiple DSPs are discovered during preflight (`len(dsps) > 1`), render **repeatable per-DSP report source controls** (`<dsp_id>_report_source_type`, `<dsp_id>_mailbox_address`, `<dsp_id>_deal_field`) for every DSP found.
 5. **Card Actions:**
    - **Primary Submit (`id="save_config"`, `style="primary"`):** `Save Config & Initialize Log`
@@ -102,7 +103,7 @@ Present one structured `show_ui` card (`title: "Campaign Optimization Setup — 
 
 ### Step 2.3 — Initialize & Save All 3 Files
 When the trader submits the Onboarding Card:
-1. Normalize percentage controls (`min_spend_share_pct / 100.0`, `min_projected_kpi_lift_pct / 100.0`, `max_volume_cut_pct / 100.0`) into decimal shares and validate `CampaignConfig_<Client>_<Code>.yaml` via `yaml.safe_load` (`schema_version: "3.0"`), populating a complete `dsps[]` entry for every configured DSP and `campaign.deal_plan_client_id`.
+1. Normalize percentage controls (`min_spend_share_pct / 100.0`, `min_projected_kpi_lift_pct / 100.0`, `max_volume_cut_pct / 100.0`) and `min_spend_usd` into `cycle.materiality` / `cycle.max_deal_volume_cut_share` (setting `kpi.primary.benchmark: null` when `use_baseline_fallback == true`), and validate `CampaignConfig_<Client>_<Code>.yaml` via `yaml.safe_load` (`schema_version: "3.0"`), populating a complete `dsps[]` entry for every configured DSP and `campaign.deal_plan_client_id`.
 2. Initialize `OptLog_<Client>_<Code>.csv` with header row:
    `Opt ID,DSP,Deal,Change,Status,Proposed,Live,Baseline,Result,Notes`
 3. Initialize `OptTargets_<Client>_<Code>.csv` with header row:
@@ -154,7 +155,7 @@ Canonical names below. Legacy names are still accepted so older configs keep run
 | `storage.type` | — | `"workspace"` |
 | `storage.folder_path` | — | `"Optimizations"` |
 | `campaign.curator` | — | `"default"` (or seat identifier from `ssp_seats`) |
-| `campaign.deal_plan_client_id` | — | Bundle's Deal Planner profile key (e.g. `"reklaim"` when `deal_plan` is registered in `manifest.yaml`, else `null`) |
+| `campaign.deal_plan_client_id` | — | Bundle's Deal Planner profile key in `deal_profiles/<id>.yaml` when `deal_plan` is registered in `manifest.yaml`, else `null` |
 | `team.trader` | — | required (trader's full name) |
 | `team.digest_to` | — | required (that trader's internal email address) |
 | `team.cc` | — | `[]` (optional list of internal CC email addresses) |
@@ -255,21 +256,21 @@ Any trader can trigger a review on demand in chat (`"run optimization review for
      - **Merge `OptTargets` by composite key `(Opt ID, Lever, Value)`:** When updating targets for a specific `(Opt ID, Lever)` (such as inline Workbench domain edits), replace that `(Opt ID, Lever)` group atomically with the submitted values while preserving all rows for other `(Opt ID, Lever)` pairs by `(Opt ID, Lever, Value)` so sibling target rows are never collapsed or overwritten.
      - Write to `<file>.tmp`, flush, and commit via `os.replace` before releasing `.lock` (deferring the `CampaignConfig` `state.last_optimization_run` / `state.carried_over` update until Step 6 confirms notification email acceptance).
 6. **Short Notification Email ("Opts Ready in Chat") & State Completion:**
-   - Send one consolidated email for the trader (`team.digest_to`) via `mcp_ses_outbound_send_email`:
+   - Send one consolidated email for the trader (`team.digest_to`) via `mcp_ses_outbound_send_email` covering all campaigns processed for that trader in this task invocation (full reviews, any alert-requiring light reviews, and any closeout summaries):
      - **Subject:** `Opts ready in Chat — <Client> (<CampaignCode>) — <N> recommendations` (or `Opts ready in Chat — <date> — <N> campaigns` when grouped for that trader).
      - **Block 1 (`headline_metrics`):** Up to 4 KPI & outcome snapshot cards (primary KPI vs. goal, spend, and any 7-day `Kept` / `Reverted` / `[REVERT RECOMMENDED]` headline item).
      - **Block 2 (`callout`, `kind="opportunity"`):** **"1-Line Handoff to Fleet Chat"** box at the top:
        > `Open Fleet Chat and type: review <Client> opts`
        > `Your interactive Optimization Workbench card will open so you can inspect the data, ask questions about any domain/deal, edit the target lists, or apply selected updates.`
      - **Block 3 (`table`):** One compact summary table per campaign (`Opt ID & Deal`, `Proposed Change & Execution Path`, `7d Spend & Projected Lift`).
-   - **Check the actual `mcp_ses_outbound_send_email` success response (`status == "queued"`):** `mcp_ses_outbound_send_email` returns `status: "queued"`, `status_code` (2xx), and `message_id` on success (and `error` on failure; it does not return an `ok` boolean). **Only after `mcp_ses_outbound_send_email` returns `status == "queued"` (with a non-empty `message_id` and no `error`)**, update `CampaignConfig` (`state.last_optimization_run: <runtime_today>`, `state.carried_over: false`, `state.carried_over_from: null`, `state.carried_over_run_type: null`) and save it in place. If the email call fails, keep the prior `last_optimization_run` and `carried_over` state so the next run retries.
+   - **Check the actual `mcp_ses_outbound_send_email` success response (`status in ("queued", "duplicate_suppressed")`):** `mcp_ses_outbound_send_email` returns `status: "queued"` (with `status_code` 2xx and `message_id`) or `status: "duplicate_suppressed"` (when an identical email was already queued earlier in the run), and `error` on failure (it does not return an `ok` boolean). **Only after `mcp_ses_outbound_send_email` returns `status in ("queued", "duplicate_suppressed")` with no `error`**, update `CampaignConfig` (`state.last_optimization_run: <runtime_today>`, `state.carried_over: false`, `state.carried_over_from: null`, `state.carried_over_run_type: null`) and save it in place. If the email call fails, keep the prior `last_optimization_run` and `carried_over` state so the next run retries.
 
 ### Light review (optional mid-week check — steps 1–3 and 5L/6L only)
 - **Purpose:** A silent background check between full weekly reviews. It does **not** propose new optimizations (`What's next` is skipped) and sends **no email** on a quiet day.
 - **Step 5L / 6L (Conditional Alert Delivery Before State Commit):**
   - Merge any updated `OptLog` and `OptTargets` rows using the Read-Before-Write Merge Guardrail above.
   - **If the light check is quiet** (no change went live, no 7-day result finished, and no delivery guardrail tripped): send no email, and immediately write `state.last_light_review: <runtime_today>`, `state.carried_over: false`, `state.carried_over_from: null`, `state.carried_over_run_type: null` in `CampaignConfig` (leaving `state.last_optimization_run` unchanged).
-  - **If the light check requires an alert email** (a change went live mid-week, a 7-day result finished, or a delivery guardrail tripped): send the notification email via `mcp_ses_outbound_send_email` **first**, and **only after `mcp_ses_outbound_send_email` succeeds (`status == "queued"`, non-empty `message_id`, no `error`)**, write `state.last_light_review: <runtime_today>` and clear `state.carried_over` (`false`, `carried_over_from: null`, `carried_over_run_type: null`) in `CampaignConfig`. If the email send fails, do **not** advance `state.last_light_review` and retain carryover state so the alert is retried.
+  - **If the light check requires an alert email** (a change went live mid-week, a 7-day result finished, or a delivery guardrail tripped): include it in the trader's single consolidated outbound email for this task invocation via `mcp_ses_outbound_send_email` **first**, and **only after `mcp_ses_outbound_send_email` succeeds (`status in ("queued", "duplicate_suppressed")` and no `error`)**, write `state.last_light_review: <runtime_today>` and clear `state.carried_over` (`false`, `carried_over_from: null`, `carried_over_run_type: null`) in `CampaignConfig`. If the email send fails, do **not** advance `state.last_light_review` and retain carryover state so the alert is retried.
 
 ### End-of-Flight Closeout Run (`runtime_today > campaign.end_date`)
 When an active campaign passes its `end_date` and `state.wrap_completed != true`:
@@ -278,8 +279,8 @@ When an active campaign passes its `end_date` and `state.wrap_completed != true`
    - `Live` rows with **< 3 post-change delivery days** are set to `Status = Dropped` (canonical status) with `Result = "Flight ended before 3-day evaluation window"` and `"<runtime_today>: Inconclusive — campaign flight ended with <3 post-change delivery days"` appended to `Notes`.
    - Any open `Proposed` or `Backlog` rows that never went live are set to `Status = Dropped` with `"<runtime_today>: Campaign flight ended before implementation"` in `Notes`.
    Save the updated `OptLog` in place.
-2. Email the trader a **Campaign Optimization Wrap Summary** (`Optimization wrap — <Client> (<CampaignCode>)`) via `mcp_ses_outbound_send_email` containing all `Kept` optimizations with their before → after KPI lift and value sentences.
-3. **Only after `mcp_ses_outbound_send_email` succeeds (`status == "queued"`, non-empty `message_id`, no `error`)**, set `campaign.active: false`, `state.wrap_completed: true`, `state.carried_over: false`, `state.carried_over_from: null`, `state.carried_over_run_type: null` in `CampaignConfig_<Client>_<Code>.yaml` and save in place (if email delivery fails, leave `campaign.active: true` and `state.wrap_completed: false` so the next run retries the wrap email).
+2. Include the **Campaign Optimization Wrap Summary** (`Optimization wrap — <Client> (<CampaignCode>)`) in the trader's outbound email for this task invocation via `mcp_ses_outbound_send_email` containing all `Kept` optimizations with their before → after KPI lift and value sentences.
+3. **Only after `mcp_ses_outbound_send_email` succeeds (`status in ("queued", "duplicate_suppressed")` and no `error`)**, set `campaign.active: false`, `state.wrap_completed: true`, `state.carried_over: false`, `state.carried_over_from: null`, `state.carried_over_run_type: null` in `CampaignConfig_<Client>_<Code>.yaml` and save in place (if email delivery fails, leave `campaign.active: true` and `state.wrap_completed: false` so the next run retries the wrap email).
 
 ---
 
@@ -309,24 +310,23 @@ Whenever a trader opens chat and says:
    - **Secondary Submit (`id="ask_questions"`, `style="secondary"`, `validate=false`):** `Ask / Validate First`
 
 ### How Workbench Submissions Are Handled
-- **Step 0 — Apply Status Confirmations, Backlog Promotions & Inline Target Edits on EVERY Submission (`ask_questions` AND `execute_selected`):**
-  - Before running either action's specific logic, process any submitted changes using the canonical 10-column `OptLog` lifecycle fields (`Backlog`, `Proposed`, `Live`, `Kept`, `Reverted`, `Dropped`):
-    1. **`*_status_action` (with strict `:live` > `:sent` precedence per `Opt ID`):**
-       - If both `live` and `sent` are submitted for the same `Opt ID`, `live` always takes precedence (`Status = Live`, `Live = <today>`).
-       - For `live`: set `Status = Live`, `Live = <today>`, and append `"<today>: Confirmed live (<trader>)"` to `Notes` (skipping if the row is already `Live`).
-       - For `sent` (when `live` is not selected): keep `Status = Proposed` and append `"<today>: Sent to client (<trader>)"` to `Notes` (idempotent if already logged today).
-    2. **`promote_backlog`:** Promote each checked `Backlog` row to `Status = Proposed`, `Proposed = <today>` in `OptLog`, **and materialize its candidate target values as rows in `OptTargets_<Client>_<Code>.csv`** (matching the `"propose <Opt ID>"` text-command behavior) so the newly `Proposed` row has complete `OptTargets` rows ready for execution and go-live checks.
-    3. **Inline target edits (`<opt_id>_domains` / `<campaign_code>_<opt_id>_domains`):** Replace the target group for that `(Opt ID, Lever)` in `OptTargets_<Client>_<Code>.csv` (and update the row's target count in `OptLog`) if the trader unchecked or added target values.
-    4. Persist those `OptLog` / `OptTargets` updates in place using the **Read-Before-Write Merge Guardrail** (with per-campaign `.lock` file and composite `(Opt ID, Lever, Value)` merge key).
-- **When the trader clicks `Ask / Validate First` (`action="ask_questions"`):**
-  1. After applying Step 0 above, load the campaign's DSP reports in `run_python`, answer `trader_question` concisely with exact numbers, and **re-render the Workbench card** (`replaces=<old_card_id>`) preserving unapplied `selected_opts` and `*_domains` selections while **resetting all already-applied `*_status_action` controls back to `"none"`** (and removing promoted rows from `promote_backlog`) so a subsequent button click never re-applies `"sent"` or overwrites a declared `Live` date.
+- **When the trader clicks `Ask / Validate First` (`action="ask_questions"`, side-effect free):**
+  1. Do **not** mutate `OptLog` or `OptTargets` on `ask_questions`. Load the campaign's DSP reports in `run_python`, answer `trader_question` concisely with exact numbers, and **re-render the Workbench card** (`replaces=<old_card_id>`) preserving the trader's current `selected_opts`, `*_domains`, `*_status_action`, and `promote_backlog` selections so they can click **`Apply Selected Updates`** whenever ready.
 - **When the trader clicks `Apply Selected Updates` (`action="execute_selected"`):**
-  1. **Apply Step 0 above** first so no status, backlog promotion, or inline target edit is ever dropped.
+  1. **Apply Status Confirmations, Backlog Promotions & Inline Target Edits First:**
+     - Process any submitted changes using the canonical 10-column `OptLog` lifecycle fields (`Backlog`, `Proposed`, `Live`, `Kept`, `Reverted`, `Dropped`):
+       1. **`*_status_action` (with strict `:live` > `:sent` precedence per `Opt ID`):**
+          - If both `live` and `sent` are submitted for the same `Opt ID`, `live` always takes precedence (`Status = Live`, `Live = <today>`).
+          - For `live`: set `Status = Live`, `Live = <today>`, and append `"<today>: Confirmed live (<trader>)"` to `Notes` (skipping if the row is already `Live`).
+          - For `sent` (when `live` is not selected): keep `Status = Proposed` and append `"<today>: Sent to client (<trader>)"` to `Notes` (idempotent if already logged today).
+       2. **`promote_backlog`:** Promote each checked `Backlog` row to `Status = Proposed`, `Proposed = <today>` in `OptLog`, **and materialize its candidate target values as rows in `OptTargets_<Client>_<Code>.csv`** (matching the `"propose <Opt ID>"` text-command behavior) so the newly `Proposed` row has complete `OptTargets` rows ready for execution and go-live checks.
+       3. **Inline target edits (`<opt_id>_domains` / `<campaign_code>_<opt_id>_domains`):** Replace the target group for that specific `(Opt ID, Lever)` in `OptTargets_<Client>_<Code>.csv` (and update the row's target count in `OptLog`) if the trader unchecked or added target values. Keep each `Opt ID`'s own target rows scoped strictly to that `Opt ID` in `OptTargets.csv` so reverting or inspecting a single `Opt ID` remains clean.
+       4. Persist those `OptLog` / `OptTargets` updates in place using the **Read-Before-Write Merge Guardrail** (with per-campaign `.lock` file and composite `(Opt ID, Lever, Value)` merge key).
   2. **Branch on Bundle Connector Contract (`manifest.yaml`):**
      - **Case A — When `manifest.yaml` does NOT register `deal_plan` and SSP seat connectors** (standard analytics/reporting bundles):
        - Do **not** ask the trader to enable nonexistent Deal Planner or SSP connectors in the Tools picker.
-       - Compute the additive target lists (unioning `Kept` + `Live` + selected `Proposed` block targets from `OptTargets`, or keeping only removal targets for allow lists), persist the updated `OptTargets` and `OptLog` rows under the Read-Before-Write Merge Guardrail, and output a copy-paste-ready **Target List & Operator Execution Summary** (along with the **Post-Execution Verification Receipt** table template and `[Open in <SSP> ↗](<deal_url>)` links) so the trader can apply the changes in the SSP console and mark them `Live`.
-     - **Case B — When `manifest.yaml` DOES register `deal_plan` and SSP seat connectors** (for example, `reklaim-config`):
+       - Compute the deal-level additive target lists in memory (unioning `Kept` + `Live` + selected `Proposed` block targets from `OptTargets`, or keeping only removal targets for allow lists, without duplicating prior `Opt ID` rows under the new `Opt ID` in `OptTargets.csv`), and output a copy-paste-ready **Target List & Operator Execution Summary** (along with the **Post-Execution Verification Receipt** table template and `[Open in <SSP> ↗](<deal_url>)` links) so the trader can apply the changes in the SSP console and mark them `Live`.
+     - **Case B — When `manifest.yaml` DOES register `deal_plan` and SSP seat connectors**:
        - **Verify Required Connectors:** Check `ssp_seats` and `deals` in `CampaignConfig` to identify each target deal's SSP and seat (`mcp_prefix`), plus `deal_plan` (`mcp_deal_plan_*`). Call `enable_mcp_connectors` if listed under Available Optional MCP Connectors.
        - **Pre-Flight Live Deal Read — Additive Block-List Union vs. Allow-List Removal:**
          - **Block List (`add block` / `include block`):** Take the **additive union** of all block values from `OptTargets` rows with `Status` in `Kept` + `Live` + the newly selected `Proposed` row (excluding `Reverted` or `Dropped` rows) **AND** union with any pre-existing baseline block list currently live on the SSP deal.
@@ -334,7 +334,7 @@ Whenever a trader opens chat and says:
        - **Magnite DV+ / Shared-List Isolation Rule (Create-Then-Swap):** On Magnite DV+, **never** edit a shared list used by other campaigns and **never** attach another campaign's block list. Keep any account-level baseline blocklist intact (`baseline_block_list_ids`) and attach/update a **campaign-dedicated list** named `<Client>_<CampaignCode>_Optimization_Block_List`:
          - When `optimization_block_list_id` is `null`, first stage `magnite_create_targeting_list` (`name="<Client>_<CampaignCode>_Optimization_Block_List"`, initial block domains) and wait for trader approval; once created, persist the returned list ID to `deals["<dsp_id>::<Deal Name>"].optimization_block_list_id` in `CampaignConfig`, and only then stage the deal update plan that attaches `optimization_block_list_id` alongside preserved `baseline_block_list_ids` and detaches any foreign campaign list.
        - **Route Through Deal Planner Using `campaign.deal_plan_client_id`:**
-         - Use `campaign.deal_plan_client_id` from `CampaignConfig.yaml` (the bundle's Deal Planner profile key in `deal_profiles/<id>.yaml`, e.g. `"reklaim"` — never an advertiser or campaign name) to load `get_deal_profile(client_id)`.
+         - Use `campaign.deal_plan_client_id` from `CampaignConfig.yaml` (the bundle's Deal Planner profile key in `deal_profiles/<id>.yaml` — never an advertiser or campaign name) to load `get_deal_profile(client_id)`.
          - Present the selected SSP changes on `mcp_deal_plan_recommendation_card` when required by `system_prompts/chat.md`, then call `mcp_deal_plan_compile_update_plan(recommendation_set=..., selected=...)` → `mcp_deal_plan_finalize_plan(plan_id, rows=<selected row numbers 1..N>)` → stage `mcp_deal_plan_execute_plan(plan_id)`.
   3. **Post-Approval Verification & Receipt:**
      - When an `execute_plan` approval completes (resumed automatically when `execute_plan` is in `manifest.yaml`'s `critical_tool_resume`, or on the follow-up turn):
@@ -369,7 +369,7 @@ Every client-facing optimization email MUST follow these rules automatically:
    - Keep the Executive Summary to **2 short, high-impact sentences**: (1) current 7-day KPI performance vs. benchmark, and (2) what optimizations were deployed today and their projected (or realized) KPI lift while preserving scale.
 4. **Single-Panel, Brand-Themed Chart (`1088px` wide):**
    - Always generate a **single-panel horizontal bar chart** (`figsize=(10.88, 4.2)`, `dpi=100`) with direct data labels at the end of each bar and the legend placed **above** the plot area (`bbox_to_anchor=(0.5, 1.16)`, `ncol=3`, `frameon=False`).
-   - **Read all chart colors from `protocols/email-style.yaml` (`chart_colors`):** use `comparison_series` for Actual KPI bars, `primary_series` for Post-Curation KPI bars, `text` for the dashed benchmark line and labels, `background` for figure/axes fill, and `grid` for gridlines so the chart PNG always matches the deployment's brand palette.
+   - **Read all chart colors from `protocols/email-style.yaml` (`chart_colors`):** use `secondary_series` (falling back to `comparison_series` if defined) for Actual KPI bars, `primary_series` for Post-Curation KPI bars, `text` for the dashed benchmark line and labels, `background` for figure/axes fill, and `grid` for gridlines so the chart PNG always matches the deployment's brand palette.
 
 ### 7.2 Interactive Menu of Story Archetypes & Modular Sections (`show_ui`)
 When a trader asks to craft a client-facing optimization email (`"craft a client email for <Client>"`, `"client story email for <Client> opts"`), present the **`show_ui` Story Builder card** (Blueprint 3 in `skills/campaign-optimization-log/REFERENCE.md`):

@@ -14,9 +14,9 @@ inputs:
     - Initial question or focus area to check first
 instructions:
   - Follow skills/campaign-optimization-log/SKILL.md (Flow 2) and protocols/optimization-log-protocol.md (Section 6).
-  - If the user asks to run a fresh scan first, execute the Full Optimization Day analysis from protocols/optimization-log-protocol.md (Section 5) before opening the card.
+  - If the user asks to run a fresh scan first, execute the Full Optimization Day analysis from protocols/optimization-log-protocol.md (Section 5) before opening the Workbench card.
   - Render the interactive Optimization Workbench card via show_ui (skills/campaign-optimization-log/REFERENCE.md Blueprint 2) with KPI summary metrics, 7-day readouts, proposed optimizations, inline editable target lists, and per-row status actions.
-  - Handle card submissions deterministically: answer questions and re-render on ask_victoria, or persist status changes and edited target lists on apply_workbench_changes / execute_selected.
+  - Handle card submissions deterministically: answer questions and re-render without mutating OptLog/OptTargets on ask_questions, or persist status changes, backlog promotions, and edited target lists on execute_selected.
 output:
   sections:
     - Campaign KPI and 7-day readout summary

@@ -16,7 +16,7 @@ instructions:
   - Follow skills/campaign-optimization-log/SKILL.md (Flow 3) and protocols/optimization-log-protocol.md (Section 7).
   - Load CampaignConfig.yaml, OptLog.csv, and recent DSP report data for the campaign, and compute the 4-Test Spend Elasticity & Incremental Budget evaluation.
   - Render the interactive Client Optimization Story Builder card via show_ui (skills/campaign-optimization-log/REFERENCE.md Blueprint 3).
-  - When the user submits stage_story_email, generate the PNG chart using the palette in protocols/email-style.yaml (chart_colors), render the HTML email via mcp_ses_outbound_render_email, and stage mcp_ses_outbound_send_email with the rendered content_file and inline_attachments.
+  - When the user submits generate_story_email, generate the PNG chart using the palette in protocols/email-style.yaml (chart_colors), render the HTML email via mcp_ses_outbound_render_email, and stage mcp_ses_outbound_send_email with the rendered content_file and inline_attachments.
 output:
   sections:
     - 4-Test Spend Elasticity and KPI lift readout

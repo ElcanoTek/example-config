@@ -20,8 +20,9 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
   - `cycle.materiality.min_addressable_spend_share = min_spend_share_pct / 100.0` (e.g. `10` → `0.10`)
   - `cycle.materiality.min_projected_kpi_change = min_projected_kpi_lift_pct / 100.0` (e.g. `5` → `0.05`)
   - `cycle.max_deal_volume_cut_share = max_volume_cut_pct / 100.0` (e.g. `40` → `0.40`)
-- Write `cycle.min_sample.impressions = int(min_impression_threshold)`.
-- Persist `campaign.deal_plan_client_id` with the bundle's Deal Planner profile key when `deal_plan` is registered in `manifest.yaml` (e.g. `"reklaim"`), or `null` when Deal Planner is not registered in this bundle.
+- Write `cycle.min_sample.impressions = int(min_impression_threshold)` and `cycle.min_sample.spend_usd = float(min_spend_usd)`.
+- When `use_baseline_fallback == true`, write `kpi.primary.benchmark = null` (ignoring the hidden `kpi_benchmark` input value) and compute `kpi.primary.baseline` from the initial report window.
+- Persist `campaign.deal_plan_client_id` with the bundle's Deal Planner profile key when `deal_plan` is registered in `manifest.yaml` (from `deal_profiles/<id>.yaml`), or `null` when Deal Planner is not registered in this bundle.
 
 ```json
 {
@@ -289,6 +290,15 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
                   "min": 100,
                   "step": 100,
                   "required": true
+                },
+                {
+                  "type": "number",
+                  "id": "min_spend_usd",
+                  "label": "Min Spend Sample Floor ($ USD)",
+                  "value": 25,
+                  "min": 1,
+                  "step": 5,
+                  "required": true
                 }
               ]
             },
@@ -349,7 +359,7 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
               "id": "active_deals",
               "label": "Discovered Active Deals (uncheck any paused or excluded deal)",
               "select": "multi",
-              "row_key": "deal_id",
+              "row_key": "deal_name",
               "columns": [
                 {"key": "deal_name", "label": "DSP :: Deal Name in Report"},
                 {"key": "ssp_seat", "label": "SSP (Seat)"},
@@ -373,7 +383,10 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
                   "spend_7d": "$1,800.30"
                 }
               ],
-              "value": ["IX176164622210051708", "MGNI-MD-9001-90286"]
+              "value": [
+                "DV360::PMP_DemandCo_WinterGear_OLV_IndexExchange_DV360",
+                "DV360::PMP_DemandCo_TrailApparel_Display_Magnite_DV360"
+              ]
             },
             {
               "type": "columns",

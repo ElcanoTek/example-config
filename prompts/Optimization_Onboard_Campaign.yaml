@@ -19,7 +19,7 @@ instructions:
   - Ask for any missing required campaign details or pre-fill them from the conversation and discovered DSP reports in mcp_explorer_*.
   - Run Day-1 Preflight QA on the discovered report columns and SSP deal mappings when available.
   - Render the interactive CampaignConfig Builder card via show_ui (skills/campaign-optimization-log/REFERENCE.md Blueprint 1) so the trader can review and confirm all campaign settings and eligibility thresholds before saving.
-  - When the trader submits save_campaign_config, write CampaignConfig.yaml, OptLog.csv, and OptTargets.csv in the campaign's Optimizations/ directory and explain how to schedule the weekday review runner with "Make recurring task…".
+  - When the trader submits save_config or save_and_run, write CampaignConfig.yaml, OptLog.csv, and OptTargets.csv in the campaign's Optimizations/ directory (and run the initial Optimization Day scan immediately when save_and_run is selected), then explain how to schedule the weekday review runner with "Make recurring task…".
 output:
   sections:
     - Auto-discovery and Day-1 Preflight QA summary

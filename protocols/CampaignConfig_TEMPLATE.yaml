@@ -18,7 +18,7 @@ campaign:
   client: <Client display name>
   client_short_name: <ClientShortNameNoSpaces>
   campaign_code: <CMP#####>
-  deal_plan_client_id: <null | bundle deal_plan profile ID (e.g. "reklaim" when deal_plan is registered in manifest.yaml)>
+  deal_plan_client_id: <null | bundle deal_plan profile ID when deal_plan is registered in manifest.yaml>
   curator: <default | partner_seat>
   partner: <Optional partner name>
   agency: <Optional agency name>

@@ -65,8 +65,8 @@ Triggered when a trader says **"onboard `<Client>` `<CampaignCode>` to the optim
      (`deal_id`, `internal_deal_id`, `channel`, `deal_url`, `baseline_block_list_ids`):
      - When `manifest.yaml` registers `deal_plan` and SSP connectors, set
        `campaign.deal_plan_client_id` to the bundle's Deal Planner profile key in
-       `deal_profiles/<id>.yaml` (for example `"reklaim"` — never an advertiser or
-       campaign name) and read live deal details via the registered SSP read tools.
+       `deal_profiles/<id>.yaml` (never an advertiser or campaign name) and read live
+       deal details via the registered SSP read tools.
      - When `manifest.yaml` does not register `deal_plan` or SSP connectors, set
        `campaign.deal_plan_client_id: null` and populate `deals` from the discovered
        DSP report deal names and any user-provided deal metadata.
@@ -80,15 +80,17 @@ Triggered when a trader says **"onboard `<Client>` `<CampaignCode>` to the optim
      so every `dsps[]` entry in `CampaignConfig` receives a complete source and KPI block.
    - Pre-fill discovered values, default `optimization_days` / `light_days` for
      the trader, trader-confirmable eligibility thresholds (`min_spend_share_pct`,
-     `min_projected_kpi_lift_pct`, `min_impression_threshold`, `max_volume_cut_pct`),
-     and the **`storage_target`** selector (`workspace_default` for
-     `Optimizations/<Client> (<CampaignCode>)/` or `custom`).
+     `min_projected_kpi_lift_pct`, `min_impression_threshold`, `min_spend_usd`,
+     `max_volume_cut_pct`), and the **`storage_target`** selector (`workspace_default`
+     for `Optimizations/<Client> (<CampaignCode>)/` or `custom`).
 3. **On Submission (`save_config` or `save_and_run`):**
    - Normalize percentage fields from Blueprint 1 into decimal shares before writing `CampaignConfig.yaml`:
      - `cycle.materiality.min_addressable_spend_share = min_spend_share_pct / 100.0`
      - `cycle.materiality.min_projected_kpi_change = min_projected_kpi_lift_pct / 100.0`
      - `cycle.max_deal_volume_cut_share = max_volume_cut_pct / 100.0`
      - `cycle.min_sample.impressions = int(min_impression_threshold)`
+     - `cycle.min_sample.spend_usd = float(min_spend_usd)`
+     - When `use_baseline_fallback == true`, set `kpi.primary.benchmark = null` (ignoring the hidden `kpi_benchmark` value).
    - Key `deals` in `CampaignConfig.yaml` by `"<dsp_id>::<Exact Deal Name in DSP Report>"`
      (or `"<Exact Deal Name in DSP Report>"` when the campaign has a single DSP) so
      multi-DSP campaigns never collide on shared deal names.
@@ -147,35 +149,24 @@ Triggered when a trader says **"review `<Client>` opts"**, **"open `<Client>` wo
    - **Footer:** Inline question `text_input` (`id="trader_question"`) +
      `Apply Selected Updates` (`id="execute_selected"`)
      and `Ask / Validate First` (`id="ask_questions"`, `validate=false`).
-3. **Apply Status & Backlog Ticks on Every Submission (`ask_questions` AND `execute_selected`):**
-   - On **both** `ask_questions` and `execute_selected`, first apply any selected
-     `*_status_action` changes (`live` sets `Status = Live`, `Live = <today>`, and
-     appends `"<today>: Confirmed live (<trader>)"` to `Notes`; `sent` keeps
-     `Status = Proposed` and appends `"<today>: Sent to client (<trader>)"` to `Notes`),
-     any checked `promote_backlog` rows (`Status = Proposed`, `Proposed = <today>`,
-     **and materialize the candidate's target rows into `OptTargets.csv`**), and any
-     inline target edits (`*_domains`), using the **Read-Before-Write Merge Guardrail**.
-   - When the action is `ask_questions`: load the campaign's DSP reports in
-     `run_python`, answer `trader_question` with exact numbers, and re-render the
-     Workbench card (`replaces=<old_card_id>`) preserving unapplied `selected_opts`
-     and `*_domains` selections while **resetting all applied `*_status_action` controls
-     back to `"none"`** so a subsequent submission never duplicates status updates.
-4. **When the Trader Clicks `Apply Selected Updates` (`action="execute_selected"`):**
-   - **Check Bundle Connector Contract (`manifest.yaml`):**
-     - **If this bundle's `manifest.yaml` does NOT register `deal_plan` and SSP seat connectors** (standard analytics/reporting bundles):
-       - Do **not** ask the trader to enable unprovisioned Deal Planner or SSP connectors.
-       - Persist all selected target edits to `OptTargets.csv` (unioned with prior `Kept`/`Live` targets for that deal) and apply any `*_status_action` updates to `OptLog.csv` using the **Read-Before-Write Merge Guardrail**.
-       - Print a copy-paste-ready **Target List & Operator Execution Summary** (plus the **Post-Execution Verification Receipt** checklist with `Before → After` target counts and `[Open in <SSP> ↗](<deal_url>)` links when `deal_url` is configured) so the trader can apply the update in the SSP console and mark the row `Live`.
-     - **If this bundle's `manifest.yaml` DOES register `deal_plan` and SSP seat connectors** (for example, `reklaim-config`):
-       - Ensure `deal_plan` and each target deal's SSP connector (`ssp_seats.<SSP>.mcp_prefix`) are enabled (calling `enable_mcp_connectors` if listed under Available Optional MCP Connectors).
-       - **Pre-Flight Live Deal Read & Additive Block-List Union vs Allow-List Removal:**
-         Read each deal live on the SSP first and inspect whether the deal uses a **Block List** or an **Allow List**:
-         - **Block List (`add block` / `include block`):** Union `Kept` + `Live` + selected `Proposed` block targets from `OptTargets` **AND** union with the live deal's existing block list so replace-all writes never drop prior blocks.
-         - **Allow List (`remove allow`):** Pass **ONLY** the selected removal targets (plus any previously retained `Kept`/`Live` removal targets from `OptTargets` for that deal) to `remove allow` — **NEVER** union removal targets with the live allow list.
-       - **Magnite DV+ Shared-List Isolation Rule (Create-Then-Swap):** Never edit a shared list used by other campaigns/clients and never attach a foreign campaign's list. Keep any baseline account blocklist intact (`baseline_block_list_ids`) and use a campaign-dedicated list named `<Client>_<CampaignCode>_Optimization_Block_List`. If `optimization_block_list_id` is `null`, stage `magnite_create_targeting_list` first, persist the returned list ID to `CampaignConfig` once approved, and only then stage the deal update that attaches the new list ID alongside preserved `baseline_block_list_ids` and detaches any foreign campaign list.
-       - **Route Through the Canonical Deal Planner Recommendation & Update Flow:**
-         Use `campaign.deal_plan_client_id` from `CampaignConfig.yaml` (the bundle's fixed Deal Planner profile ID such as `"reklaim"`, resolved via `get_deal_profile(client_id)` — never an advertiser or campaign name). Present the SSP deal changes on `mcp_deal_plan_recommendation_card` when required by `system_prompts/chat.md`, then call `mcp_deal_plan_compile_update_plan(recommendation_set=..., selected=...)` → `mcp_deal_plan_finalize_plan(plan_id, rows=<selected row numbers 1..N>)` → stage `mcp_deal_plan_execute_plan(plan_id)`.
-5. **Mandatory Post-Approval Verification Receipt:**
+3. **Handle `ask_questions` (Side-Effect Free) vs `execute_selected` (Apply Updates):**
+   - **When the action is `ask_questions`:** Keep the submission strictly side-effect free (do not mutate `OptLog.csv` or `OptTargets.csv` on disk). Load the campaign's DSP reports in `run_python`, answer `trader_question` with exact numbers, and re-render the Workbench card (`replaces=<old_card_id>`) preserving the trader's current `selected_opts`, `*_domains`, `*_status_action`, and `promote_backlog` selections so they can click `Apply Selected Updates` when ready.
+   - **When the action is `execute_selected` (`Apply Selected Updates`):**
+     1. First apply any selected `*_status_action` changes (`live` sets `Status = Live`, `Live = <today>`, and appends `"<today>: Confirmed live (<trader>)"` to `Notes`; `sent` keeps `Status = Proposed` and appends `"<today>: Sent to client (<trader>)"` to `Notes`), any checked `promote_backlog` rows (`Status = Proposed`, `Proposed = <today>`, **and materialize the candidate's target rows into `OptTargets.csv`**), and any inline target edits (`*_domains` — updating only that `(Opt ID, Lever)` group in `OptTargets.csv` without copying other Opt IDs' targets into it), using the **Read-Before-Write Merge Guardrail**.
+     2. **Check Bundle Connector Contract (`manifest.yaml`):**
+        - **If this bundle's `manifest.yaml` does NOT register `deal_plan` and SSP seat connectors** (standard analytics/reporting bundles):
+          - Do **not** ask the trader to enable unprovisioned Deal Planner or SSP connectors.
+          - Compute the deal-level effective target list in memory (unioning `Kept` + `Live` + selected `Proposed` block targets from `OptTargets.csv`, while keeping each `Opt ID`'s own rows distinct in `OptTargets.csv`) and print a copy-paste-ready **Target List & Operator Execution Summary** (plus the **Post-Execution Verification Receipt** checklist with `Before → After` target counts and `[Open in <SSP> ↗](<deal_url>)` links when `deal_url` is configured) so the trader can apply the update in the SSP console and mark the row `Live`.
+        - **If this bundle's `manifest.yaml` DOES register `deal_plan` and SSP seat connectors**:
+          - Ensure `deal_plan` and each target deal's SSP connector (`ssp_seats.<SSP>.mcp_prefix`) are enabled (calling `enable_mcp_connectors` if listed under Available Optional MCP Connectors).
+          - **Pre-Flight Live Deal Read & Additive Block-List Union vs Allow-List Removal:**
+            Read each deal live on the SSP first and inspect whether the deal uses a **Block List** or an **Allow List**:
+            - **Block List (`add block` / `include block`):** Union `Kept` + `Live` + selected `Proposed` block targets from `OptTargets` **AND** union with the live deal's existing block list so replace-all writes never drop prior blocks.
+            - **Allow List (`remove allow`):** Pass **ONLY** the selected removal targets (plus any previously retained `Kept`/`Live` removal targets from `OptTargets` for that deal) to `remove allow` — **NEVER** union removal targets with the live allow list.
+          - **Magnite DV+ Shared-List Isolation Rule (Create-Then-Swap):** Never edit a shared list used by other campaigns/clients and never attach a foreign campaign's list. Keep any baseline account blocklist intact (`baseline_block_list_ids`) and use a campaign-dedicated list named `<Client>_<CampaignCode>_Optimization_Block_List`. If `optimization_block_list_id` is `null`, stage `magnite_create_targeting_list` first, persist the returned list ID to `CampaignConfig` once approved, and only then stage the deal update that attaches the new list ID alongside preserved `baseline_block_list_ids` and detaches any foreign campaign list.
+          - **Route Through the Canonical Deal Planner Recommendation & Update Flow:**
+            Use `campaign.deal_plan_client_id` from `CampaignConfig.yaml` (the bundle's Deal Planner profile ID in `deal_profiles/<id>.yaml`, resolved via `get_deal_profile(client_id)` — never an advertiser or campaign name). Present the SSP deal changes on `mcp_deal_plan_recommendation_card` when required by `system_prompts/chat.md`, then call `mcp_deal_plan_compile_update_plan(recommendation_set=..., selected=...)` → `mcp_deal_plan_finalize_plan(plan_id, rows=<selected row numbers 1..N>)` → preview each finalized SSP group and stage `mcp_deal_plan_execute_plan(plan_id)` (or the per-SSP `*_execute_plan` tool registered in `manifest.yaml`).
+4. **Mandatory Post-Approval Verification Receipt:**
    - When an SSP `execute_plan` approval completes, verify live SSP readback against
      `OptTargets` (every target present, prior `Kept`/`Live` count intact, preserved
      `baseline_block_list_ids` allowed while rejecting foreign campaign lists, deal
@@ -184,7 +175,7 @@ Triggered when a trader says **"review `<Client>` opts"**, **"open `<Client>` wo
      `Before → After Summary`, `VERIFIED / FLAGGED`).
    - Update `OptLog` (`Status = Live`, `Live = <today>`, `Notes`) using the
      **Read-Before-Write Merge Guardrail** (acquire the per-campaign lock file
-     `Optimizations/<Client> (<Code>)/.lock` via `fcntl.flock`, re-read the latest
+     `<campaign_folder>/.lock` via `fcntl.flock`, re-read the latest
      CSV from disk, merge `OptLog` by `Opt ID` and `OptTargets` by composite key
      `(Opt ID, Lever, Value)`, write to `<file>.tmp`, and atomically commit via
      `os.replace`).
@@ -220,9 +211,9 @@ Triggered when a trader says **"craft a client email for `<Client>`"**,
    - Render a **single-panel horizontal bar chart** (`figsize=(10.88, 4.2)`,
      `dpi=100`, legend above plot `bbox_to_anchor=(0.5, 1.16)`) using the
      machine-readable **`chart_colors` palette read from `protocols/email-style.yaml`**
-     (`comparison_series` for Actual, `primary_series` for Post-Curation, `text` for
+     (`secondary_series` for Actual, `primary_series` for Post-Curation, `text` / `text_strong` for
      the dashed benchmark line and labels, `background` for figure/axes fill, and
-     `grid` for gridlines) so the chart PNG always matches the deployment's brand theme.
+     `grid` / `axis` for gridlines and spines) so the chart PNG always matches the deployment's brand theme.
    - For **Spend Elasticity / Incremental Budget**, run all 4 tests in `run_python`
      (28d Daily Spend Quartiles & Correlation, Post-Curation Supply Headroom,
      High-Efficiency Channel Mix Headroom, and Safe Daily/Weekly Scaling Band with a
