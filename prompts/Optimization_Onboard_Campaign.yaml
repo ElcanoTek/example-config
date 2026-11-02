@@ -1,60 +1,27 @@
----
-name: "Onboard campaign to Optimization Log"
-description: "Auto-discover DSP reports and SSP deals, run Day-1 Preflight QA, and open the interactive CampaignConfig Builder card (show_ui) to initialize CampaignConfig, OptLog, and OptTargets."
-# Interactive form prompt: opens a form in Chat and invokes the show_ui CampaignConfig Builder (protocols/optimization-log-protocol.md Section 2).
-mode: interactive
-fields:
-  - key: client
-    label: "Client display name"
-    type: "text"
-    required: true
-    placeholder: "Acme Outdoor"
-  - key: campaign_code
-    label: "Campaign code"
-    type: "text"
-    required: true
-    placeholder: "CMP00166"
-  - key: trader
-    label: "Trader owner"
-    type: "text"
-    required: true
-    placeholder: "Alex Rivera"
-  - key: kpi
-    label: "Primary KPI & benchmark (or 'no benchmark yet')"
-    type: "text"
-    required: true
-    placeholder: "ROAS >= 33.0x (or CTR >= 0.08%, CPA <= $45)"
-  - key: flight
-    label: "Flight dates (start to end)"
-    type: "text"
-    placeholder: "2026-07-16 to 2026-12-31 (leave blank to infer from reports/deals)"
-  - key: channel_overrides
-    label: "Per-channel KPI / benchmark overrides"
-    type: "text"
-    placeholder: "Optional, e.g. Display: CTR >= 0.08%, OLV: VCR >= 75%"
-  - key: storage
-    label: "Where to save CampaignConfig, OptLog & OptTargets"
-    type: "select"
-    default: "Fleet Shared Workspace Files (shared/Optimizations/) (Recommended)"
-    options:
-      - "Fleet Shared Workspace Files (shared/Optimizations/) (Recommended)"
-      - "Fast.io /Optimizations/"
-      - "Fast.io /Optimizations/<Client>_<Code>/ subfolder"
-      - "Fast.io Workspace Root (/)"
-      - "Conversation Workspace Only (Download in chat)"
-  - key: report_source
-    label: "DSP report folder or mailbox hint"
-    type: "text"
-    placeholder: "Leave blank to auto-discover from report inbox and workspace storage"
-    advanced: true
-promptTemplate: |-
-  Onboard this campaign to the Optimization Log by following skills/campaign-optimization-log/SKILL.md (Flow 1) and protocols/optimization-log-protocol.md (Section 2).
-  Run Auto-Discovery & Day-1 DSP Report Preflight QA first, then present the interactive show_ui Campaign Config Builder card pre-filled with the discovered reports, deals, and these inputs:
-  Client: {client}
-  Campaign code: {campaign_code}
-  Trader owner: {trader}
-  Primary KPI & benchmark: {kpi}
-  Flight dates: {flight}
-  Channel overrides: {channel_overrides}
-  Preferred save location: {storage}
-  Report source hint: {report_source}
+name: Onboard campaign to Optimization Log
+description: Auto-discover DSP reports and SSP deals, run Day-1 Preflight QA, and open the interactive CampaignConfig Builder card (show_ui) to initialize CampaignConfig, OptLog, and OptTargets.
+goal: >
+  Onboard a campaign into the Campaign Optimization Log by discovering its DSP
+  reports and SSP deals, running Day-1 Preflight QA, and opening the interactive
+  CampaignConfig Builder card (show_ui) so the trader can confirm operating
+  thresholds and save CampaignConfig.yaml, OptLog.csv, and OptTargets.csv.
+inputs:
+  required:
+    - Client display name and campaign code (for example, DemandCo CMP00166)
+    - Trader owner and notification email
+    - Primary KPI and benchmark (or "no benchmark yet")
+  optional:
+    - Flight start and end dates (inferred from reports if omitted)
+    - Per-channel KPI or benchmark overrides (Display, OLV, CTV)
+    - Attached DSP report CSV/XLSX or mailbox filter hints
+instructions:
+  - Follow skills/campaign-optimization-log/SKILL.md (Flow 1) and protocols/optimization-log-protocol.md (Section 2).
+  - Ask for any missing required campaign details or pre-fill them from the conversation and discovered DSP reports in mcp_explorer_*.
+  - Run Day-1 Preflight QA on the discovered report columns and SSP deal mappings when available.
+  - Render the interactive CampaignConfig Builder card via show_ui (skills/campaign-optimization-log/REFERENCE.md Blueprint 1) so the trader can review and confirm all campaign settings and eligibility thresholds before saving.
+  - When the trader submits save_campaign_config, write CampaignConfig.yaml, OptLog.csv, and OptTargets.csv in the campaign's Optimizations/ directory and explain how to schedule the weekday review runner with "Make recurring task…".
+output:
+  sections:
+    - Auto-discovery and Day-1 Preflight QA summary
+    - Interactive CampaignConfig Builder card (show_ui)
+    - Saved file paths and recurring-task setup instructions

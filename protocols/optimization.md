@@ -25,9 +25,12 @@ Run the optimization protocol for emails sent to 'reports@example.com' and send 
 
 Search for report emails delivered to the mailbox address:
 
-- Use `mcp_explorer_search_emails` with `recipient_contains=<mailbox>`, `has_payload=true`, bounded date window (today back to lookback_days)
-- Select up to 5 most recent emails with attachments
-- Download all CSV/XLSX attachments from selected emails. Fetch each with `mcp_explorer_get_download_link` then `download_url` (it saves into your working directory), and confirm each file exists with your shell before loading it.
+- Use `mcp_explorer_search_emails` with `recipient_contains=<mailbox>`, `has_payload=true`, bounded date window (`date_from = today - (lookback_days - 1) days` through `date_to = today`)
+- Select up to 5 most recent emails with report payloads (either CSV/XLSX attachments or body download links)
+- Download all CSV/XLSX report payloads from the selected emails:
+  - For file attachments: call `mcp_explorer_get_download_link(s3_key=..., filename=...)` then `download_url`.
+  - For link-delivered reports (`has_links` / body download links): call `mcp_explorer_extract_download_links(s3_key=...)` first to obtain the extracted URLs, then pass `s3_key` and the report `url` to `mcp_explorer_get_download_link(s3_key=..., url=...)` followed by `download_url`.
+  - Confirm each downloaded file exists in your working directory with your shell before loading it.
 - Record which reports were found and their date coverage in `task_tracker`
 
 If fewer than 2 qualifying emails are found, note the gap and proceed with what's available. If no usable reports are available, report the coverage failure instead of inventing findings or recommendations.
@@ -38,11 +41,11 @@ If fewer than 2 qualifying emails are found, note the gap and proceed with what'
 - Check report date coverage and deduplicate overlapping snapshots before aggregating; do not sum the same campaign/date metrics from multiple report versions
 - Identify available columns and metrics (spend, impressions, clicks, conversions, CTR, CPA, etc.)
 - Determine the campaign/deal structure (deal names, campaign names, advertiser tokens)
-- **Derive channel** for each row from deal name, campaign name, or ad group name tokens:
-  - Display: `DIS`, `_DIS_`, `-DIS-`, `Display`
-  - OLV (Online Video): `OLV`, `_OLV`, `Video`
-  - CTV (Connected TV): `CTV`, `_CTV_`, `Connected TV`
-  - If a row matches none of these, label it "Other". OLV token wins over Display if both match.
+- **Derive channel** for each row from deal name, campaign name, or ad group name tokens using strict precedence (**CTV first, then OLV, then Display**):
+  1. **CTV (Connected TV)** — check first: `CTV`, `_CTV_`, `-CTV-`, `Connected TV`, `OTT`
+  2. **OLV (Online Video)** — check second (only if no CTV token matched): `OLV`, `_OLV`, `-OLV-`, `Online Video`, `Video`
+  3. **Display** — check third (only if neither CTV nor OLV matched): `DIS`, `_DIS_`, `-DIS-`, `Display`, `Banner`, `Standard`, `Native`
+  - If a row matches none of these, label it `"Other"`. CTV always takes precedence over generic `Video`/`OLV` tokens (so `"CTV Video"` classifies as `CTV`), and OLV takes precedence over Display if both match.
 - Print summary statistics — never print full dataframes
 
 ### Analysis scope
@@ -152,7 +155,7 @@ Every recommendation must meet these standards:
 
 Compose an HTML email following `protocols/email-style.yaml`. Send to the user-specified recipient using `mcp_ses_outbound_send_email`, following the configured audit/approval flow before sending. Confirm the tool reports a successful send before claiming delivery.
 
-This protocol produces recommendations; it does not authorize campaign, deal, bid, or budget changes. When a trader later asks in chat to act on the SSP-side recommendations, use the `deal-optimization` skill (or `campaign-optimization-log` Workbench): re-read the live deals, present the recommendations on an interactive card, and apply only what the trader selects behind the SSP's approval card.
+This protocol produces recommendations; it does not authorize campaign, deal, bid, or budget changes. When a trader later asks in chat to act on recommendations, use the `campaign-optimization-log` skill (`skills/campaign-optimization-log/SKILL.md` and `protocols/optimization-log-protocol.md`) to open the interactive Optimization Workbench, edit target lists, and either export/track the changes or (in deployments whose `manifest.yaml` registers Deal Planner and SSP connectors) stage approved SSP updates.
 
 **Sections:**
 1. **Status** — COMPLETE or COMPLETE_WITH_FLAGS

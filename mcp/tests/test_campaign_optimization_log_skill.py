@@ -1,17 +1,24 @@
-"""Pins the campaign-optimization-log skill, protocol, template, form prompts, and show_ui blueprints."""
+"""Pins the campaign-optimization-log skill, protocol, template, prompts, and show_ui blueprints."""
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
+import sys
 from pathlib import Path
 
 import yaml
 
-try:
-    from .genui_lite import validate
-except ImportError:
-    validate = None
+TESTS_DIR = Path(__file__).resolve().parent
+GENUI_LITE_PATH = TESTS_DIR / "genui_lite.py"
+assert GENUI_LITE_PATH.is_file(), f"Required GenUI validator missing: {GENUI_LITE_PATH}"
+_spec = importlib.util.spec_from_file_location("genui_lite", GENUI_LITE_PATH)
+assert _spec is not None and _spec.loader is not None
+_genui_lite = importlib.util.module_from_spec(_spec)
+sys.modules.setdefault("genui_lite", _genui_lite)
+_spec.loader.exec_module(_genui_lite)
+validate = _genui_lite.validate
 
 ROOT = Path(__file__).resolve().parents[2]
 SKILL_DIR = ROOT / "skills" / "campaign-optimization-log"
@@ -46,16 +53,15 @@ def test_skill_description_routes_all_trader_commands() -> None:
 
 def test_reference_show_ui_blueprints_are_valid_genui_cards() -> None:
     ref = _text(SKILL_DIR / "REFERENCE.md")
-    blocks = re.findall(r"```json\n(\{.*?\})\n```", ref, re.S)
+    blocks = re.findall(r"```json\n(\{.*?\})\n```", ref, re.DOTALL)
     assert len(blocks) == 3, f"expected 3 show_ui blueprints in REFERENCE.md, found {len(blocks)}"
     for idx, raw in enumerate(blocks, start=1):
         spec = json.loads(raw)
         assert isinstance(spec.get("title"), str) and spec["title"]
         assert isinstance(spec.get("components"), list) and spec["components"]
         assert isinstance(spec.get("actions"), list) and spec["actions"]
-        if validate is not None:
-            errors = validate(spec)
-            assert errors == [], f"Blueprint {idx} ({spec.get('title')}) failed genui validation: {errors}"
+        errors = validate(spec)
+        assert errors == [], f"Blueprint {idx} ({spec.get('title')}) failed genui validation: {errors}"
 
 
 def test_protocol_and_skill_cover_core_guardrails() -> None:
@@ -85,6 +91,5 @@ def test_protocol_and_skill_cover_core_guardrails() -> None:
     assert "deals:" in template
     assert "review <Client> opts" in quickstart
     assert "review my opts" in quickstart
-    assert "update the optimization protocol" in quickstart
     assert "Clone & edit" in quickstart
     assert "Flow 4" in skill

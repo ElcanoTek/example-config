@@ -15,16 +15,24 @@ Preflight QA)** so every field is pre-filled from the discovered reports and
 SSP deals, and any Day-1 report gaps appear right at the top in the
 `status_list`.
 
+**Normalization rule when saving `CampaignConfig.yaml` from Blueprint 1:**
+- Convert percentage controls to decimal shares (`0.0–1.0`) before writing `CampaignConfig.yaml`:
+  - `cycle.materiality.min_addressable_spend_share = min_spend_share_pct / 100.0` (e.g. `10` → `0.10`)
+  - `cycle.materiality.min_projected_kpi_change = min_projected_kpi_lift_pct / 100.0` (e.g. `5` → `0.05`)
+  - `cycle.max_deal_volume_cut_share = max_volume_cut_pct / 100.0` (e.g. `40` → `0.40`)
+- Write `cycle.min_sample.impressions = int(min_impression_threshold)`.
+- Persist `campaign.deal_plan_client_id` with the bundle's Deal Planner profile key when `deal_plan` is registered in `manifest.yaml` (e.g. `"reklaim"`), or `null` when Deal Planner is not registered in this bundle.
+
 ```json
 {
-  "title": "Campaign Optimization Setup — Acme Outdoor (CMP00199)",
+  "title": "Campaign Optimization Setup — DemandCo (CMP00199)",
   "description": "Day-1 DSP Report Preflight QA & CampaignConfig Builder",
   "components": [
     {
       "type": "status_list",
       "items": [
         {
-          "label": "DSP Report Source (Reports / AcmeOutdoor / daily)",
+          "label": "DSP Report Source (demandco.reports@example.com)",
           "status": "pass",
           "detail": "Latest drop covers 2026-10-15 to 2026-10-21 ($4,210.50 spend, 1.32M imps)"
         },
@@ -58,7 +66,7 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
                   "type": "text_input",
                   "id": "client_name",
                   "label": "Client display name",
-                  "value": "Acme Outdoor",
+                  "value": "DemandCo",
                   "required": true
                 },
                 {
@@ -72,7 +80,7 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
                   "type": "text_input",
                   "id": "opt_id_prefix",
                   "label": "Opt ID prefix (2–4 letters)",
-                  "value": "ACM",
+                  "value": "DCO",
                   "required": true
                 }
               ]
@@ -152,7 +160,7 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
                 {
                   "type": "multi_select",
                   "id": "light_days",
-                  "label": "Light Check Days (Silent mid-week go-live & 7d result check)",
+                  "label": "Light Check Days (Mid-week go-live & 7d result check)",
                   "options": [
                     {"value": "MON", "label": "Monday"},
                     {"value": "TUE", "label": "Tuesday"},
@@ -172,27 +180,23 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
               "id": "storage_target",
               "label": "Where should CampaignConfig, OptLog & OptTargets be saved?",
               "options": [
-                {"value": "shared_files", "label": "Fleet Shared Workspace Files — shared/Optimizations/ (Recommended)"},
-                {"value": "fastio_optimizations", "label": "Fast.io — /Optimizations/"},
-                {"value": "fastio_campaign_folder", "label": "Fast.io — /Optimizations/<Client>_<Code>/ subfolder"},
-                {"value": "fastio_root", "label": "Fast.io — Workspace Root (/)"},
-                {"value": "workspace_local", "label": "Conversation Workspace Only (Download YAML/CSVs in chat)"},
-                {"value": "custom", "label": "Custom Folder or Workspace Path (specify below)"}
+                {"value": "workspace_default", "label": "Persistent Conversation Workspace — Optimizations/<Client> (<Code>)/ (Recommended)"},
+                {"value": "custom", "label": "Custom Workspace Subfolder (specify below)"}
               ],
-              "value": "shared_files",
+              "value": "workspace_default",
               "required": true
             },
             {
               "type": "text_input",
               "id": "storage_custom_path",
-              "label": "Custom folder path or workspace ID",
-              "placeholder": "shared/Optimizations/CustomFolder or workspace_id:/Optimizations",
+              "label": "Custom workspace subfolder path",
+              "placeholder": "Optimizations/CustomFolder",
               "visible_if": "storage_target == \"custom\""
             }
           ]
         },
         {
-          "label": "2. KPI, Benchmarks & Levers",
+          "label": "2. KPI, Thresholds & Levers",
           "children": [
             {
               "type": "columns",
@@ -255,9 +259,43 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
               "type": "divider"
             },
             {
+              "type": "columns",
+              "children": [
+                {
+                  "type": "number",
+                  "id": "min_spend_share_pct",
+                  "label": "Min Addressable Spend Share (%)",
+                  "value": 10,
+                  "min": 1,
+                  "max": 100,
+                  "step": 1,
+                  "required": true
+                },
+                {
+                  "type": "number",
+                  "id": "min_projected_kpi_lift_pct",
+                  "label": "Min Projected KPI Change (%)",
+                  "value": 5,
+                  "min": 1,
+                  "max": 100,
+                  "step": 1,
+                  "required": true
+                },
+                {
+                  "type": "number",
+                  "id": "min_impression_threshold",
+                  "label": "Min Impression Sample Floor",
+                  "value": 1000,
+                  "min": 100,
+                  "step": 100,
+                  "required": true
+                }
+              ]
+            },
+            {
               "type": "multi_select",
               "id": "ssp_direct_levers",
-              "label": "Allowed SSP-Direct Levers (we implement on SSP deals)",
+              "label": "Allowed SSP-Direct Levers (applied on SSP deals)",
               "options": [
                 {"value": "domain_block_list", "label": "Domain / App Block List"},
                 {"value": "domain_allow_list", "label": "Domain / App Allow List"},
@@ -294,7 +332,7 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
             {
               "type": "slider",
               "id": "max_volume_cut_pct",
-              "label": "Scale Warning Threshold (max % of deal volume a single exclusion can cut before flagging)",
+              "label": "Scale Warning Threshold (max % of deal volume a single exclusion can cut before flagging; saved as fraction max_volume_cut_pct / 100)",
               "min": 15,
               "max": 75,
               "step": 5,
@@ -313,7 +351,7 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
               "select": "multi",
               "row_key": "deal_id",
               "columns": [
-                {"key": "deal_name", "label": "Deal Name in DSP Report"},
+                {"key": "deal_name", "label": "DSP :: Deal Name in Report"},
                 {"key": "ssp_seat", "label": "SSP (Seat)"},
                 {"key": "channel", "label": "Channel"},
                 {"key": "deal_id", "label": "SSP Deal ID"},
@@ -322,14 +360,14 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
               "rows": [
                 {
                   "deal_id": "IX176164622210051708",
-                  "deal_name": "PMP_AcmeOutdoor_WinterGear_OLV_IndexExchange_DV360",
+                  "deal_name": "DV360::PMP_DemandCo_WinterGear_OLV_IndexExchange_DV360",
                   "ssp_seat": "Index Exchange (default)",
                   "channel": "OLV",
                   "spend_7d": "$2,410.20"
                 },
                 {
                   "deal_id": "MGNI-MD-9001-90286",
-                  "deal_name": "PMP_AcmeOutdoor_TrailApparel_Display_Magnite_DV360",
+                  "deal_name": "DV360::PMP_DemandCo_TrailApparel_Display_Magnite_DV360",
                   "ssp_seat": "Magnite DV+ (default)",
                   "channel": "Display",
                   "spend_7d": "$1,800.30"
@@ -346,27 +384,17 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
                   "label": "Primary DSP Report Source",
                   "options": [
                     {"value": "mailbox", "label": "Report Email Inbox (Explorer)"},
-                    {"value": "fastio", "label": "Fast.io Partitioned Folder"}
+                    {"value": "uploaded_file", "label": "Uploaded Report CSV/XLSX in Chat"}
                   ],
                   "value": "mailbox",
                   "required": true
                 },
                 {
                   "type": "text_input",
-                  "id": "report_source_path",
-                  "label": "Fast.io / Shared Report Path",
-                  "value": "Reports/AcmeOutdoor/daily"
-                }
-              ]
-            },
-            {
-              "type": "columns",
-              "children": [
-                {
-                  "type": "text_input",
                   "id": "report_mailbox",
                   "label": "Report Mailbox Address",
-                  "value": "acmeoutdoor.reports@example.com"
+                  "value": "demandco.reports@example.com",
+                  "visible_if": "report_source_type == \"mailbox\""
                 },
                 {
                   "type": "text_input",
@@ -404,13 +432,14 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
 ## Blueprint 2 — Chat-First Optimization Workbench Card (`show_ui`)
 
 Present this card when a trader says `"review <Client> opts"`, `"open <Client> workbench"`, or `"review my opts"`.
-- Clean `[Chat API]` rows are pre-selected (`value: [...]`).
+- Clean SSP recommendations are pre-selected (`value: [...]`).
 - Rows with `[SCALE WARNING]` (exceeding `cycle.max_deal_volume_cut_share`, default `0.40` when absent) or `[STALE]` are **unchecked by default**.
-- In multi-campaign mode (`"review my opts"`), prefix every selectable-table `row_key` value, `manual_confirmations` / `promote_backlog` option value, and `<opt_id>_domains` input ID with the campaign code (`<campaign_code>:<opt_id>`, e.g. `CMP00128:NWO-005` and `CMP00128_NWO-005_domains`) while displaying `Campaign` and `Opt ID` (`NWO-005`) in the visible columns so IDs never collide across campaigns.
+- In multi-campaign mode (`"review my opts"`), prefix every selectable-table `row_key` value (`<campaign_code>:<opt_id>`), every per-row target selector ID (`<campaign_code>_<opt_id>_domains`), and every per-row status selector ID (`<campaign_code>_<opt_id>_status_action`) with the campaign code (e.g. `CMP00128:ACM-005`, `CMP00128_ACM_004_1_domains`, and `CMP00128_ACM_006_status_action`) while displaying `Campaign` and `Opt ID` (`ACM-005`) in the visible columns so IDs never collide across campaigns.
+- Whenever re-rendering the Workbench after an intermediate submission (such as `ask_questions`), reset all already-applied `*_status_action` controls back to `"none"` so a later button click never re-applies `"sent"` or overwrites a declared `Live` date.
 
 ```json
 {
-  "title": "Optimization Workbench — Northwind Outdoors (CMP00128)",
+  "title": "Optimization Workbench — Acme (CMP00128)",
   "description": "Optimization Day Review · Primary KPI: CTR (Benchmark >= 0.08% Display / VCR >= 75% OLV)",
   "components": [
     {
@@ -441,7 +470,7 @@ Present this card when a trader says `"review <Client> opts"`, `"open <Client> w
           "type": "stat",
           "label": "Verified 7d Wins",
           "value": "2 Kept",
-          "caption": "NWO-001 & NWO-002 (+18% CTR)",
+          "caption": "ACM-001 & ACM-002 (+18% CTR)",
           "tone": "success"
         }
       ]
@@ -450,18 +479,18 @@ Present this card when a trader says `"review <Client> opts"`, `"open <Client> w
       "type": "tabs",
       "tabs": [
         {
-          "label": "1. Chat-Executable SSP Opts (2)",
+          "label": "1. Proposed SSP Optimizations (2)",
           "children": [
             {
               "type": "callout",
               "tone": "info",
-              "title": "Additive SSP Execution ({{ count(selected_opts) }} selected)",
-              "text": "Clean [Chat API] recommendations are pre-selected. Items marked [SCALE WARNING] (>40% deal volume cut) are unchecked by default so you consciously opt in."
+              "title": "Additive SSP Updates ({{ count(selected_opts) }} selected)",
+              "text": "Clean SSP recommendations are pre-selected. Items marked [SCALE WARNING] (>40% deal volume cut) are unchecked by default so you consciously opt in."
             },
             {
               "type": "table",
               "id": "selected_opts",
-              "label": "Select SSP optimizations to stage via Deal Planner",
+              "label": "Select SSP optimizations to apply or export target lists",
               "select": "multi",
               "row_key": "opt_id",
               "columns": [
@@ -473,26 +502,26 @@ Present this card when a trader says `"review <Client> opts"`, `"open <Client> w
               ],
               "rows": [
                 {
-                  "opt_id": "NWO-004.1",
-                  "deal": "Outdoor Power Display (Index Exchange · default)",
-                  "change": "Domain Block List: Add 3 zero-click domains [Chat API]",
+                  "opt_id": "ACM-004.1",
+                  "deal": "Acme Display (Index Exchange · default)",
+                  "change": "Domain Block List: Add 3 zero-click domains",
                   "spend_impact": "$412.80 (14.2%)",
                   "projected_lift": "0.09% -> 0.11% CTR (+22%)"
                 },
                 {
-                  "opt_id": "NWO-005.1",
-                  "deal": "Autumn Trail OLV (Magnite DV+ · default)",
-                  "change": "Domain Block List: Add 2 low-VCR domains [Chat API] [SCALE WARNING: removes 44% of deal volume]",
+                  "opt_id": "ACM-005.1",
+                  "deal": "Acme OLV (Magnite DV+ · default)",
+                  "change": "Domain Block List: Add 2 low-VCR domains [SCALE WARNING: removes 44% of deal volume]",
                   "spend_impact": "$890.00 (44.1%)",
                   "projected_lift": "78.4% -> 84.1% VCR (+5.7 pts)"
                 }
               ],
-              "value": ["NWO-004.1"]
+              "value": ["ACM-004.1"]
             },
             {
               "type": "multi_select",
-              "id": "NWO_004_1_domains",
-              "label": "NWO-004.1 Target Domains (uncheck any domain to spare it, or add custom)",
+              "id": "ACM_004_1_domains",
+              "label": "ACM-004.1 Target Domains (uncheck any domain to spare it, or add custom)",
               "allow_custom": true,
               "options": [
                 {
@@ -526,21 +555,21 @@ Present this card when a trader says `"review <Client> opts"`, `"open <Client> w
               ],
               "rows": [
                 {
-                  "opt_id": "NWO-006",
+                  "opt_id": "ACM-006",
                   "path": "[Client Request]",
                   "deal": "DV360 Display vs. OLV Insertion Order",
-                  "recommendation": "Shift 15% of weekly budget toward Outdoor Power Display (IX), which is beating the CTR benchmark by +38%"
+                  "recommendation": "Shift 15% of weekly budget toward Acme Display (IX), which is beating the CTR benchmark by +38%"
                 }
               ]
             },
             {
               "type": "choice",
-              "id": "NWO_006_status_action",
-              "label": "NWO-006 Status Update (mutually exclusive per row)",
+              "id": "ACM_006_status_action",
+              "label": "ACM-006 Status Update (in multi-campaign mode prefix ID as <campaign_code>_<opt_id>_status_action)",
               "options": [
                 {"value": "none", "label": "No change (keep Status = Proposed)"},
-                {"value": "live", "label": "NWO-006 is Live in DSP (Status = Live, Live = today)"},
-                {"value": "sent", "label": "NWO-006 Sent to Client (Status = Proposed, log date in Notes)"}
+                {"value": "live", "label": "ACM-006 is Live in DSP (Status = Live, Live = today)"},
+                {"value": "sent", "label": "ACM-006 Sent to Client (Status = Proposed, log date in Notes)"}
               ],
               "value": "none"
             }
@@ -552,7 +581,7 @@ Present this card when a trader says `"review <Client> opts"`, `"open <Client> w
             {
               "type": "table",
               "id": "promote_backlog",
-              "label": "Check any Backlog candidate to promote to Proposed now",
+              "label": "Check any Backlog candidate to promote to Proposed now (materializes OptTargets rows)",
               "select": "multi",
               "row_key": "opt_id",
               "columns": [
@@ -563,8 +592,8 @@ Present this card when a trader says `"review <Client> opts"`, `"open <Client> w
               ],
               "rows": [
                 {
-                  "opt_id": "NWO-007.1",
-                  "deal": "Outdoor Power Display (Index Exchange · default)",
+                  "opt_id": "ACM-007.1",
+                  "deal": "Acme Display (Index Exchange · default)",
                   "candidate": "Daypart: Exclude 01:00–04:59 UTC (0.03% CTR across $84 spend)",
                   "spend": "$84.20"
                 }
@@ -579,7 +608,7 @@ Present this card when a trader says `"review <Client> opts"`, `"open <Client> w
       "type": "text_input",
       "id": "trader_question",
       "label": "Ask a Question or Validate Before Executing (optional)",
-      "placeholder": "e.g. How did msn.com perform over the full 28-day window, or what volume remains if we include NWO-005.1?",
+      "placeholder": "e.g. How did msn.com perform over the full 28-day window, or what volume remains if we include ACM-005.1?",
       "multiline": true
     }
   ],
@@ -587,7 +616,7 @@ Present this card when a trader says `"review <Client> opts"`, `"open <Client> w
     {
       "id": "execute_selected",
       "kind": "submit",
-      "label": "Stage SSP Updates for Selected",
+      "label": "Apply Selected Updates",
       "style": "primary"
     },
     {
@@ -610,7 +639,7 @@ Present this card when a trader asks to craft a client-facing optimization email
 
 ```json
 {
-  "title": "Client Optimization Story Builder — Contoso Home",
+  "title": "Client Optimization Story Builder — DemandCo",
   "description": "Zero-Jargon Curation Showcase · Primary KPI: ROAS (33.0x Benchmark)",
   "components": [
     {
@@ -714,8 +743,8 @@ Present this card when a trader asks to craft a client-facing optimization email
         },
         {
           "type": "toggle",
-          "id": "attach_deal_sheet",
-          "label": "Attach branded Deal Sheet (.xlsx)",
+          "id": "attach_kpi_summary_xlsx",
+          "label": "Attach client-safe KPI & channel summary table (.xlsx — no SSP deal IDs)",
           "value": false
         }
       ]
@@ -725,7 +754,7 @@ Present this card when a trader asks to craft a client-facing optimization email
     {
       "id": "generate_story_email",
       "kind": "submit",
-      "label": "Generate & Preview Client Story Email",
+      "label": "Generate & Stage Client Story Email",
       "style": "primary"
     }
   ]

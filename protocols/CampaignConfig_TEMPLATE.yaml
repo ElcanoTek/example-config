@@ -3,22 +3,22 @@
 # (or pick "Onboard campaign to Optimization Log" from the Prompt Library)
 # to launch the interactive show_ui Campaign Config Builder card.
 #
-# A campaign can run on several DSPs. Each entry under `dsps` has its own
-# reports and KPI. Each full review proposes every opt that passes
-# cycle.min_sample and either cycle.materiality test, capped at
-# cycle.max_new_opt_groups_per_run per run (zero is valid).
+# NOTE: All placeholder values below (including `cycle` eligibility thresholds)
+# are template starting examples only — they must be presented to and explicitly
+# confirmed by the trader in the CampaignConfig Builder card during onboarding
+# before saving `CampaignConfig_<ClientShortName>_<CampaignCode>.yaml`.
 
 schema_version: "3.0"
 
 storage:
-  type: shared                # shared (recommended) | fastio | workspace
-  workspace_id: null          # optional Fast.io workspace ID when type == "fastio"
-  folder_path: "shared/Optimizations" # shared/Optimizations (recommended) or /Optimizations in Fast.io
+  type: workspace             # workspace: saved in Optimizations/<Client> (<CampaignCode>)/ in the persistent conversation working directory
+  folder_path: "Optimizations"
 
 campaign:
   client: <Client display name>
   client_short_name: <ClientShortNameNoSpaces>
   campaign_code: <CMP#####>
+  deal_plan_client_id: <null | bundle deal_plan profile ID (e.g. "reklaim" when deal_plan is registered in manifest.yaml)>
   curator: <default | partner_seat>
   partner: <Optional partner name>
   agency: <Optional agency name>
@@ -28,7 +28,7 @@ campaign:
   active: true                # false = skipped by every review (auto-flipped to false after end-of-flight wrap)
 
 team:
-  # Emails route strictly to the trader listed in digest_to (grouped per trader on Optimization Days).
+  # Each scheduled runner task is scoped to one digest_to recipient (one outbound email per task run).
   trader: <Trader full name>
   digest_to: <trader@example.com>     # internal only, never a client address
   cc: []                              # optional standing internal CC emails
@@ -38,7 +38,7 @@ team:
   light_days: [<THU>]                 # optional mid-week check (go-live, results, pacing guardrails; emails ONLY if something changed)
 
 levers:                       # the ONLY levers the review may recommend
-  ssp_direct:                 # we implement on our SSP deals (staged from the chat Workbench via Deal Planner)
+  ssp_direct:                 # SSP deal levers (applied via SSP console or via Deal Planner when registered in manifest.yaml)
     - domain_block_list
     - domain_allow_list
     - deal_targeting
@@ -57,9 +57,7 @@ dsps:
   - id: <DV>
     name: <DV360>
     source:
-      type: mailbox           # mailbox | fastio | s3
-      path: <Folder/With/Date/Partitions>
-      fallback: mailbox       # optional; used if today's partition is missing
+      type: mailbox           # mailbox (via mcp_explorer_*) | uploaded_file (CSV/XLSX attached in chat)
     mailbox: <reports@example.com>
     sender_contains: <sender>
     deal_field: <report column holding the deal name>
@@ -87,14 +85,16 @@ dsps:
       no_conversion_tracking: false # true = never report ROAS/CPA for this DSP
 
 cycle:
-  materiality:                # an opt qualifies if it meets EITHER test
-    min_addressable_spend_share: 0.10
-    min_projected_kpi_change: 0.05
-  min_sample:                 # below this a segment is not actionable
-    impressions: 1000
-    spend_usd: 25
+  # TEMPLATE PLACEHOLDERS ONLY — must be explicitly confirmed by the trader in the
+  # CampaignConfig Builder card during onboarding before saving CampaignConfig.yaml.
+  materiality:                # an opt qualifies if it meets EITHER trader-confirmed test
+    min_addressable_spend_share: <trader_confirmed_fraction, e.g. 0.10>
+    min_projected_kpi_change: <trader_confirmed_fraction, e.g. 0.05>
+  min_sample:                 # below this trader-confirmed floor a segment is not actionable
+    impressions: <trader_confirmed_int, e.g. 1000>
+    spend_usd: <trader_confirmed_usd, e.g. 25>
   max_new_opt_groups_per_run: 5
-  max_deal_volume_cut_share: 0.40   # >40% impression/spend removal triggers a Scale Warning in Notes + Workbench
+  max_deal_volume_cut_share: <trader_confirmed_fraction, e.g. 0.40> # converted from max_volume_cut_pct / 100.0
   prefer_unused_reports_on_tie: true
   auto_detect_live: true
   low_spend_lookback_days: 28
@@ -108,23 +108,25 @@ state:                        # maintained automatically by the scheduled review
   last_optimization_run: null # ISO date of last completed Optimization Day run
   last_light_review: null     # ISO date of last completed light review
   carried_over: false         # true if deferred by the 5-campaign-per-run cap
-  carried_over_run_type: null # "full" | "light" | "closeout" — preserves exact deferred run type so a light check isn't promoted to a full run
+  carried_over_from: null     # ISO date when the run was first deferred
+  carried_over_run_type: null # "full" | "light" | "closeout" — preserves exact deferred run type
   wrap_completed: false       # true once the post-end_date closeout wrap email has been sent
 
-ssp_seats:                    # maps each SSP on this campaign to its Fleet credential seat
+ssp_seats:                    # maps each SSP on this campaign to its seat metadata
   Index Exchange:
     seat: <default | partner_seat>
     connector_label: <Index Exchange>
     mcp_prefix: <mcp_indexexchange_mcp>
     account_id: <account_id>
 
-deals:                        # maps exact DSP report deal_field names to SSP Deal IDs & URLs
-  "<Exact Deal Name in DSP Report>":
-    ssp: <Index Exchange | Magnite DV+ | OpenX | PubMatic | TripleLift>
+deals:                        # keyed by "<dsp_id>::<Exact Deal Name in DSP Report>" (or "<Exact Deal Name>" on single-DSP campaigns) so multi-DSP campaigns never collide
+  "<dsp_id>::<Exact Deal Name in DSP Report>":
+    ssp: <Index Exchange | Magnite | Nexxen | OpenX | PubMatic>
     seat: <default | partner_seat>
-    dsp: <DV360 | Amazon DSP>
+    dsp: <DV360 | The Trade Desk | Amazon DSP>
     channel: <Display | OLV | CTV | Native>
     deal_id: <Buyer-facing Deal ID, e.g. IX...>
     internal_deal_id: <SSP internal ID or null>
     deal_url: <https://... direct SSP console link>
+    baseline_block_list_ids: []      # optional: preserved account-level baseline blocklist IDs on Magnite DV+
     optimization_block_list_id: null # optional: campaign-dedicated list ID on Magnite DV+ (<Client>_<CMP#####>_Optimization_Block_List)
