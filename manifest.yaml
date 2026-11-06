@@ -837,6 +837,201 @@ agent_policy:
     # suffix matching must not catch another server's create_job/cancel_job.
     - mcp_lens_create_job
     - mcp_lens_cancel_job
+    # Microsoft 365 (microsoft-365 remote MCP) full write surface (defense in
+    # depth alongside the server's --enabled-tools allowlist). Creating a new
+    # personal Outlook draft (create-draft-email, create-reply-draft,
+    # create-reply-all-draft, create-forward-draft) stays ungated because
+    # nothing leaves the user's Drafts folder; every outbound send, shared-
+    # mailbox action, mail rule, Graph batch/discovery executor, and calendar,
+    # OneDrive, Teams, To Do, Planner, SharePoint, Excel, OneNote, contact, or
+    # mailbox mutation stages an approval card first.
+    - graph-batch
+    - execute-tool
+    - logout
+    - select-account
+    - remove-account
+    - send-mail
+    - send-draft-message
+    - reply-mail-message
+    - reply-all-mail-message
+    - forward-mail-message
+    - delete-mail-message
+    - move-mail-message
+    - copy-mail-message
+    - update-mail-message
+    - add-mail-attachment
+    - create-mail-attachment-upload-session
+    - delete-mail-attachment
+    - create-mail-folder
+    - create-mail-child-folder
+    - update-mail-folder
+    - delete-mail-folder
+    - create-mail-rule
+    - update-mail-rule
+    - delete-mail-rule
+    - create-focused-inbox-override
+    - update-focused-inbox-override
+    - delete-focused-inbox-override
+    - update-mailbox-settings
+    - create-outlook-category
+    - send-shared-mailbox-mail
+    - send-shared-mailbox-draft
+    - reply-shared-mailbox-mail
+    - reply-all-shared-mailbox-mail
+    - forward-shared-mailbox-mail
+    - delete-shared-mailbox-mail
+    - delete-shared-mailbox-message
+    - move-shared-mailbox-message
+    - update-shared-mailbox-message
+    - create-shared-mailbox-draft
+    - create-shared-mailbox-reply-draft
+    - create-shared-mailbox-reply-all-draft
+    - create-shared-mailbox-forward-draft
+    - create-shared-mailbox-folder
+    - create-shared-mailbox-child-folder
+    - add-shared-mailbox-attachment
+    - delete-shared-mailbox-attachment
+    - create-calendar-event
+    - update-calendar-event
+    - delete-calendar-event
+    - cancel-calendar-event
+    - forward-calendar-event
+    - accept-calendar-event
+    - tentatively-accept-calendar-event
+    - decline-calendar-event
+    - snooze-calendar-event-reminder
+    - dismiss-calendar-event-reminder
+    - add-calendar-event-attachment
+    - create-calendar-event-attachment-upload-session
+    - create-specific-calendar-event
+    - update-specific-calendar-event
+    - delete-specific-calendar-event
+    - create-shared-calendar-event
+    - update-shared-calendar-event
+    - delete-shared-calendar-event
+    - create-calendar
+    - update-calendar
+    - delete-calendar
+    - create-my-calendar-permission
+    - update-my-calendar-permission
+    - delete-my-calendar-permission
+    - create-online-meeting
+    - update-online-meeting
+    - delete-online-meeting
+    - send-chat-message
+    - reply-to-chat-message
+    - update-chat-message
+    - create-chat
+    - set-chat-message-reaction
+    - unset-chat-message-reaction
+    - pin-chat-message
+    - unpin-chat-message
+    - send-channel-message
+    - reply-to-channel-message
+    - update-channel-message
+    - update-channel-message-reply
+    - set-channel-message-reaction
+    - unset-channel-message-reaction
+    - create-team-channel
+    - update-team-channel
+    - delete-team-channel
+    - create-channel-tab
+    - add-team-member
+    - remove-team-member
+    - create-custom-emoji
+    - send-my-activity-notification
+    - set-my-presence
+    - clear-my-presence
+    - set-my-user-preferred-presence
+    - clear-my-user-preferred-presence
+    - set-my-status-message
+    - delete-onedrive-file
+    - upload-file-content
+    - create-upload-session
+    - move-rename-onedrive-item
+    - create-onedrive-folder
+    - share-drive-item
+    - create-drive-item-share-link
+    - copy-drive-item
+    - delete-drive-item-permission
+    - create-todo-task
+    - update-todo-task
+    - delete-todo-task
+    - create-todo-task-list
+    - update-todo-task-list
+    - delete-todo-task-list
+    - create-todo-linked-resource
+    - delete-todo-linked-resource
+    - create-todo-checklist-item
+    - update-todo-checklist-item
+    - delete-todo-checklist-item
+    - create-outlook-contact
+    - update-outlook-contact
+    - delete-outlook-contact
+    - create-contact-folder
+    - create-contact-child-folder
+    - update-contact-folder
+    - delete-contact-folder
+    - create-contact-in-folder
+    - upload-my-profile-photo
+    - create-excel-chart
+    - format-excel-range
+    - format-excel-range-font
+    - format-excel-range-fill
+    - format-excel-range-border
+    - sort-excel-range
+    - update-excel-range
+    - insert-excel-range
+    - delete-excel-range
+    - merge-excel-range
+    - unmerge-excel-range
+    - clear-excel-range
+    - update-excel-table-row
+    - delete-excel-table-row
+    - create-excel-table
+    - add-excel-table-rows
+    - create-onenote-notebook
+    - create-onenote-section
+    - update-onenote-page-content
+    - create-onenote-page
+    - create-onenote-section-page
+    - delete-onenote-page
+    - create-sharepoint-site-onenote-notebook
+    - create-sharepoint-site-onenote-section
+    - create-sharepoint-site-onenote-section-group-section
+    - create-sharepoint-site-onenote-section-page
+    - update-sharepoint-site-onenote-page-content
+    - delete-sharepoint-site-onenote-page
+    - create-planner-plan
+    - update-planner-plan
+    - create-planner-task
+    - update-planner-task
+    - update-planner-task-details
+    - create-planner-bucket
+    - update-planner-bucket
+    - delete-planner-bucket
+    - create-planner-task-message
+    - delete-planner-task-message
+    - create-sharepoint-list
+    - create-sharepoint-list-item
+    - update-sharepoint-list-item
+    - delete-sharepoint-list-item
+    - create-sharepoint-list-column
+    - update-sharepoint-list-column
+    - delete-sharepoint-list-column
+    - reply-to-group-thread
+    - update-place
+    - create-group
+    - update-group
+    - delete-group
+    - add-group-member
+    - remove-group-member
+    - add-group-owner
+    - remove-group-owner
+    - create-subscription
+    - update-subscription
+    - delete-subscription
+    - reauthorize-subscription
   # Approval cards offer "apply to all" (session pre-approval) unless a tool
   # is listed here (fleet #1716). Lens job control needs a decision per call.
   critical_tool_no_session_approval:
@@ -844,6 +1039,10 @@ agent_policy:
     # cancel stops a specific run, so neither may ride an "apply to all".
     - mcp_lens_create_job
     - mcp_lens_cancel_job
+    # Generic Microsoft 365 Graph batch / discovery executors: each call can run
+    # a completely different Graph mutation, so neither may ride an "apply to all".
+    - graph-batch
+    - execute-tool
   # After an approved card settles, start one turn so the agent carries on
   # with the call's result (fleet #1718, docs/RESUME-AFTER-APPROVAL.md).
   critical_tool_resume:
@@ -868,6 +1067,23 @@ agent_policy:
     # flow, instead of the card settling silently until the user types again.
     - mcp_lens_create_job
     - mcp_lens_cancel_job
+    # Microsoft 365 outbound email and Teams sends: approving a send card
+    # starts one new turn so the agent confirms the message was delivered,
+    # without burning the per-hour resume budget on fine-grained range/task edits.
+    - send-mail
+    - send-draft-message
+    - reply-mail-message
+    - reply-all-mail-message
+    - forward-mail-message
+    - send-shared-mailbox-mail
+    - send-shared-mailbox-draft
+    - reply-shared-mailbox-mail
+    - reply-all-shared-mailbox-mail
+    - forward-shared-mailbox-mail
+    - send-chat-message
+    - reply-to-chat-message
+    - send-channel-message
+    - reply-to-channel-message
   critical_tool_substitutes: {}
   # pages: the inline and staged data commits are one audited action, so a
   # scheduled refresh may switch transport by payload size without re-auditing.
