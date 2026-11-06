@@ -838,19 +838,21 @@ agent_policy:
     - mcp_lens_create_job
     - mcp_lens_cancel_job
     # Microsoft 365 (microsoft-365 remote MCP) full write surface (defense in
-    # depth alongside the server's --enabled-tools allowlist). Creating a new
-    # personal Outlook draft (create-draft-email, create-reply-draft,
-    # create-reply-all-draft, create-forward-draft) stays ungated because
-    # nothing leaves the user's Drafts folder; every outbound send, shared-
-    # mailbox action, mail rule, Graph batch/discovery executor, and calendar,
-    # OneDrive, Teams, To Do, Planner, SharePoint, Excel, OneNote, contact, or
-    # mailbox mutation stages an approval card first.
+    # depth alongside the server's --enabled-tools allowlist). Every draft
+    # creation, upload-ticket/upload-session minting tool, outbound send,
+    # shared-mailbox action, mail rule, Graph batch/discovery executor, and
+    # calendar, OneDrive, Teams, To Do, Planner, SharePoint, Excel, OneNote,
+    # contact, or mailbox mutation stages an approval card first.
     - graph-batch
     - execute-tool
     - logout
     - select-account
     - remove-account
     - send-mail
+    - create-draft-email
+    - create-reply-draft
+    - create-reply-all-draft
+    - create-forward-draft
     - send-draft-message
     - reply-mail-message
     - reply-all-mail-message
@@ -861,6 +863,7 @@ agent_policy:
     - update-mail-message
     - add-mail-attachment
     - create-mail-attachment-upload-session
+    - get-upload-url
     - delete-mail-attachment
     - create-mail-folder
     - create-mail-child-folder
@@ -890,6 +893,7 @@ agent_policy:
     - create-shared-mailbox-folder
     - create-shared-mailbox-child-folder
     - add-shared-mailbox-attachment
+    - create-shared-mailbox-attachment-upload-session
     - delete-shared-mailbox-attachment
     - create-calendar-event
     - update-calendar-event
@@ -1084,6 +1088,7 @@ agent_policy:
     - reply-to-chat-message
     - send-channel-message
     - reply-to-channel-message
+    - send-my-activity-notification
   critical_tool_substitutes: {}
   # pages: the inline and staged data commits are one audited action, so a
   # scheduled refresh may switch transport by payload size without re-auditing.
