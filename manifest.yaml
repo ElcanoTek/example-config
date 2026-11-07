@@ -150,11 +150,14 @@ models:
 
 # ── Execution sandbox ───────────────────────────────────────────────────────
 # Every agent tool call (bash, run_python, file I/O, MCP) runs inside this
-# rootless container over a per-conversation workspace. The image is a per-bundle
-# artifact: edit sandbox/Containerfile to add the tools your agents need. Default
-# deploy builds it on the box; set FLEET_SANDBOX_IMAGE to pull a prebuilt image.
+# rootless container over a per-conversation workspace. With no bundle
+# sandbox/Containerfile (and sandbox.image unset), `fleet bootstrap` and
+# `fleet update` pull and cosign-verify fleet's signed release image
+# (`ghcr.io/elcanotek/fleet-sandbox`) by digest and tag it as `sandbox.tag`.
+# To layer extra packages on top of the verified release image, add a
+# `sandbox/Containerfile` starting with `ARG FLEET_SANDBOX_BASE` /
+# `FROM ${FLEET_SANDBOX_BASE}`.
 sandbox:
-  containerfile: sandbox/Containerfile
   tag: localhost/fleet-sandbox-example:latest
   image: "${FLEET_SANDBOX_IMAGE:-}"
   # OCI runtime for `podman run --runtime=<value>`. Empty = podman's default
