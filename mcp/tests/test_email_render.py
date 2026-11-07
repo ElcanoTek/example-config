@@ -483,8 +483,7 @@ def test_tenant_label_is_the_brand_name() -> None:
 # The template ships only the unbranded theme, so BRANDED_THEMES can be empty
 # and the two theme tests above would run zero cases. Exercise the renderer
 # against a generated brand theme as well, whatever the bundle ships.
-@pytest.fixture
-def synthetic_theme(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+def _make_palette():
     import importlib.util
     import sys
 
@@ -494,22 +493,51 @@ def synthetic_theme(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     mp = importlib.util.module_from_spec(spec)
     sys.modules["make_palette_r"] = mp
     spec.loader.exec_module(mp)
+    return mp
+
+
+def _install_theme(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, theme_id: str, theme_text: str) -> str:
+    themes = tmp_path / "themes"
+    themes.mkdir()
+    (themes / "default.yaml").write_text((email_render.themes_dir() / "default.yaml").read_text(encoding="utf-8"))
+    (themes / f"{theme_id}.yaml").write_text(theme_text)
+    monkeypatch.setattr(email_render, "themes_dir", lambda: themes)
+    return theme_id
+
+
+@pytest.fixture
+def synthetic_theme(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    mp = _make_palette()
     brand = mp.Brand(
         slug="synthetic", primary="#0B2A4A", secondary="#3A6E8F", accent="#7FA34A", ink="#222222", paper="#F6F8F9"
     )
     _, theme_text, _ = mp.build(brand)
-    themes = tmp_path / "themes"
-    themes.mkdir()
-    (themes / "default.yaml").write_text((email_render.themes_dir() / "default.yaml").read_text(encoding="utf-8"))
-    (themes / "synthetic.yaml").write_text(theme_text)
-    monkeypatch.setattr(email_render, "themes_dir", lambda: themes)
-    return "synthetic"
+    return _install_theme(tmp_path, monkeypatch, "synthetic", theme_text)
 
 
-def test_synthetic_theme_replaces_every_overridden_hex(synthetic_theme: str) -> None:
-    overrides = email_render._theme_overrides(synthetic_theme)
+@pytest.fixture
+def default_paper_theme(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """The theme a fork gets from the CLI when it keeps the default paper and ink."""
+    mp = _make_palette()
+    built: list[tuple[str, str, dict[str, str]]] = []
+    real_build = mp.build
+
+    def capture(brand: Any) -> tuple[str, str, dict[str, str]]:
+        built.append(real_build(brand))
+        return built[-1]
+
+    monkeypatch.setattr(mp, "build", capture)
+    args = ["--slug", "sample", "--primary", "#2E7D32", "--secondary", "#5E35B1", "--accent", "#00897B"]
+    assert mp.main([*args, "--dark-background", "#0A0A0A"]) == 0
+    return _install_theme(tmp_path, monkeypatch, "sample", built[-1][1])
+
+
+@pytest.mark.parametrize("theme_fixture", ["synthetic_theme", "default_paper_theme"])
+def test_synthetic_theme_replaces_every_overridden_hex(theme_fixture: str, request: pytest.FixtureRequest) -> None:
+    theme = request.getfixturevalue(theme_fixture)
+    overrides = email_render._theme_overrides(theme)
     assert overrides
-    markup = _render(theme=synthetic_theme, blocks=EVERY_BLOCK, badge_label="On track", status="Pacing")
+    markup = _render(theme=theme, blocks=EVERY_BLOCK, badge_label="On track", status="Pacing")
     present = {h.upper() for h in re.findall(r"#[0-9A-Fa-f]{6}", markup)}
     assert present.isdisjoint(overrides)
 

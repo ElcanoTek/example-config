@@ -363,13 +363,20 @@ def email_theme(b: Brand, light: Mode, dark: Mode) -> tuple[dict[str, str], dict
         "#D7DEEE": border,
         "#E6EBF5": border,
     }
-    # A brand value can coincide with the canonical hex it replaces; nudge it by
-    # one step in the blue channel (invisible) so the override still applies and
-    # every brand-bearing hex stays covered.
+    # A brand value can coincide with a canonical hex: the one it replaces (the
+    # override would be a no-op) or another key (the default paper #FAFAFA is
+    # also the canonical container hex, so "#F4F6FB" would map to "#FAFAFA").
+    # Either way the themed email still carries a canonical hex, which a second
+    # pass or a hand build applying the overrides in another order recolors
+    # again. Nudge it along the blue channel, one invisible step at a time,
+    # until it is clear of every key.
+    canonical = {k.upper() for k in overrides}
     for k, v in overrides.items():
-        if k.upper() == v.upper():
-            r, g, bl = rgb(v)
-            overrides[k] = to_hex(r, g, bl - 1 if bl else 1)
+        r, g, bl = rgb(v)
+        step = -1 if bl else 1
+        while to_hex(r, g, bl) in canonical:
+            bl += step
+        overrides[k] = to_hex(r, g, bl)
     notes = [
         f"white on the header band ......... {ratio(WHITE, header)}",
         f"accent rule on that band .......... {ratio(rule, header)}",

@@ -202,6 +202,19 @@ def test_identity_values_are_nudged_not_dropped() -> None:
     assert all(k != v for k, v in overrides.items())
 
 
+@pytest.mark.parametrize("paper", ["#FAFAFA", "#EEF3FF", "#F4F6FB"])
+def test_no_override_value_is_another_canonical_key(paper: str) -> None:
+    # The CLI's default paper (#FAFAFA) is also the canonical container hex, so
+    # "#F4F6FB" used to map to "#FAFAFA": the themed email then still carried a
+    # canonical hex, and a find-replace in another order turned the page white.
+    brand = mp.Brand(
+        slug="sample", primary="#2E7D32", secondary="#5E35B1", accent="#00897B", ink="#1A1A1A", paper=paper
+    )
+    _, theme_text, _ = mp.build(brand)
+    overrides = {k.upper(): v.upper() for k, v in yaml.safe_load(theme_text)["color_overrides"].items()}
+    assert set(overrides.values()).isdisjoint(overrides)
+
+
 def test_a_failed_write_changes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     manifest, style, themes = tmp_path / "manifest.yaml", tmp_path / "email-style.yaml", tmp_path / "themes"
     themes.mkdir()
