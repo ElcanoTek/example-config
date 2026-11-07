@@ -67,9 +67,11 @@ where you write them down **once**. A bundle gives you:
   empty-state cards, and the agent tool policy (`manifest.yaml`).
 - **Versioned, reviewable agent behavior** — personas and protocols are plain
   files in git; a prompt change is a pull request.
-- **A controlled execution environment** — the sandbox image is a bundle
-  artifact (`sandbox/Containerfile`); its base tracks `fedora-minimal:latest` for
-  current patches, and you can pin a digest if you want reproducible builds.
+- **A controlled execution environment** — by default `fleet bootstrap` and
+  `fleet update` pull and cosign-verify fleet's signed `ghcr.io/elcanotek/fleet-sandbox`
+  release image by digest and tag it as `sandbox.tag` (add `sandbox/Containerfile`
+  starting with `ARG FLEET_SANDBOX_BASE` / `FROM ${FLEET_SANDBOX_BASE}` only when
+  a bundle needs extra packages on top of the release image).
 - **Portability** — point a dev box and a production box at the same checkout and
   they behave identically.
 
@@ -138,8 +140,6 @@ example-config/
     email_render.py      #   render_email's HTML builder; email_lint.py its checks
     utils/               #   shared run ledger, URL guard and filesystem helpers
     data/handbook.json   #   the demo company handbook (swap for your content)
-  sandbox/
-    Containerfile        # the execution-sandbox image for agent tool calls
   evals/                 # golden regression sets replayed by `fleet eval run`
     example.yaml         #   template set: the case format + every scorer kind
   assets/                # brand assets referenced from manifest.yaml
@@ -417,14 +417,16 @@ The example plugin ships:
 
 ### Sandbox
 
-`sandbox/Containerfile` defines the rootless container that `bash` and
-`run_python` execute inside — a Fedora + Python data-analysis stack
-(pandas/numpy/scipy/matplotlib/scikit-learn, plus document and image tooling). It
-runs `--read-only`, `--cap-drop=ALL`, `--network=none`, as a non-root user, and
-its base tracks **`fedora-minimal:latest`** so rebuilds pick up current patches
-(pin a digest if you want reproducible builds). The "Analyze a dataset" card
-relies on this stack. The image is a per-bundle artifact: add the packages *your*
-agents need.
+`bash` and `run_python` execute inside a rootless container — a Fedora + Python
+data-analysis stack (pandas/numpy/scipy/matplotlib/scikit-learn, plus document
+and image tooling) running `--read-only`, `--cap-drop=ALL`, `--network=none`, as
+a non-root user. With no `sandbox/Containerfile` in the bundle, `fleet bootstrap`
+and `fleet update` pull and cosign-verify fleet's signed
+`ghcr.io/elcanotek/fleet-sandbox` release image by digest and tag it as
+`sandbox.tag`. If your agents need extra packages, add a `sandbox/Containerfile`
+starting with `ARG FLEET_SANDBOX_BASE=ghcr.io/elcanotek/fleet-sandbox:latest` and
+`FROM ${FLEET_SANDBOX_BASE}` so on-box builds layer directly on the verified
+release image.
 
 ### Evals — regression-gate your bundle
 
@@ -478,7 +480,7 @@ repo's `main`) needs only these edits; everything else ships ready:
    `docs/onboarding/solution-engineer-handoff.md` with the pages read. Follow
    production-support's fleet-onboarding starter task.
 5. **Names and docs.** `fleet-sandbox-example` → `fleet-sandbox-<client>` in
-   `manifest.yaml` and the sandbox workflows; `REPO` and the default directory
+   `manifest.yaml`; `REPO` and the default directory
    in `install.sh`; the title and intro of this README and `AGENTS.md`; fill in
    `docs/DEPLOYMENT.md` as the deployment goes, and `docs/EMAIL-DEPLOYMENT.md`
    once the email tenant exists.
@@ -515,9 +517,10 @@ client bundles in their own PRs.
   do not use Git. For a capability that ships code or reference files, copy the
   `skills/example-skill/` folder (the annotated template) and replace its body
   and `scripts/`.
-- **Tune the sandbox.** Add packages your agents need to `sandbox/Containerfile`.
-  The base tracks `fedora-minimal:latest`; pin a digest there if you want
-  reproducible builds.
+- **Tune the sandbox.** If your agents need packages beyond fleet's signed
+  `ghcr.io/elcanotek/fleet-sandbox` release image, add a `sandbox/Containerfile`
+  starting with `ARG FLEET_SANDBOX_BASE=ghcr.io/elcanotek/fleet-sandbox:latest`
+  and `FROM ${FLEET_SANDBOX_BASE}`.
 - **Capture goldens and gate regressions.** Once a scheduled task or a
   conversation does something well, `fleet eval capture` it into an
   `evals/<set>.yaml` and run `fleet eval run <set>` in CI — so the next model

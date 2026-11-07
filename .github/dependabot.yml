@@ -13,11 +13,6 @@
 # not use.
 #
 # Not covered:
-#   * The sandbox image's base (sandbox/Containerfile). It deliberately tracks
-#     fedora-minimal:latest with no digest, so every rebuild picks up upstream
-#     patches, and the weekly sandbox-canary.yml catches breakage. Dependabot
-#     has no version to bump on an undigested `latest`, so a docker entry
-#     would track nothing. Add one if the base is ever pinned by digest.
 #   * The reusable workflows called from ElcanoTek/fleet at @main, which
 #     follow fleet's own main on purpose.
 #
