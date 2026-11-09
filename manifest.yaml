@@ -1106,13 +1106,6 @@ agent_policy:
   critical_tool_undo_hints:
     update_page_data: "Undo a published refresh with mcp_pages_rollback_page(slug, version_id=<the expected_version this call passed, i.e. the version live before it>, expected_version=<the version this call published>). A canary (publish=false) changed nothing live: do not roll the live page back for it."
     update_page_data_upload: "Undo a published refresh with mcp_pages_rollback_page(slug, version_id=<the expected_version this call passed, i.e. the version live before it>, expected_version=<the version this call published>). A canary (publish=false) changed nothing live: do not roll the live page back for it."
-  # Optional per-tool approval windows in SECONDS, keyed by the same bare
-  # tool-name suffix as critical_tools. Highest-priority layer of the
-  # approval-timeout chain (per-tool > per-conversation >
-  # FLEET_APPROVAL_TIMEOUT_SECONDS > 300s default); an approval that times out
-  # is DENIED. Omit the map to use the global default for every tool.
-  critical_tool_timeouts:
-    submit_record: 600   # give the reviewer time to read the record it will post
 
 # ── Governed lifecycle hooks (fleet #788) ───────────────────────────────────
 # Bundle-declared commands that run INSIDE the per-turn sandbox at fixed
