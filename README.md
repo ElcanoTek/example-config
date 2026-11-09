@@ -280,8 +280,7 @@ fleet's load, so `mcp/tests/test_connector_copy.py` checks it.
 
 Its write tool, `api_submit_record`, is listed under the manifest's
 `critical_tools` — so fleet makes the agent stop and get an **audit confirmation**
-before that consequential action runs (with a per-tool approval window from
-`critical_tool_timeouts`). The read tools (`api_get_record`,
+before that consequential action runs. The read tools (`api_get_record`,
 `api_list_records`, and the `kb_*` tools) are listed under `parallel_safe_tools`,
 so fleet may dispatch them concurrently within a single turn.
 
