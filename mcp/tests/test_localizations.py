@@ -24,6 +24,11 @@ def owned_messages():
     d = yaml.safe_load((base / "manifest.yaml").read_text())
     for k in ["login_title", "login_tagline", "share_title", "share_description"]:
         add(d.get("branding", {}).get(k), "branding." + k)
+    branding = d.get("branding", {})
+    house_tools = (branding.get("house_tools_name") or "").strip()
+    if not house_tools:
+        house_tools = (branding.get("app_name") or "Fleet").strip() + " Tools"
+    add(house_tools, "branding.house_tools_name (including app-name fallback)")
     for k in ["label", "mobile_label", "title", "message", "subject"]:
         add(d.get("branding", {}).get("support", {}).get(k), "branding.support." + k)
     for section in ["mcp_servers", "remote_mcp_catalog"]:
@@ -86,12 +91,11 @@ def owned_messages():
             description = description[:239] + "…"
         add(name, str(p.relative_to(base)) + ".name")
         add(description, str(p.relative_to(base)) + ".description")
+    # Fleet's ListPersonas API exposes filenames only; the picker capitalizes
+    # the basename. YAML name/role/tagline are raw model context, not UI fields.
+    # User-authored persona names/descriptions are separate and never translated.
     for p in (base / "personas").glob("*.yaml"):
         add(p.stem[:1].upper() + p.stem[1:], "persona.basename")
-        for k in ["display_name", "description"]:
-            found = re.search(r"^" + k + r":[^\n]*(?:\n[ \t]+[^\n]*)*", p.read_text(), re.M)
-            if found:
-                add(yaml.safe_load(found.group()).get(k), "personas/" + p.name + "." + k)
     for p in list((base / "skills").glob("*/SKILL.md")) + list((base / "plugins").glob("*/skills/*/SKILL.md")):
         parts = p.read_text().split("---", 2)
         if len(parts) == 3:
@@ -139,7 +143,39 @@ def placeholders(text):
 
 
 def protected_tokens(text):
-    return re.findall(r"`[^`]+`|https?://[^\s)]+|\b[\w.+-]+@[\w.-]+\.[A-Za-z]+\b", text)
+    tokens = re.findall(r"`[^`]+`|https?://[^\s)]+|\b[\w.+-]+@[\w.-]+\.[A-Za-z]+\b", text)
+    # Prepared prompts also refer to operational targets without Markdown.
+    tokens += re.findall(r"\bmcp_[A-Za-z0-9_]+\b|\b(?:protocols|skills|prompts|personas)/[A-Za-z0-9_./-]+", text)
+    # Only actual protocol basenames are reserved: ordinary hyphenated prose
+    # remains translatable. Keep the token's boundaries as well as its text.
+    for path in (ROOT / "protocols").glob("*"):
+        if (
+            path.is_file()
+            and path.suffix in (".md", ".yaml", ".yml", ".txt")
+            and path.stem.lower() != "readme"
+            and re.search(r"(?<![\w-])" + re.escape(path.stem) + r"(?![\w-])", text)
+            and (
+                "-" in path.stem
+                or "_" in path.stem
+                or re.search(r"[\"'`]" + re.escape(path.stem) + r"[\"'`]", text)
+            )
+        ):
+            tokens.append(path.stem)
+    return tokens
+
+
+def test_prepared_prompts_preserve_bare_operational_targets():
+    source = "Read protocols/research-report.md with mcp_pages_get_guide."
+    for token in ("protocols/research-report.md", "mcp_pages_get_guide"):
+        assert token in protected_tokens(source)
+        corrupted = source.replace(token, "translated-target")
+        assert any(value not in corrupted for value in protected_tokens(source))
+    for path in (ROOT / "protocols").glob("*.md"):
+        if path.stem.lower() == "readme":
+            continue
+        source = f'Run the "{path.stem}" protocol.'
+        assert path.stem in protected_tokens(source)
+        assert path.stem not in protected_tokens(f"Run the {path.stem}-other protocol.")
 
 
 def test_kubernetes_control_plane_ships_the_catalogs():

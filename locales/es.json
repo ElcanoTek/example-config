@@ -14,6 +14,7 @@
   "Draft it": "Redactarlo",
   "Draft something": "Redactar algo",
   "Draft the following for me, and ask me anything you need first.": "Redacta lo siguiente para mí y pregúntame antes todo lo que necesites.",
+  "Elcano Tools": "Herramientas de Elcano",
   "Example REST API": "API REST de ejemplo",
   "Explains how this bundle packages a skill and an MCP server as a portable Agent Plugin (agent-plugins.org), and how to use the plugin_notes server that ships with it. Use when someone asks how Agent Plugins work in fleet, wants to author or port a plugin, or wants to save or list scratch notes across turns.": "Explica cómo este paquete combina una habilidad y un servidor MCP en un plugin de agente portátil (agent-plugins.org) y cómo usar el servidor plugin_notes incluido. Úsalo para explicar cómo funcionan los plugins de agente en Fleet, crear o adaptar un plugin, o guardar y consultar notas entre turnos.",
   "Explorer email reports": "Informes por correo de Explorer",
