@@ -93,3 +93,16 @@ def test_nothing_still_calls_the_email_server():
         if pattern.search(path.read_text(encoding="utf-8", errors="replace")):
             offenders.append(str(path.relative_to(ROOT)))
     assert not offenders, offenders
+
+
+@pytest.mark.parametrize("prompt_name", ["default.md", "chat.md"])
+def test_system_prompts_name_every_explorer_tool(prompt_name):
+    """Under deferred tool_call, system_prompts must name all 7 Explorer tools
+    and key parameter guardrails so the agent never guesses read_email /
+    get_email_detail or passes unsupported campaign_code."""
+    text = (ROOT / "system_prompts" / prompt_name).read_text(encoding="utf-8")
+    for tool in CATALOG:
+        assert f"mcp_explorer_{tool}" in text, f"{prompt_name} omits mcp_explorer_{tool}"
+    assert "never guess `read_email` or `get_email_detail`" in text
+    assert "never `campaign_code`" in text
+    assert "`has_payload: true`" in text
