@@ -312,7 +312,7 @@ SSP deals, and any Day-1 report gaps appear right at the top in the
                   "label": "Min Spend Sample Floor ($ USD)",
                   "value": 25,
                   "min": 1,
-                  "step": 5,
+                  "step": 1,
                   "required": true
                 }
               ]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -51,6 +52,62 @@ def test_skill_description_routes_all_trader_commands() -> None:
         assert phrase in desc, phrase
 
 
+def _step_grid_errors(node: object, path: str = "root") -> list[str]:
+    """Mirror fleet/internal/genui/spec.go numberValue step-grid validation."""
+    errors: list[str] = []
+    if isinstance(node, dict):
+        ntype = node.get("type")
+        val = node.get("value")
+        if ntype in {"number", "slider"} and isinstance(val, (int, float)) and not isinstance(val, bool):
+            n = float(val)
+            raw_min = node.get("min")
+            has_min = isinstance(raw_min, (int, float)) and not isinstance(raw_min, bool)
+            min_v = float(raw_min) if has_min else 0.0
+            raw_step = node.get("step")
+            has_step = isinstance(raw_step, (int, float)) and not isinstance(raw_step, bool)
+            if not has_step and ntype == "slider":
+                step, has_step = 1.0, True
+            else:
+                step = float(raw_step) if has_step else 0.0
+            if has_step and step > 0:
+                base = min_v if has_min else 0.0
+                q = (n - base) / step
+                if math.fabs(q - round(q)) > 1e-9:
+                    errors.append(f"{path}: {val} is not on the step grid (min + k * step)")
+        for key in ("components", "children", "tabs", "items"):
+            children = node.get(key)
+            if isinstance(children, list):
+                for idx, child in enumerate(children):
+                    errors.extend(_step_grid_errors(child, f"{path}.{key}[{idx}]"))
+    elif isinstance(node, list):
+        for idx, item in enumerate(node):
+            errors.extend(_step_grid_errors(item, f"{path}[{idx}]"))
+    return errors
+
+
+def test_step_grid_helper_rejects_off_grid_default() -> None:
+    off_grid = {
+        "title": "Sample",
+        "components": [
+            {
+                "type": "number",
+                "id": "min_spend_usd",
+                "label": "Min Spend Sample Floor ($ USD)",
+                "value": 25,
+                "min": 1,
+                "step": 5,
+            }
+        ],
+        "actions": [{"id": "ok", "label": "OK"}],
+    }
+    assert _step_grid_errors(off_grid) != []
+    on_grid = {
+        **off_grid,
+        "components": [{**off_grid["components"][0], "step": 1}],
+    }
+    assert _step_grid_errors(on_grid) == []
+
+
 def test_reference_show_ui_blueprints_are_valid_genui_cards() -> None:
     ref = _text(SKILL_DIR / "REFERENCE.md")
     blocks = re.findall(r"```json\n(\{.*?\})\n```", ref, re.DOTALL)
@@ -60,7 +117,7 @@ def test_reference_show_ui_blueprints_are_valid_genui_cards() -> None:
         assert isinstance(spec.get("title"), str) and spec["title"]
         assert isinstance(spec.get("components"), list) and spec["components"]
         assert isinstance(spec.get("actions"), list) and spec["actions"]
-        errors = validate(spec)
+        errors = validate(spec) + _step_grid_errors(spec)
         assert errors == [], f"Blueprint {idx} ({spec.get('title')}) failed genui validation: {errors}"
 
 
