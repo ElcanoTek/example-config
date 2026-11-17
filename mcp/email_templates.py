@@ -136,6 +136,9 @@ def _block_prose(block: Mapping[str, Any]) -> tuple[list[str], list[str]]:
     return paragraphs, _strings(block.get("bullets"))
 
 
+# Block fields the renderer prints as prose. It would print a mapping too, as
+# Python sees it, so a sample is held to text here.
+_BLOCK_PROSE_KEYS = ("heading", "title", "paragraphs", "text", "body", "bullets", "caption", "alt")
 # The sample's render_email arguments that are text (everything but its blocks).
 _SAMPLE_TEXT_KEYS = (
     "subject",
@@ -317,6 +320,15 @@ def validate_spec(spec: Any) -> list[str]:
         issues.append("'sample' is required: the render_email arguments the preview is rendered from")
     else:
         _require_text(sample, _SAMPLE_TEXT_KEYS, "sample: ", issues)
+        for i, block in enumerate(sample["blocks"]):
+            if not isinstance(block, Mapping):
+                issues.append(f"sample.blocks[{i}] must be a mapping with 'section' and 'type'")
+                continue
+            for key in _BLOCK_PROSE_KEYS:
+                value = block.get(key)
+                entries = value if isinstance(value, list) else [value]
+                if value is not None and not all(isinstance(entry, str) for entry in entries):
+                    issues.append(f"sample.blocks[{i}]: '{key}' must be text, or a list of text")
     return issues
 
 

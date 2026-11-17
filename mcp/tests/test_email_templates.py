@@ -418,6 +418,11 @@ def test_text_fields_must_be_text(change: dict[str, Any], message: str) -> None:
     issues = " ".join(email_templates.validate_spec(raw))
     assert "sample: 'subject' must be text" in issues and "sample: 'client_name' must be text" in issues
     raw = fixture_spec()
+    raw["sample"]["blocks"][0]["bullets"] = [{"text": "Hello"}]
+    raw["sample"]["blocks"][-1]["text"] = {"text": "Thanks"}
+    issues = " ".join(email_templates.validate_spec(raw))
+    assert "sample.blocks[0]: 'bullets' must be text" in issues and "'text' must be text" in issues
+    raw = fixture_spec()
     raw["sections"][0]["title"] = {"text": "Summary"}
     assert "sections[0]: 'title' must be text" in " ".join(email_templates.validate_spec(raw))
 
