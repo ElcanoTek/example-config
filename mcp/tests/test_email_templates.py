@@ -365,6 +365,20 @@ def test_a_long_field_is_searched_in_pieces_with_the_same_result() -> None:
         ),
         ({"fields": [{"key": "look", "label": "Look", "type": "palette"}], "promptTemplate": "x"}, "needs 'options'"),
         (
+            {
+                "fields": [{"key": "look", "label": "Look", "type": "select", "options": ["a", " "]}],
+                "promptTemplate": "x",
+            },
+            "needs 'options'",
+        ),
+        (
+            {
+                "fields": [{"key": "look", "label": "Look", "type": "select", "options": ["a", "a "]}],
+                "promptTemplate": "x",
+            },
+            "distinct names",
+        ),
+        (
             {"fields": [{"key": "about", "label": "About", "type": "text"}], "promptTemplate": "For {who}"},
             "no field has that key",
         ),
@@ -398,6 +412,11 @@ def test_never_say_does_not_read_across_fields() -> None:
 )
 def test_text_fields_must_be_text(change: dict[str, Any], message: str) -> None:
     assert message in " ".join(email_templates.validate_spec(fixture_spec(**change)))
+    raw = fixture_spec()
+    raw["sample"]["subject"] = {"text": "QBR"}
+    raw["sample"]["client_name"] = ["Acme"]
+    issues = " ".join(email_templates.validate_spec(raw))
+    assert "sample: 'subject' must be text" in issues and "sample: 'client_name' must be text" in issues
     raw = fixture_spec()
     raw["sections"][0]["title"] = {"text": "Summary"}
     assert "sections[0]: 'title' must be text" in " ".join(email_templates.validate_spec(raw))

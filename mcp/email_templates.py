@@ -136,6 +136,20 @@ def _block_prose(block: Mapping[str, Any]) -> tuple[list[str], list[str]]:
     return paragraphs, _strings(block.get("bullets"))
 
 
+# The sample's render_email arguments that are text (everything but its blocks).
+_SAMPLE_TEXT_KEYS = (
+    "subject",
+    "client_name",
+    "headline",
+    "date",
+    "date_range",
+    "badge_label",
+    "status",
+    "preheader",
+    "theme",
+)
+
+
 def _require_text(mapping: Mapping[str, Any], keys: Sequence[str], where: str, issues: list[str]) -> None:
     """Report each of `keys` that is present and not text.
 
@@ -231,8 +245,14 @@ def _validate_form(fields: Any, prompt: Any, issues: list[str]) -> None:
             issues.append(f"{where}: 'type' must be one of {', '.join(FIELD_TYPES)}")
         elif kind in ("select", "palette"):
             options = field.get("options")
-            if not isinstance(options, list) or not options or not all(isinstance(o, str) and o for o in options):
+            if (
+                not isinstance(options, list)
+                or not options
+                or not all(isinstance(o, str) and o.strip() for o in options)
+            ):
                 issues.append(f"{where}: a {kind} field needs 'options', a list of names")
+            elif len({o.strip() for o in options}) != len(options) or any(o != o.strip() for o in options):
+                issues.append(f"{where}: 'options' must be distinct names without spaces around them")
     if isinstance(prompt, str):
         unknown = sorted(set(_PROMPT_TOKEN.findall(prompt)) - keys)
         if unknown:
@@ -295,6 +315,8 @@ def validate_spec(spec: Any) -> list[str]:
     sample = spec.get("sample")
     if not isinstance(sample, Mapping) or not isinstance(sample.get("blocks"), list):
         issues.append("'sample' is required: the render_email arguments the preview is rendered from")
+    else:
+        _require_text(sample, _SAMPLE_TEXT_KEYS, "sample: ", issues)
     return issues
 
 
