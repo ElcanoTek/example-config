@@ -401,7 +401,9 @@ async def test_the_folder_is_locked_again_when_opening_it_fails(
 
     monkeypatch.setattr(email_template_store.os, "chmod", never_locks)
     refused = await save_email_template("second", _spec(name="Second"))
-    assert "The change was not made" in refused["error"] and "could not be made read-only again" in refused["error"]
+    assert (
+        "not permitted" in refused["error"] and "Also, the team templates folder could not be made" in refused["error"]
+    )
     real_chmod(_team_dir, 0o555)
     monkeypatch.setattr(email_template_store.os, "chmod", real_chmod)
 
@@ -456,3 +458,16 @@ async def test_a_template_near_the_size_limit_still_loads_after_saving(_team_dir
         assert (await get_email_template("big")).get("error") is None
     spec["based_on"] = "x" * (room - 200)
     assert "larger than" in (await save_email_template("big", spec))["error"]
+
+
+async def test_a_team_copy_left_under_a_built_in_id_can_be_removed(_team_dir: Path) -> None:
+    """Taken into the bundle under the same id: the team's file is not listed, but it can be cleared out."""
+    await save_email_template("first", _spec(name="First"))
+    os.chmod(_team_dir, 0o755)
+    (_team_dir / "first.yaml").rename(_team_dir / f"{BUILT_IN}.yaml")
+    os.chmod(_team_dir, 0o555)
+    removed = await delete_email_template(BUILT_IN)
+    assert removed["removed"] == BUILT_IN and "built-in template of that id stays" in removed["note"]
+    assert not (_team_dir / f"{BUILT_IN}.yaml").exists()
+    assert (await get_email_template(BUILT_IN)).get("error") is None
+    assert "built-in template" in (await delete_email_template(BUILT_IN))["error"]

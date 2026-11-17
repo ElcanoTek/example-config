@@ -74,7 +74,7 @@ promptTemplate: "..."                    # what the library inserts into the cha
 `never_say` takes at most 50 entries. A plain entry matches the whole phrase in
 any case. A `re:` entry is a regular expression kept deliberately simple, so
 that checking an email is always quick: it may match at most 200 characters,
-every repeat needs an upper limit (`\\d{1,9}`, not `\\d+`), and it may not use
+every repeat needs an upper limit (`\d{1,9}`, not `\d+`), and it may not use
 `^`, `$`, lookahead or lookbehind, backreferences, or a repeat inside a repeat.
 The check runs on the email as rendered, one cell or paragraph at a time.
 

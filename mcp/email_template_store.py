@@ -28,6 +28,7 @@ import datetime as _dt
 import fcntl
 import json
 import os
+import sys
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -238,13 +239,11 @@ def _unlocked(directory: Path):  # noqa: ANN202 - a context manager
     change itself.
     """
     folders = (directory, directory / "previews")
-    failed = True
     try:
         previews = _team_previews(directory)
         for folder in folders:
             os.chmod(folder, _DIR_OPEN)
         yield previews
-        failed = False
     finally:
         left_open: list[str] = []
         for folder in reversed(folders):
@@ -256,7 +255,9 @@ def _unlocked(directory: Path):  # noqa: ANN202 - a context manager
         if left_open:
             # Either way the person hears that the folder is not protected the
             # way it should be; a failed change keeps its own error as the cause.
-            outcome = "The change was not made, and" if failed else "The change was made, but"
+            # A failed change keeps its own message in front: it may name files to recover.
+            active = sys.exc_info()[1]
+            outcome = f"{active} Also," if active is not None else "The change was made, but"
             raise StoreError(
                 f"{outcome} the team templates folder could not be made read-only again "
                 f"({'; '.join(left_open)}). Tell whoever runs this deployment."
@@ -408,18 +409,25 @@ def save(template_id: str, spec: Any, author: str = "") -> dict[str, Any]:
 def delete(template_id: str) -> dict[str, Any]:
     directory = _require_team_dir()
     wanted = str(template_id or "").strip().removesuffix(".yaml")
-    if wanted in email_templates.bundle_template_ids():
+    built_in = wanted in email_templates.bundle_template_ids()
+    # A team file under a built-in id: left behind when a team template was
+    # taken into the bundle. It is not listed, but it may be removed, so it
+    # cannot come back if the bundle's copy ever goes.
+    left_behind = bool(email_templates._ID.fullmatch(wanted)) and (directory / f"{wanted}.yaml").is_file()
+    if built_in and not left_behind:
         raise StoreError(f"{wanted!r} is a built-in template; it is changed in the bundle, not from a chat.")
-    if wanted not in email_templates.team_template_ids():
+    if not built_in and wanted not in email_templates.team_template_ids():
         known = ", ".join(email_templates.team_template_ids()) or "there are none"
         raise StoreError(f"There is no team template {template_id!r}. Team templates: {known}.")
     with _one_writer(directory), _unlocked(directory) as previews:
         if not (directory / f"{wanted}.yaml").is_file():
             raise StoreError(f"There is no team template {template_id!r}; it was removed a moment ago.")
-        styles = _styles_text(without=wanted)
+        styles = _styles_text(without="" if built_in else wanted)
         _replace_all(
             {directory / f"{wanted}.yaml": None, previews / f"{wanted}.html": None, previews / "styles.json": styles}
         )
+    if built_in:
+        return {"removed": wanted, "note": "The team's copy is gone; the built-in template of that id stays."}
     return {"removed": wanted}
 
 

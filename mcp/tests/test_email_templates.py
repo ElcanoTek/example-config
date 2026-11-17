@@ -392,6 +392,8 @@ def test_never_say_does_not_read_across_fields() -> None:
         ({"never_say": [7]}, "'never_say' must be a list of non-empty strings"),
         ({"subject": {"instruction": ["a", "b"]}}, "'subject.instruction' is required"),
         ({"header": {"headline": {"x": 1}}}, "'header' takes only"),
+        ({"max_words": True}, "'max_words' must be a whole number"),
+        ({"subject": {"instruction": "The week.", "max_chars": True}}, "'subject.max_chars' must be a whole number"),
     ],
 )
 def test_text_fields_must_be_text(change: dict[str, Any], message: str) -> None:

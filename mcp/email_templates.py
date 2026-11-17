@@ -102,6 +102,11 @@ def _text(value: Any) -> str:
     return "" if value is None else str(value).strip()
 
 
+def _whole(value: Any) -> bool:
+    """A whole number, which `true` is not (bool is an int in Python)."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _strings(value: Any) -> list[str]:
     if value is None:
         return []
@@ -255,7 +260,7 @@ def validate_spec(spec: Any) -> list[str]:
         or not subject["instruction"].strip()
     ):
         issues.append("'subject.instruction' is required")
-    elif "max_chars" in subject and (not isinstance(subject["max_chars"], int) or subject["max_chars"] < 10):
+    elif "max_chars" in subject and (not _whole(subject["max_chars"]) or subject["max_chars"] < 10):
         issues.append("'subject.max_chars' must be a whole number of 10 or more")
     header = spec.get("header")
     if header is not None and not (
@@ -264,7 +269,7 @@ def validate_spec(spec: Any) -> list[str]:
         and all(isinstance(v, str) for v in header.values())
     ):
         issues.append("'header' takes only 'headline' and 'status' instructions, each as text")
-    if "max_words" in spec and (not isinstance(spec["max_words"], int) or spec["max_words"] < 1):
+    if "max_words" in spec and (not _whole(spec["max_words"]) or spec["max_words"] < 1):
         issues.append("'max_words' must be a whole number of 1 or more")
     for key in ("rules", "never_say"):
         value = spec.get(key)
