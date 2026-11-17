@@ -31,6 +31,7 @@ from typing import Any
 
 import aioboto3
 import email_render
+import email_template_store
 from botocore.exceptions import BotoCoreError, ClientError
 from email_lint import (
     detect_html_content as _detect_html_content,
@@ -63,6 +64,8 @@ from email_lint import (
 )
 from mcp.server.fastmcp import FastMCP
 from utils import run_ledger, safe_open
+
+import email_templates
 
 # Re-exported by name so the existing test files
 # (`test_ses_template_validation.py`, `test_mcp_integration.py`,
@@ -1210,6 +1213,8 @@ async def render_email(
     status: str = "",
     preheader: str = "",
     headline: str = "",
+    template: str = "",
+    colors: dict[str, str] | None = None,
 ) -> MutableMapping[str, Any]:
     """Render a branded HTML email from structured content and save it as a file.
 
@@ -1262,6 +1267,19 @@ async def render_email(
         headline: Short title under the client name, 2-6 words, e.g. "Weekly delivery
             review". Leave out the client name and dates (both are already in the
             header). Defaults to the subject.
+        colors: Optional brand colors on top of the theme, when the user asked for
+            them: {"header": "#RRGGBB", "accent": "#RRGGBB"} (either key alone
+            works). header is the band behind the logo and client name; accent
+            is the status badge, the button and the header's top line. Both
+            carry white text, so a color too light for it is refused: pick a
+            darker shade. Never invent brand colors.
+        template: An email template id from list_email_templates. Use one whenever
+            the email is a kind the team sends repeatedly (a weekly client update, a
+            DSP reporting request, an internal brief): read it with
+            get_email_template, then give each block "section": "<section id>".
+            The blocks are checked against the template's sections, order and
+            length limits, and nothing is rendered until they fit; the error lists
+            every problem at once. The template sets the section headings.
 
     Text formatting: values are escaped, so write plain text. **bold** and line
     breaks are the only formatting. Real data only: never the template's
@@ -1282,6 +1300,9 @@ async def render_email(
         target_file = _validate_path_security(file_arg) if file_arg else ""
     except ValueError as exc:
         return {"error": str(exc)}
+    if email_template_store.holds(directory) or (target_file and email_template_store.holds(target_file)):
+        # Inside the allowed roots, but only save_email_template writes there.
+        return {"error": "That folder holds the team email templates. Write the email to your working directory."}
     if file_arg and not os.path.isdir(directory):
         # Created by a symlink-refusing walk from its allowed root, so a
         # directory swapped for a symlink cannot place new ones elsewhere.
@@ -1293,6 +1314,42 @@ async def render_email(
             pass  # reported just below as "not an existing directory"
     if not os.path.isdir(directory):
         return {"error": f"output_dir is not an existing directory: {directory_arg}"}
+
+    template_id = template.strip()
+    if template_id:
+        try:
+            spec = email_templates.load_template(template_id)
+        except email_templates.TemplateError as exc:
+            return {"error": str(exc)}
+        # Every header argument that reaches the email, so a banned phrase
+        # cannot ride in on the client name or the period line.
+        blocks, violations = email_templates.apply_template(
+            spec,
+            subject,
+            blocks,
+            # client_name as the renderer resolves it: left out, the header
+            # shows the deployment's own name.
+            header_values=(
+                headline,
+                status,
+                badge_label,
+                preheader,
+                client_name.strip() or os.environ.get("SES_TENANT_LABEL", "").strip(),
+                date_range,
+                date,
+            ),
+        )
+        if violations:
+            return {
+                "error": (
+                    f"The email does not fit template {spec['id']}; nothing was rendered. "
+                    "Fix every item below and call render_email again."
+                ),
+                "violations": violations,
+                "template": email_templates.describe(spec),
+            }
+        template_id = spec["id"]
+        theme = theme.strip() or str(spec.get("theme") or "")
 
     try:
         html_content = email_render.render_email(
@@ -1306,9 +1363,22 @@ async def render_email(
             status=status,
             preheader=preheader,
             headline=headline,
+            colors=colors,
         )
     except email_render.RenderError as exc:
         return {"error": f"Cannot render the email: {exc}"}
+    if template_id:
+        # The page as the reader will see it, with everything the renderer adds.
+        said = email_templates.rendered_violations(spec, subject, html_content)
+        if said:
+            return {
+                "error": (
+                    f"The email does not fit template {template_id}; nothing was written. "
+                    "Fix every item below and call render_email again."
+                ),
+                "violations": said,
+                "template": email_templates.describe(spec),
+            }
 
     stem = os.path.join(directory, f"email-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{secrets.token_hex(3)}")
     path = target_file if target_file else f"{stem}.html"
@@ -1382,10 +1452,157 @@ async def render_email(
         "warnings": [f.format() for f in warnings],
         "content_length": len(html_content),
     }
+    if colors:
+        result["colors_used"] = {k: str(v).upper() for k, v in colors.items() if v}
+    if template_id:
+        result["template"] = template_id
     cids = sorted(extract_cid_references(html_content))
     if cids:
         result["inline_cids"] = cids
     return result
+
+
+@mcp.tool()
+async def list_email_templates() -> MutableMapping[str, Any]:
+    """List the email templates: the fixed shapes of emails the team sends repeatedly.
+
+    Call this before writing a recurring kind of email (a weekly client update, a
+    performance report, a DSP reporting request, a budget proposal, an internal
+    brief). When one fits, read it with get_email_template and pass its id to
+    render_email as `template`. When none fits, render_email without a template.
+    """
+    templates: list[dict[str, Any]] = []
+    problems: list[str] = []
+    for template_id in email_templates.template_ids():
+        try:
+            templates.append(email_templates.summarize(email_templates.load_template(template_id)))
+        except email_templates.TemplateError as exc:
+            problems.append(str(exc))
+    result: dict[str, Any] = {"templates": templates}
+    if problems:
+        result["problems"] = problems
+    return result
+
+
+@mcp.tool()
+async def get_email_template(template: str) -> MutableMapping[str, Any]:
+    """Read one email template: its sections in order, what goes in each, and the limits.
+
+    Args:
+        template: A template id from list_email_templates.
+
+    Returns the subject and header rules, the writing rules, phrases the email
+    must never contain, and each section's id, block type, instruction and
+    limits. Build the email with render_email(template=<id>), one block per
+    section in the order given.
+    """
+    try:
+        return email_templates.describe(email_templates.load_template(template))
+    except email_templates.TemplateError as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
+async def check_email_template(template_id: str, spec: dict[str, Any]) -> MutableMapping[str, Any]:
+    """Check a new team email template without saving it.
+
+    Use this before save_email_template, and again after each fix: it validates
+    the template, checks that its sample fits its own sections and limits, and
+    renders the example. Nothing is stored.
+
+    Args:
+        template_id: lowercase words joined by "-", e.g. monthly-qbr-recap. Not
+            the id of a built-in template.
+        spec: the template; see below.
+
+    The template (`spec`) is an object:
+        name, description, use_when: text for the library.
+        audience: "client" or "internal".
+        subject: {"instruction": how to write the subject, "max_chars": 70}
+        max_words: optional cap on the prose of the whole email.
+        rules: [writing rules for the whole email]
+        never_say: [phrases the email must not contain; "re:<regex>" for a pattern]
+        sections: in order, each {"id": "summary", "title": "Summary",
+            "heading": the fixed heading (optional), "block": a render_email block
+            type (text, headline_metrics, metrics, callout, table, chart, cta,
+            closing), "kind": "risk"|"opportunity" (callout only), "required":
+            true|false, "instruction": what goes in it, "limits": {...}}.
+            Limits: text/callout take max_words, max_paragraphs, max_bullets,
+            min_bullets, max_words_per_bullet; closing takes max_words and
+            max_paragraphs; headline_metrics/metrics take min_items and max_items;
+            table takes max_rows and max_columns. Set limits from the email the
+            template is modelled on, with a little room, so it stays that length.
+        sample: the example shown in the library: {"subject", "client_name",
+            "headline", "date", "date_range", "badge_label", "status", "blocks":
+            [...]}, where each block is a render_email block plus "section": "<id>".
+            It must obey the template's own sections and limits.
+    Leave out "fields" and "promptTemplate" to get the standard form (who it is
+    about, Send to, Style, notes).
+
+    The easiest start is an email already built in this chat: one section per
+    block, in order, and the same blocks as the sample. Read a similar existing
+    template with get_email_template for the tone of the instructions.
+
+    Returns {"valid": true, "sections": [...], "sample_words": N} or
+    {"valid": false, "problems": "..."}.
+    """
+    try:
+        wanted, clean, _ = email_template_store.prepare(template_id, spec)
+    except email_template_store.StoreError as exc:
+        return {"valid": False, "problems": str(exc)}
+    words = sum(
+        email_templates.count_words(*email_templates._block_prose(block))
+        for block in clean["sample"]["blocks"]
+        if isinstance(block, Mapping)
+    )
+    return {
+        "valid": True,
+        "template": wanted,
+        "replaces_an_existing_team_template": wanted in email_templates.team_template_ids(),
+        "sections": [section["id"] for section in clean["sections"]],
+        "sample_words": words,
+        "next": "Call save_email_template with the same arguments; the person approves it on a card.",
+    }
+
+
+@mcp.tool()
+async def save_email_template(template_id: str, spec: dict[str, Any]) -> MutableMapping[str, Any]:
+    """Save a team email template, so this kind of email comes out the same way next time.
+
+    Use when a person asks to keep an email as a template ("save this as a
+    template", "make this our standard QBR recap"). Run check_email_template
+    first and fix what it reports. The person approves the save on a card; once
+    saved, the template is in the Email templates library for the whole team
+    and render_email(template=<id>) enforces it like a built-in one. Saving an
+    id that is already a team template replaces it.
+
+    The sample is shown to everyone on this deployment. Keep it realistic, and
+    use invented names and numbers unless the person wants the real ones shown.
+
+    Args:
+        template_id: as for check_email_template.
+        spec: as for check_email_template.
+    """
+    try:
+        return email_template_store.save(template_id, spec, email_template_store.author())
+    except email_template_store.StoreError as exc:
+        return {"error": str(exc)}
+    except (OSError, ValueError) as exc:
+        return {"error": f"The template could not be written: {exc}"}
+
+
+@mcp.tool()
+async def delete_email_template(template_id: str) -> MutableMapping[str, Any]:
+    """Remove a team email template from the library. Built-in templates cannot be removed.
+
+    Only when a person asks for it by name. The person approves it on a card.
+    """
+    try:
+        return email_template_store.delete(template_id)
+    except email_template_store.StoreError as exc:
+        return {"error": str(exc)}
+    except OSError as exc:
+        return {"error": f"The template could not be removed: {exc}"}
 
 
 @mcp.tool()

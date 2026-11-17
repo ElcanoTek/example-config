@@ -65,3 +65,29 @@ async def test_ses_outbound_allowlist_matches_the_server_tools() -> None:
 
     registered = {tool.name for tool in await mcp.list_tools()}
     assert set(_servers()["ses_outbound"]["tools"]) == registered
+
+
+def test_email_templates_are_saved_only_behind_an_approval_card() -> None:
+    """Team templates: read freely, saved and removed on a card, kept where fleet reads them."""
+    manifest = yaml.safe_load(MANIFEST.read_text())
+    outbound = _servers()["ses_outbound"]
+    assert {
+        "list_email_templates",
+        "get_email_template",
+        "check_email_template",
+        "save_email_template",
+        "delete_email_template",
+    } <= set(outbound["tools"])
+    policy = manifest["agent_policy"]
+    assert {"save_email_template", "delete_email_template"} <= set(policy["critical_tools"])
+    assert "mcp_ses_outbound_check_email_template" in policy["parallel_safe_tools"]
+    assert "mcp_ses_outbound_save_email_template" not in policy["parallel_safe_tools"]
+    assert "mcp_ses_outbound_delete_email_template" not in policy["parallel_safe_tools"]
+    # Each save and removal gets its own card: no "apply to all".
+    assert {"mcp_ses_outbound_save_email_template", "mcp_ses_outbound_delete_email_template"} <= set(
+        policy["critical_tool_no_session_approval"]
+    )
+    # The directory fleet lists in its library and mounts read-only in every sandbox.
+    assert outbound["env"]["EMAIL_TEMPLATES_TEAM_DIR"] == "${FLEET_WORKSPACE_ROOT}/mcp-runs/email-templates"
+    # The author is fleet's record of the signed-in person, not an argument.
+    assert outbound["env"]["EMAIL_TEMPLATE_AUTHOR"] == "${FLEET_USER_EMAIL}"

@@ -108,6 +108,11 @@ def available_themes() -> list[str]:
     return sorted(p.stem for p in themes_dir().glob("*.yaml"))
 
 
+def resolve_theme(theme: str | None) -> str:
+    """The theme id a render uses: the one asked for, or the bundle default when none is."""
+    return _clean(theme) or default_theme()
+
+
 @functools.lru_cache(maxsize=8)
 def _theme_overrides(theme_id: str) -> dict[str, str]:
     if theme_id not in available_themes():
@@ -115,6 +120,69 @@ def _theme_overrides(theme_id: str) -> dict[str, str]:
     with (themes_dir() / f"{theme_id}.yaml").open(encoding="utf-8") as fh:
         theme = yaml.safe_load(fh) or {}
     return {str(k).upper(): str(v) for k, v in (theme.get("color_overrides") or {}).items()}
+
+
+# Colors a caller may set on top of the theme (the email templates' Style
+# picker): the role, the canonical hexes it replaces, and the least contrast
+# the light text drawn on it needs. Both are 4.5 (WCAG normal text): the
+# header carries body-size text, and the badge and button labels on the accent
+# are 12 to 16px, which is not large text either.
+CUSTOM_COLORS: dict[str, tuple[tuple[str, ...], float]] = {
+    "header": (("#1A0B1E",), 4.5),
+    "accent": (("#7272AB", "#6262A0"), 4.5),
+}
+_LIGHT_TEXT = "#FAFAFA"
+_HEADER_SUBTEXT = ("#D2D9DE", "#BEB6CD")
+
+
+def _luminance(color: str) -> float:
+    channels = []
+    for i in (1, 3, 5):
+        c = int(color[i : i + 2], 16) / 255
+        channels.append(c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+
+
+def contrast_ratio(a: str, b: str) -> float:
+    """WCAG contrast ratio of two #RRGGBB colors, 1.0 to 21.0."""
+    hi, lo = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def custom_overrides(colors: Mapping[str, Any] | None) -> dict[str, str]:
+    """Overrides for caller-chosen colors: {"header": "#RRGGBB", "accent": "#RRGGBB"}.
+
+    Either key may be left out. A color too light for the text that sits on it
+    (white, and on the header the grey kicker and date too) is refused, so a brand color never produces an unreadable
+    header or button.
+    """
+    if not colors:
+        return {}
+    if not isinstance(colors, Mapping):
+        raise RenderError("'colors' must be an object with 'header' and/or 'accent', each a hex color such as #1F3A5F.")
+    unknown = sorted(str(k) for k in colors if str(k) not in CUSTOM_COLORS)
+    if unknown:
+        raise RenderError(f"'colors' has unknown key(s) {', '.join(unknown)}. Use: {', '.join(CUSTOM_COLORS)}.")
+    overrides: dict[str, str] = {}
+    for role, (canonical, minimum) in CUSTOM_COLORS.items():
+        value = _clean(colors.get(role)).upper()
+        if not value:
+            continue
+        if not _HEX.fullmatch(value):
+            raise RenderError(f"colors.{role} must be a six-digit hex color such as #1F3A5F, not {colors.get(role)!r}.")
+        # The header also carries its grey kicker and date; the dimmest text
+        # decides. Nothing else is recolored to compensate, so a custom color
+        # changes exactly the hexes listed for it (the library's live example
+        # relies on that).
+        on_it = (_LIGHT_TEXT, *_HEADER_SUBTEXT) if role == "header" else (_LIGHT_TEXT,)
+        ratio = min(contrast_ratio(value, text) for text in on_it)
+        if ratio < minimum:
+            raise RenderError(
+                f"colors.{role} {value} is too light: the text on it has a contrast of {ratio:.1f}:1 "
+                f"and needs {minimum:g}:1. Pick a darker shade."
+            )
+        overrides.update(dict.fromkeys(canonical, value))
+    return overrides
 
 
 @functools.lru_cache(maxsize=1)
@@ -546,6 +614,8 @@ def _block_chart(block: Mapping[str, Any], slots: _Slots, top: int, where: str) 
         cid = cid[4:]
     if not _CID.fullmatch(cid):
         raise RenderError(f"{where}: 'cid' may use only letters, digits and . _ @ - (got {cid!r}).")
+    if cid.lower() == LOGO_CID:
+        raise RenderError(f"{where}: 'cid' {cid!r} is the header logo's; give the chart its own, such as spend_chart.")
     alt = _require(block, "alt", where)
     rows = ""
     if _clean(block.get("heading")):
@@ -669,13 +739,15 @@ def render_email(
     preheader: str | None = None,
     headline: str | None = None,
     logo: bool = True,
+    colors: Mapping[str, Any] | None = None,
 ) -> str:
     """Render a complete, themed HTML email. Raises RenderError on bad input.
 
     With `logo` (the default) and a bundle logo present, the header shows it
     as cid:brand-logo; the caller must attach brand_logo()'s file under that
     cid. The header leads with the client; under the name sit `headline`
-    (a short title, the subject when not given) and the period.
+    (a short title, the subject when not given) and the period. `colors`
+    sets the header and accent colors on top of the theme (custom_overrides).
     """
     subject_text = _clean(subject)
     if not subject_text:
@@ -685,7 +757,7 @@ def render_email(
     client = _clean(client_name) or os.environ.get("SES_TENANT_LABEL", "").strip()
     if not client:
         raise RenderError("'client_name' is required (no SES_TENANT_LABEL is configured).")
-    overrides = _theme_overrides(_clean(theme) or default_theme())
+    overrides = {**_theme_overrides(resolve_theme(theme)), **custom_overrides(colors)}
 
     slots = _Slots()
     body = ""

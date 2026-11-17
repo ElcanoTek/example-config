@@ -138,6 +138,8 @@ example-config/
     example_api.py       #   credential-gated generic REST connector
     ses_sender.py        #   render, lint and send audited outbound email (`ses_outbound`)
     email_render.py      #   render_email's HTML builder; email_lint.py its checks
+    email_templates.py   #   email templates: the check render_email(template=...) applies;
+                         #   email_template_store.py saves the team's own, behind an approval card
     utils/               #   shared run ledger, URL guard and filesystem helpers
     data/handbook.json   #   the demo company handbook (swap for your content)
   evals/                 # golden regression sets replayed by `fleet eval run`
@@ -235,7 +237,7 @@ everything else, and the four connectors of the standard Elcano client stack
 | `pages` | `enabled_env: [PAGES_MCP_URL, PAGES_API_TOKEN]` | token in the header, host-side | Build, publish and refresh dashboards on the deployment's own Pages. Page changes wait for approval; data refreshes (`update_page_data`, `update_page_data_upload`) run at once and post a card (`critical_tool_modes: notify`). |
 | `lens` | `enabled_env: [LENS_MCP_URL, LENS_API_TOKEN]` | token in the header, host-side | Classify sites, apps and CTV apps into quality tiers on the deployment's own Lens. Starting or cancelling a job needs approval. |
 | `explorer` | `enabled_env: [EXPLORER_MCP_URL, EXPLORER_API_TOKEN]` | token in the header, host-side | The only inbound-mail connector, on the deployment's own Explorer: `search_emails`, `search_emails_fuzzy` and `find_latest_report` find report emails; `get_email`, `extract_download_links` and `list_archived_attachments` read them by `s3_key`; `get_download_link` returns a URL for an attachment or body link that the native `download_url` tool fetches. Report links expire about 48 hours after delivery, so the archive caches them in S3 on arrival and Explorer serves the cached copy. Only mail SES authenticated (DMARC / aligned SPF or DKIM) is returned; `sender_contains` takes sender domains or addresses and matches the authenticated mailbox, not From text. |
-| `ses_outbound` | `enabled_env: [SES_OUTBOUND_AWS_ACCESS_KEY_ID, …SECRET_ACCESS_KEY, SES_OUTBOUND_FROM_EMAIL]` | send-only IAM user, host-side | Render and send audited email as the client's sender. Every `send_email` needs approval; unlisted recipients are refused unless `SES_OUTBOUND_ALLOW_UNLISTED_RECIPIENTS=true`. |
+| `ses_outbound` | `enabled_env: [SES_OUTBOUND_AWS_ACCESS_KEY_ID, …SECRET_ACCESS_KEY, SES_OUTBOUND_FROM_EMAIL]` | send-only IAM user, host-side | Render and send audited email as the client's sender. Every `send_email` needs approval. The team can keep an email as a template from a chat (`save_email_template`, also approved on a card; see `email_templates/README.md`); unlisted recipients are refused unless `SES_OUTBOUND_ALLOW_UNLISTED_RECIPIENTS=true`. |
 
 The Lens, Explorer and Pages entries default their `url` to a reserved `.invalid` host:
 fleet needs a non-empty URL to load the bundle, and an unset one must never

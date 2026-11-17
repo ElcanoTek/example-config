@@ -64,6 +64,11 @@ EVERY_BLOCK: list[dict[str, Any]] = [
 ]
 
 
+def email_template_plain() -> str:
+    """The theme with no overrides: the canonical palette custom colors are defined against."""
+    return next(t for t in email_render.available_themes() if not email_render._theme_overrides(t))
+
+
 def _render(**overrides: Any) -> str:
     kwargs: dict[str, Any] = {
         "subject": "Weekly delivery review",
@@ -165,6 +170,74 @@ def test_branded_theme_replaces_every_overridden_hex(theme: str) -> None:
     markup = _render(theme=theme, blocks=EVERY_BLOCK, badge_label="On track", status="Pacing")
     present = {h.upper() for h in re.findall(r"#[0-9A-Fa-f]{6}", markup)}
     assert present.isdisjoint(overrides)
+
+
+def test_custom_colors_replace_the_header_and_accent() -> None:
+    markup = _render(
+        theme=email_template_plain(),
+        blocks=EVERY_BLOCK,
+        badge_label="On track",
+        status="Pacing",
+        colors={"header": "#1f3a5f", "accent": "#C2410C"},
+    )
+    present = {h.upper() for h in re.findall(r"#[0-9A-Fa-f]{6}", markup)}
+    assert {"#1F3A5F", "#C2410C"} <= present
+    assert present.isdisjoint({"#1A0B1E", "#7272AB", "#6262A0"})
+    errors, _ = _findings(markup)
+    assert errors == []
+
+
+@pytest.mark.parametrize("theme", email_render.available_themes())
+def test_custom_colors_sit_on_top_of_the_theme_and_may_be_partial(theme: str) -> None:
+    """A custom header on a theme: the header changes, the theme's other colors stay."""
+    kwargs: dict[str, Any] = {"theme": theme, "blocks": EVERY_BLOCK, "badge_label": "On track", "status": "Pacing"}
+    themed, custom = _render(**kwargs), _render(**kwargs, colors={"header": "#0B3D2E"})
+    overrides = email_render._theme_overrides(theme)
+    before = {h.upper() for h in re.findall(r"#[0-9A-Fa-f]{6}", themed)}
+    after = {h.upper() for h in re.findall(r"#[0-9A-Fa-f]{6}", custom)}
+    assert "#0B3D2E" in after
+    kept = {
+        overrides.get(c, c).upper()
+        for c in email_render._HEX.findall(
+            _render(theme=email_template_plain(), **{k: v for k, v in kwargs.items() if k != "theme"})
+        )
+        if c.upper() != "#1A0B1E"
+    }
+    assert kept <= after and after - {"#0B3D2E"} <= before
+    assert _render(colors={}) == _render() == _render(colors=None)
+
+
+def test_custom_colors_change_only_their_own_hexes() -> None:
+    assert email_render.custom_overrides({"header": "#101010", "accent": "#C2410C"}) == {
+        "#1A0B1E": "#101010",
+        "#7272AB": "#C2410C",
+        "#6262A0": "#C2410C",
+    }
+    # A mid-tone header would pass for white text, but not for the grey kicker and date on it.
+    with pytest.raises(email_render.RenderError, match="too light"):
+        email_render.custom_overrides({"header": "#5A5A5A"})
+
+
+@pytest.mark.parametrize(
+    ("colors", "message"),
+    [
+        ({"header": "#FFD400"}, "too light"),
+        ({"accent": "#FFE9A8"}, "too light"),
+        ({"accent": "#0088AA"}, "too light"),  # 3.9:1, short of normal-text contrast
+        ({"header": "navy"}, "six-digit hex"),
+        ({"header": "#abc"}, "six-digit hex"),
+        ({"footer": "#101010"}, "unknown key"),
+        ("#101010", "must be an object"),
+    ],
+)
+def test_custom_colors_are_checked(colors: Any, message: str) -> None:
+    with pytest.raises(email_render.RenderError, match=message):
+        _render(colors=colors)
+
+
+def test_a_chart_may_not_take_the_logo_cid() -> None:
+    with pytest.raises(email_render.RenderError, match="header logo"):
+        _render(blocks=[{"type": "chart", "cid": "brand-logo", "alt": "Daily spend"}])
 
 
 def test_default_theme_is_the_protocol_default() -> None:
