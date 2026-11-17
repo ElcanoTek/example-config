@@ -505,7 +505,19 @@ mcp_servers:
       CUTLASS_ALLOWED_DIRS: "${CUTLASS_ALLOWED_DIRS}:${FLEET_WORKSPACE_ROOT}"
       CUTLASS_RUN_WORKDIR: "${FLEET_WORKSPACE}"
       CUTLASS_MOC_TASK_ID: "${FLEET_TASK_ID}"
+      # Team email templates (mcp/email_template_store.py): the directory fleet
+      # reads for its Email templates library (fleet docs/EMAIL-TEMPLATES.md,
+      # "Team templates"). It sits under mcp-runs/, which fleet mounts
+      # read-only in every sandbox. On the host the store keeps the folder and
+      # its files read-only at rest, and render_email refuses an output path
+      # inside it, so the approval-gated save and delete are the only writers.
+      EMAIL_TEMPLATES_TEAM_DIR: "${FLEET_WORKSPACE_ROOT}/mcp-runs/email-templates"
+      # Who saved a team template: fleet's own record of the signed-in person,
+      # never a model-supplied argument. Empty outside a person's chat turn.
+      EMAIL_TEMPLATE_AUTHOR: "${FLEET_USER_EMAIL}"
     optional_env:
+      - EMAIL_TEMPLATES_TEAM_DIR
+      - EMAIL_TEMPLATE_AUTHOR
       - AWS_SESSION_TOKEN
       - SES_CONFIGURATION_SET
       - SES_ALLOWED_RECIPIENTS
@@ -520,6 +532,11 @@ mcp_servers:
       - send_email
       - validate_email_content
       - validate_email_address
+      - list_email_templates
+      - get_email_template
+      - check_email_template
+      - save_email_template                  # gated below: writes a team template for everyone
+      - delete_email_template                # gated below
 
   # 6) An OPTIONAL, opt-in server — chat's per-conversation Optional-server
   #    semantics. `optional: true` keeps a connector out of conversations until
@@ -769,6 +786,12 @@ agent_policy:
     - mcp_ses_outbound_render_email
     - mcp_ses_outbound_validate_email_content
     - mcp_ses_outbound_validate_email_address
+    # Read-only: the email templates are files (the team's saved ones, and any
+    # this bundle ships under email_templates/).
+    - mcp_ses_outbound_list_email_templates
+    - mcp_ses_outbound_get_email_template
+    # Validates and renders in memory; stores nothing.
+    - mcp_ses_outbound_check_email_template
     # pages: read-only tools (readOnlyHint in the Pages catalog).
     - mcp_pages_list_pages
     - mcp_pages_get_page
@@ -802,6 +825,11 @@ agent_policy:
   # `api_submit_record` is a WRITE — gated behind an audit confirmation. This is
   # how you make an agent stop and get sign-off before a consequential action.
   critical_tools:
+    # Team email templates (ses_outbound): a saved template is shown to and
+    # enforced for everyone on the deployment, and its rules become instructions
+    # to later chats, so a person approves each save and removal on a card.
+    - save_email_template
+    - delete_email_template
     - submit_record
     # Outbound email. fleet already gates the send_email suffix on its own;
     # it is listed anyway so this bundle's contract names every write tool.
