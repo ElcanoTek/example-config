@@ -42,6 +42,7 @@ import email_templates
 
 MAX_TEAM_TEMPLATES = 100
 _STAMPS = ("created_by", "created_at", "updated_at")
+_STAMP_ROOM = 1024
 
 # What every template's form asks besides its own fields, and how every prompt
 # ends (email_templates/README.md, "The form"). A team template saved without
@@ -195,7 +196,9 @@ def prepare(template_id: str, spec: Any) -> tuple[str, dict[str, Any], str]:
     if errors:
         raise StoreError("The template's sample does not render cleanly: " + "; ".join(f.format() for f in errors))
     text = yaml.safe_dump(spec, sort_keys=False, allow_unicode=True, width=1000)
-    if len(text.encode("utf-8")) > email_templates.MAX_TEMPLATE_BYTES:
+    # Room for what a save adds (created_by, created_at, updated_at): the file
+    # as stored must still be one load_template accepts.
+    if len(text.encode("utf-8")) > email_templates.MAX_TEMPLATE_BYTES - _STAMP_ROOM:
         raise StoreError(f"The template is larger than {email_templates.MAX_TEMPLATE_BYTES // 1024} KB.")
     return wanted, spec, preview
 
@@ -250,11 +253,12 @@ def _unlocked(directory: Path):  # noqa: ANN202 - a context manager
                     os.chmod(folder, _DIR_LOCKED)
                 except OSError as exc:
                     left_open.append(f"{folder.name}: {exc}")
-        if left_open and not failed:
-            # The change went through: say so, and say that the folder is not
-            # protected the way it should be.
+        if left_open:
+            # Either way the person hears that the folder is not protected the
+            # way it should be; a failed change keeps its own error as the cause.
+            outcome = "The change was not made, and" if failed else "The change was made, but"
             raise StoreError(
-                "The change was made, but the team templates folder could not be made read-only again "
+                f"{outcome} the team templates folder could not be made read-only again "
                 f"({'; '.join(left_open)}). Tell whoever runs this deployment."
             )
 
@@ -329,14 +333,24 @@ def _replace_all(files: Mapping[Path, str | None]) -> None:
                 path.unlink(missing_ok=True)
             else:
                 os.replace(tmp, path)
-    except BaseException:
+    except BaseException as exc:
+        stuck: list[str] = []
         for path in reversed(done):
             backup = backups.get(path)
-            with contextlib.suppress(OSError):
+            try:
                 if backup is None:
                     path.unlink(missing_ok=True)
                 else:
                     os.replace(backup, path)
+            except OSError as undo:
+                # Keep the copy: it is the only way back for this file.
+                backups[path] = None
+                stuck.append(f"{path.name} ({undo})" + (f", earlier version kept as {backup.name}" if backup else ""))
+        if stuck:
+            raise StoreError(
+                f"The change failed ({exc}) and could not be fully undone: {'; '.join(stuck)}. "
+                "The library may show a template without its example. Tell whoever runs this deployment."
+            ) from exc
         raise
     finally:
         for tmp in (*staged.values(), *backups.values()):

@@ -392,6 +392,17 @@ async def test_the_folder_is_locked_again_when_opening_it_fails(
     monkeypatch.setattr(email_template_store.os, "chmod", second_open_fails)
     assert "error" in await save_email_template("second", _spec(name="Second"))
     assert _team_dir.stat().st_mode & 0o222 == 0
+
+    # ... and when it cannot be locked again after a failed change, the person is told that too.
+    def never_locks(path: Any, mode: int, *args: Any, **kwargs: Any) -> None:
+        if mode == 0o555 or (mode == 0o755 and Path(path).name == "previews"):
+            raise PermissionError("not permitted")
+        real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(email_template_store.os, "chmod", never_locks)
+    refused = await save_email_template("second", _spec(name="Second"))
+    assert "The change was not made" in refused["error"] and "could not be made read-only again" in refused["error"]
+    real_chmod(_team_dir, 0o555)
     monkeypatch.setattr(email_template_store.os, "chmod", real_chmod)
 
     # The previews folder is gone and cannot be made again.
@@ -410,3 +421,38 @@ async def test_the_folder_is_locked_again_when_opening_it_fails(
     monkeypatch.setattr(Path, "mkdir", no_room)
     assert "error" in await save_email_template("second", _spec(name="Second"))
     assert _team_dir.stat().st_mode & 0o222 == 0
+
+
+async def test_a_change_that_cannot_be_undone_says_so_and_keeps_the_earlier_version(
+    _team_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await save_email_template("first", _spec(name="First"))
+    real_replace = os.replace
+
+    def failing(src: Any, dst: Any) -> None:
+        # The styles table fails, and so does putting the template file back.
+        if Path(dst).name == "styles.json" or (Path(dst).name == "first.yaml" and len(calls) >= 2):
+            calls.append(dst)
+            raise OSError("disk trouble")
+        calls.append(dst)
+        real_replace(src, dst)
+
+    calls: list[Any] = []
+    monkeypatch.setattr(email_template_store.os, "replace", failing)
+    saved = await save_email_template("first", _spec(name="First, revised"))
+    assert "could not be fully undone" in saved["error"] and "earlier version kept as" in saved["error"]
+    kept = [p for p in _team_dir.iterdir() if p.name.startswith(".first.yaml.")]
+    assert len(kept) == 1 and "name: First\n" in kept[0].read_text(encoding="utf-8")
+
+
+async def test_a_template_near_the_size_limit_still_loads_after_saving(_team_dir: Path) -> None:
+    spec = _spec()
+    room = email_templates.MAX_TEMPLATE_BYTES - len(yaml.safe_dump(spec, sort_keys=False, width=1000).encode())
+    spec["based_on"] = "x" * (room - 2200)
+    saved = await save_email_template("big", spec)
+    if saved.get("error"):
+        assert "larger than" in saved["error"]
+    else:
+        assert (await get_email_template("big")).get("error") is None
+    spec["based_on"] = "x" * (room - 200)
+    assert "larger than" in (await save_email_template("big", spec))["error"]

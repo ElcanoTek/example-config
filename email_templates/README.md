@@ -56,7 +56,7 @@ max_words: 260                           # optional; prose in the whole email (c
 subject: {instruction: "...", max_chars: 70}
 header: {headline: "...", status: "..."} # optional; how to fill render_email's headline and status strip
 rules: ["Writing rules, shown to the writer and in the library."]
-never_say: ["a phrase", "re:\\bID-\\d{3,}\\b"]    # enforced; `re:` marks a regular expression
+never_say: ["a phrase", "re:\\bID-\\d{3,9}\\b"]   # enforced; `re:` marks a pattern (see below)
 sections:
   - id: summary                          # what a block names in "section"
     title: Summary                       # shown in the library
@@ -70,6 +70,13 @@ sample: {subject: ..., client_name: ..., blocks: [...]}   # render_email argumen
 fields: [...]                            # optional form, same schema as prompts/ form prompts
 promptTemplate: "..."                    # what the library inserts into the chat
 ```
+
+`never_say` takes at most 50 entries. A plain entry matches the whole phrase in
+any case. A `re:` entry is a regular expression kept deliberately simple, so
+that checking an email is always quick: it may match at most 200 characters,
+every repeat needs an upper limit (`\\d{1,9}`, not `\\d+`), and it may not use
+`^`, `$`, lookahead or lookbehind, backreferences, or a repeat inside a repeat.
+The check runs on the email as rendered, one cell or paragraph at a time.
 
 Limits by block type: `text` and `callout` take `max_words`, `max_paragraphs`,
 `max_bullets`, `min_bullets`, `max_words_per_bullet`; `closing` takes
