@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -255,19 +256,21 @@ async def test_a_save_that_fails_part_way_leaves_the_library_as_it_was(
     before = {
         p.relative_to(_team_dir).as_posix(): p.read_text(encoding="utf-8") for p in _team_dir.rglob("*") if p.is_file()
     }
-    real_write = email_template_store._write
+    real_replace = os.replace
+    failed: list[Any] = []
 
-    def failing(path: Path, text: str) -> None:
-        if path.name == "styles.json" and '"saved-after"' not in text and "restore" not in failing.__dict__:
-            failing.__dict__["restore"] = True
-            raise OSError("disk full")
-        real_write(path, text)
+    def failing(src: Any, dst: Any) -> None:
+        # The styles table is the last of the three renames; the renames that undo the others go through.
+        if Path(dst).name == "styles.json" and not failed:
+            failed.append(dst)
+            raise OSError("disk trouble")
+        real_replace(src, dst)
 
-    monkeypatch.setattr(email_template_store, "_write", failing)
+    monkeypatch.setattr(email_template_store.os, "replace", failing)
     for template_id, spec in (("second", _spec(name="Second")), ("first", _spec(name="First, revised"))):
-        failing.__dict__.pop("restore", None)
+        failed.clear()
         saved = await save_email_template(template_id, spec)
-        assert "could not be written" in saved["error"]
+        assert failed and "could not be written" in saved["error"]
         after = {
             p.relative_to(_team_dir).as_posix(): p.read_text(encoding="utf-8")
             for p in _team_dir.rglob("*")
@@ -314,3 +317,36 @@ async def test_the_default_client_name_is_checked_too(
     blocks = copy.deepcopy(spec["sample"]["blocks"])
     refused = await render_email(spec["sample"]["subject"], blocks, str(tmp_path), template="qbr")
     assert "does not fit template" in refused["error"] and any("Acme" in v for v in refused["violations"])
+
+
+async def test_the_rendered_email_is_what_never_say_is_about(_team_dir: Path, tmp_path: Path) -> None:
+    """Text the renderer adds or formats is checked: numbers turned into text, today's date."""
+    spec = _spec(never_say=["re:63\\.6%", "re:\\b20\\d\\d-\\d\\d-\\d\\d\\b"])
+    spec["sections"].insert(
+        -1, {"id": "channels", "title": "Channels", "block": "table", "required": False, "instruction": "By channel."}
+    )
+    assert (await save_email_template("qbr", spec)).get("error") is None
+    blocks = copy.deepcopy(spec["sample"]["blocks"])
+    args = {"template": "qbr", "client_name": "Acme", "date": "May 11, 2026"}
+    assert (await render_email("Subject", copy.deepcopy(blocks), str(tmp_path), **args)).get("error") is None
+    table = {
+        "section": "channels",
+        "type": "table",
+        "columns": ["Channel", "Share"],
+        "rows": [["Video", {"share": 63.6}]],
+    }
+    refused = await render_email("Subject", [*blocks[:-1], table, blocks[-1]], str(tmp_path), **args)
+    assert any("63.6%" in v for v in refused["violations"]), refused
+    # No date given: the header shows today's, in the form the template bans.
+    out = tmp_path / "out"
+    out.mkdir()
+    refused = await render_email("Subject", copy.deepcopy(blocks), str(out), template="qbr", client_name="Acme")
+    assert "does not fit template" in refused["error"] and list(out.iterdir()) == []
+
+
+def test_a_very_long_field_is_searched_in_windows() -> None:
+    """One open-ended repeat over 200,000 characters would take minutes in one piece."""
+    spec = _spec(never_say=["re:a+b", "re:needle in the haystack"])
+    assert email_templates.never_say_violations(spec, ["a" * 200_000]) == []
+    found = email_templates.never_say_violations(spec, ["x" * 150_000 + " needle in the haystack " + "y" * 9_000])
+    assert len(found) == 1 and "needle in the haystack" in found[0]

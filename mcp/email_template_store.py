@@ -233,22 +233,6 @@ def _unlocked(directory: Path):  # noqa: ANN202 - a context manager
                 os.chmod(folder, _DIR_LOCKED)
 
 
-def _write(path: Path, text: str) -> None:
-    """Replace `path` atomically, never through a symlink."""
-    if path.is_symlink():
-        raise StoreError(f"{path.name} is a link, not a file; it was left alone.")
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(text)
-        os.chmod(tmp, _FILE_MODE)
-        os.replace(tmp, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
-
-
 def _team_previews(directory: Path) -> Path:
     for folder in (directory, directory / "previews"):
         if folder.is_symlink():
@@ -278,34 +262,61 @@ def _styles_text(candidate: Mapping[str, Any] | None = None, without: str = "") 
     return json.dumps({"options": dict(sorted(options.items())), "custom": custom}, indent=2) + "\n"
 
 
+def _stage(path: Path, text: str) -> Path:
+    """`text` in a finished temporary file beside `path`, ready to be renamed onto it."""
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, _FILE_MODE)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+    return Path(tmp)
+
+
 def _replace_all(files: Mapping[Path, str | None]) -> None:
     """Write every file (None removes it), or leave all of them as they were.
 
-    A template, its example and the styles table are one change. If a later
-    write fails, the earlier ones are put back, so the library never shows a
-    template without its example or with a table that does not know it.
+    A template, its example and the styles table are one change. Everything
+    that needs disk space happens first: each new file, and a copy of each
+    file about to be replaced, is written out in full beside its target. The
+    change itself is then only renames, and so is undoing it if one fails, so
+    a full or failing disk stops the save before the library is touched.
     """
-    before: dict[Path, str | None] = {}
     for path in files:
         if path.is_symlink():
             raise StoreError(f"{path.name} is a link, not a file; it was left alone.")
-        before[path] = path.read_text(encoding="utf-8") if path.is_file() else None
+    staged: dict[Path, Path | None] = {}
+    backups: dict[Path, Path | None] = {}
     done: list[Path] = []
     try:
         for path, text in files.items():
+            backups[path] = _stage(path, path.read_text(encoding="utf-8")) if path.is_file() else None
+            staged[path] = None if text is None else _stage(path, text)
+        for path, tmp in staged.items():
             done.append(path)
-            if text is None:
+            if tmp is None:
                 path.unlink(missing_ok=True)
             else:
-                _write(path, text)
+                os.replace(tmp, path)
     except BaseException:
         for path in reversed(done):
-            with contextlib.suppress(OSError, StoreError):
-                if before[path] is None:
+            backup = backups.get(path)
+            with contextlib.suppress(OSError):
+                if backup is None:
                     path.unlink(missing_ok=True)
                 else:
-                    _write(path, before[path])
+                    os.replace(backup, path)
         raise
+    finally:
+        for tmp in (*staged.values(), *backups.values()):
+            if tmp is not None:
+                with contextlib.suppress(OSError):
+                    tmp.unlink()
 
 
 def _store(

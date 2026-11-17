@@ -1367,6 +1367,18 @@ async def render_email(
         )
     except email_render.RenderError as exc:
         return {"error": f"Cannot render the email: {exc}"}
+    if template_id:
+        # The page as the reader will see it, with everything the renderer adds.
+        said = email_templates.rendered_violations(spec, subject, html_content)
+        if said:
+            return {
+                "error": (
+                    f"The email does not fit template {template_id}; nothing was written. "
+                    "Fix every item below and call render_email again."
+                ),
+                "violations": said,
+                "template": email_templates.describe(spec),
+            }
 
     stem = os.path.join(directory, f"email-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{secrets.token_hex(3)}")
     path = target_file if target_file else f"{stem}.html"

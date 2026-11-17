@@ -108,13 +108,17 @@ def render_sample(spec: Mapping[str, Any], colors: Mapping[str, str] | None = No
     )
     if violations:
         raise ValueError(f"the sample of template {spec['id']} breaks its own rules: " + " | ".join(violations))
-    return email_render.render_email(
+    page = email_render.render_email(
         subject=subject,
         blocks=blocks,
         theme=_sample_theme(spec) if theme is None else theme,
         colors=colors,
         **header,
     )
+    said = email_templates.rendered_violations(spec, subject, page)
+    if said:
+        raise ValueError(f"the sample of template {spec['id']} breaks its own rules: " + " | ".join(said))
+    return page
 
 
 def standalone(page: str) -> str:

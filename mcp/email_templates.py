@@ -27,6 +27,7 @@ import functools
 import os
 import re
 from collections.abc import Mapping, Sequence
+from html.parser import HTMLParser
 from pathlib import Path
 from re import _parser as _re_parser  # the parsed pattern, for _slow_pattern
 from typing import Any
@@ -543,16 +544,75 @@ def apply_template(
     if max_chars and len(_text(subject)) > max_chars:
         violations.append(f"The subject is {len(_text(subject))} characters; the limit is {max_chars}.")
 
-    # What the reader sees: the blocks as they will be rendered, with the
-    # headings the template set on them. A block that was refused above is not
-    # in `out`; it already has a violation of its own.
-    fields = _all_text(_text(subject), out, header_values)
+    # An early pass over what the caller wrote, so the writer hears about a
+    # banned phrase together with everything else. The rendered email is
+    # checked again (rendered_violations): only it has the renderer's defaults.
+    violations += never_say_violations(spec, _all_text(_text(subject), out, header_values))
+    return out, violations
+
+
+def never_say_violations(spec: Mapping[str, Any], fields: Sequence[str]) -> list[str]:
+    """One violation per banned phrase found in any of `fields`.
+
+    Each field is searched on its own, a window at a time: the cost of one
+    search grows with the square of the text it is given, and a field can be
+    as long as the caller likes.
+    """
+    found: list[str] = []
     for phrase in spec.get("never_say") or []:
         pattern = _never_say_pattern(_text(phrase))
-        found = next((m for m in map(pattern.search, fields) if m), None)
-        if found:
-            violations.append(f"The email says {found.group(0)!r}; this template never says {_text(phrase)!r}.")
-    return out, violations
+        match = next((m for field in fields for window in _windows(field) if (m := pattern.search(window))), None)
+        if match:
+            found.append(f"The email says {match.group(0)!r}; this template never says {_text(phrase)!r}.")
+    return found
+
+
+SEARCH_WINDOW = 600
+_WINDOW_OVERLAP = 200
+
+
+def _windows(text: str) -> list[str]:
+    """`text` in overlapping pieces of at most SEARCH_WINDOW characters (a phrase longer than the overlap is not one)."""
+    if len(text) <= SEARCH_WINDOW:
+        return [text]
+    step = SEARCH_WINDOW - _WINDOW_OVERLAP
+    return [text[i : i + SEARCH_WINDOW] for i in range(0, len(text) - _WINDOW_OVERLAP, step)]
+
+
+class _VisibleText(HTMLParser):
+    """The text a reader of an HTML email sees, one entry per text run, plus image descriptions."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.runs: list[str] = []
+        self._hidden = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in ("style", "script", "head", "title"):
+            self._hidden += 1
+        if tag == "img":
+            self.runs.extend(value for key, value in attrs if key == "alt" and value and value.strip())
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("style", "script", "head", "title") and self._hidden:
+            self._hidden -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self._hidden and data.strip():
+            self.runs.append(" ".join(data.split()))
+
+
+def rendered_violations(spec: Mapping[str, Any], subject: str, page: str) -> list[str]:
+    """Banned phrases in the email as rendered: what the reader will actually see.
+
+    The renderer adds text the caller never wrote (default headings, today's
+    date, the deployment's name) and turns numbers into text (a share of 63.6
+    becomes "63.6%"), so the finished page is what the rule is about.
+    """
+    parser = _VisibleText()
+    parser.feed(page)
+    parser.close()
+    return never_say_violations(spec, [_text(subject), *parser.runs])
 
 
 MAX_PATTERN_CHARS = 200
@@ -571,7 +631,8 @@ def _slow_pattern(source: str) -> str:
     server: a repeat inside a repeat (`(x+)+$`), or many optional or open-ended
     parts side by side (`a*a*a*b`). Those shapes are refused; a phrase check
     never needs them. What is accepted costs at most a small multiple of the
-    square of one field's length, and fields are searched one at a time.
+    square of the text searched, and that text is one window of one field at a
+    time (never_say_violations), so a very long field cannot make it slow.
     """
     if len(source) > MAX_PATTERN_CHARS:
         return f"a pattern may be at most {MAX_PATTERN_CHARS} characters"

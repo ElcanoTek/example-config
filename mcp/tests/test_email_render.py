@@ -235,6 +235,11 @@ def test_custom_colors_are_checked(colors: Any, message: str) -> None:
         _render(colors=colors)
 
 
+def test_a_chart_may_not_take_the_logo_cid() -> None:
+    with pytest.raises(email_render.RenderError, match="header logo"):
+        _render(blocks=[{"type": "chart", "cid": "brand-logo", "alt": "Daily spend"}])
+
+
 def test_default_theme_is_the_protocol_default() -> None:
     assert email_render.default_theme() == DEFAULT_THEME
     assert _render() == _render(theme=DEFAULT_THEME)

@@ -614,6 +614,8 @@ def _block_chart(block: Mapping[str, Any], slots: _Slots, top: int, where: str) 
         cid = cid[4:]
     if not _CID.fullmatch(cid):
         raise RenderError(f"{where}: 'cid' may use only letters, digits and . _ @ - (got {cid!r}).")
+    if cid.lower() == LOGO_CID:
+        raise RenderError(f"{where}: 'cid' {cid!r} is the header logo's; give the chart its own, such as spend_chart.")
     alt = _require(block, "alt", where)
     rows = ""
     if _clean(block.get("heading")):
