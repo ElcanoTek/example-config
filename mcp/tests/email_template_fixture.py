@@ -2,7 +2,7 @@
 
 This bundle ships no email templates of its own: the team saves theirs from a
 chat. The tests still need "an email a person asked to keep", so this is one:
-a valid spec whose sample fits it. It is demo data (Northwind Outfitters) and
+a valid spec whose sample fits it. It is demo data (Acme Outfitters) and
 is never listed in the library.
 """
 
@@ -20,7 +20,7 @@ _SPEC: dict[str, Any] = {
     "use_when": "A campaign is live and the client gets a short written update each week.",
     "max_words": 260,
     "subject": {
-        "instruction": "Client, campaign and the week, e.g. 'Northwind | Spring Sale | Week of May 4'.",
+        "instruction": "Client, campaign and the week, e.g. 'Acme | Spring Sale | Week of May 4'.",
         "max_chars": 70,
     },
     "header": {"headline": "The campaign name.", "status": "One short line on pacing."},
@@ -90,8 +90,8 @@ _SPEC: dict[str, Any] = {
         },
     ],
     "sample": {
-        "subject": "Northwind Outfitters | Spring Sale | Week of May 4",
-        "client_name": "Northwind Outfitters",
+        "subject": "Acme Outfitters | Spring Sale | Week of May 4",
+        "client_name": "Acme Outfitters",
         "headline": "Spring Sale",
         "date": "May 11, 2026",
         "date_range": "May 4 to May 10, 2026",
@@ -146,7 +146,7 @@ _SPEC: dict[str, Any] = {
                 "type": "callout",
                 "text": "Please confirm the added $5,000 for the final week by Thursday.",
             },
-            {"section": "closing", "type": "closing", "text": ["Thank you,", "The Northwind team"]},
+            {"section": "closing", "type": "closing", "text": ["Thank you,", "The Acme team"]},
         ],
     },
 }

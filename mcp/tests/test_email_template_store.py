@@ -40,8 +40,8 @@ def _team_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     (bundle / f"{BUILT_IN}.yaml").write_text(yaml.safe_dump(fixture_spec(), sort_keys=False), encoding="utf-8")
     monkeypatch.setattr(email_templates, "TEMPLATES_DIR", bundle)
     monkeypatch.setenv("EMAIL_TEMPLATES_TEAM_DIR", str(team))
-    monkeypatch.setenv("EMAIL_TEMPLATE_AUTHOR", "Jordan@Northwind.example")
-    monkeypatch.setenv("SES_TENANT_LABEL", "Northwind")
+    monkeypatch.setenv("EMAIL_TEMPLATE_AUTHOR", "Jordan@Acme.example")
+    monkeypatch.setenv("SES_TENANT_LABEL", "Acme")
     monkeypatch.delenv("CUTLASS_MOC_TASK_ID", raising=False)
     return team
 
@@ -60,7 +60,7 @@ async def test_a_saved_template_is_listed_enforced_and_previewed(_team_dir: Path
     assert saved["saved"] == "monthly-qbr-recap" and saved["replaced_an_earlier_version"] is False
 
     stored = yaml.safe_load((_team_dir / "monthly-qbr-recap.yaml").read_text(encoding="utf-8"))
-    assert stored["created_by"] == "jordan@northwind.example" and stored["created_at"].endswith("Z")
+    assert stored["created_by"] == "jordan@acme.example" and stored["created_at"].endswith("Z")
     assert "updated_at" not in stored
     # No form was given, so it has the standard one: the pickers and the approval-card ending.
     assert [f["type"] for f in stored["fields"]] == ["text", "recipients", "palette", "textarea"]
@@ -93,12 +93,12 @@ async def test_saving_again_replaces_and_keeps_who_first_added_it(
     _team_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await save_email_template("monthly-qbr-recap", _spec())
-    monkeypatch.setenv("EMAIL_TEMPLATE_AUTHOR", "sam@northwind.example")
+    monkeypatch.setenv("EMAIL_TEMPLATE_AUTHOR", "sam@acme.example")
     again = await save_email_template("monthly-qbr-recap", _spec(name="QBR recap v2", created_by="mallory@example.com"))
     assert again["replaced_an_earlier_version"] is True
     stored = yaml.safe_load((_team_dir / "monthly-qbr-recap.yaml").read_text(encoding="utf-8"))
     assert stored["name"] == "QBR recap v2"
-    assert stored["created_by"] == "jordan@northwind.example", "the author is fleet's record, never the spec's"
+    assert stored["created_by"] == "jordan@acme.example", "the author is fleet's record, never the spec's"
     assert stored["updated_at"].endswith("Z")
     assert (await check_email_template("monthly-qbr-recap", _spec()))["replaces_an_existing_team_template"] is True
 
@@ -222,6 +222,6 @@ async def test_a_style_field_the_renderer_cannot_produce_is_refused_before_anyth
 
 async def test_the_sample_is_held_to_every_header_field_render_email_checks(_team_dir: Path) -> None:
     spec = _spec()
-    spec["sample"]["client_name"] = "Northwind (NWD48213)"  # the template bans campaign codes
+    spec["sample"]["client_name"] = "Acme (ACM48213)"  # the template bans campaign codes
     saved = await save_email_template("qbr", spec)
-    assert "sample does not fit the template" in saved["error"] and "NWD48213" in saved["error"]
+    assert "sample does not fit the template" in saved["error"] and "ACM48213" in saved["error"]

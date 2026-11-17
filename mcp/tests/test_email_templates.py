@@ -38,7 +38,7 @@ def _library(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     raw["fields"], raw["promptTemplate"] = email_template_store.default_form(OPT, raw["name"])
     (library / f"{OPT}.yaml").write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
     monkeypatch.setattr(email_templates, "TEMPLATES_DIR", library)
-    monkeypatch.setenv("SES_TENANT_LABEL", "Northwind")
+    monkeypatch.setenv("SES_TENANT_LABEL", "Acme")
     monkeypatch.setenv("CUTLASS_ALLOWED_DIRS", str(tmp_path))
     monkeypatch.delenv("EMAIL_TEMPLATES_TEAM_DIR", raising=False)
     return library
@@ -68,7 +68,7 @@ def test_shipped_templates_are_well_formed_and_their_previews_current(
 ) -> None:
     """Nothing is shipped today; a template added under email_templates/ must pass this."""
     monkeypatch.undo()
-    monkeypatch.setenv("SES_TENANT_LABEL", "Northwind")
+    monkeypatch.setenv("SES_TENANT_LABEL", "Acme")
     for template_id in SHIPPED:
         raw = yaml.safe_load((email_templates.TEMPLATES_DIR / f"{template_id}.yaml").read_text(encoding="utf-8"))
         assert email_templates.validate_spec(raw) == [], template_id
@@ -135,18 +135,18 @@ def test_recolored_preview_is_the_real_render() -> None:
     stored = email_template_preview.render_preview(spec)
     assert sorted(styles["options"]) == email_render.available_themes()
     for option, table in styles["options"].items():
-        themed = copy.deepcopy(spec)
-        themed["sample"]["theme"] = option
-        assert _recolor(stored, table) == email_template_preview.render_preview(themed), option
+        assert _recolor(stored, table) == email_template_preview.render_preview(spec, theme=option), option
     assert {name.lower() for name in styles["custom"]} == set(email_render.CUSTOM_COLORS)
     default = email_render.default_theme()
-    branded = copy.deepcopy(spec)
-    branded["sample"]["theme"] = default
     for picked in ({"Header": "#1F3A5F", "Accent": "#C2410C"}, {"Header": "#3B2A5C"}, {"Accent": "#0B5A44"}):
         table = dict(styles["options"][default])
         table.update({old: new for name, new in picked.items() for old in styles["custom"][name]})
         colors = {name.lower(): new for name, new in picked.items()}
-        assert _recolor(stored, table) == email_template_preview.render_preview(branded, colors), picked
+        assert _recolor(stored, table) == email_template_preview.render_preview(spec, colors, default), picked
+    # A theme named in the sample does not move the stored example off the plain palette.
+    themed = copy.deepcopy(spec)
+    themed["sample"]["theme"] = default
+    assert email_template_preview.render_preview(themed) == stored
 
 
 def test_preview_is_self_contained() -> None:
@@ -214,7 +214,7 @@ def test_bullets_only_section_refuses_a_paragraph() -> None:
     ("text", "said"),
     [
         ("No optimizations were made this week.", "No optimizations"),
-        ("Results for NWD00190 are in.", "NWD00190"),
+        ("Results for ACM00190 are in.", "ACM00190"),
         ("SJC-004 paused the deal.", "SJC-004"),
     ],
 )
@@ -223,6 +223,61 @@ def test_never_say(text: str, said: str) -> None:
     next(b for b in blocks if b["section"] == "watching")["bullets"] = [text]
     _, violations = email_templates.apply_template(spec, "Subject", blocks)
     assert any(said in v for v in violations)
+
+
+def test_never_say_sees_what_the_reader_sees() -> None:
+    """Bold markers do not hide a phrase, and a heading the template sets is checked too."""
+    spec, blocks = _sample_blocks()
+    next(b for b in blocks if b["section"] == "watching")["bullets"] = ["No **optimizations** were made."]
+    _, violations = email_templates.apply_template(spec, "Subject", blocks)
+    assert any("No optimizations" in v for v in violations)
+    spec, blocks = _sample_blocks()
+    spec["never_say"] = ["what we adjusted"]
+    _, violations = email_templates.apply_template(spec, "Subject", blocks)
+    assert any("What We Adjusted" in v for v in violations)
+
+
+@pytest.mark.parametrize("pattern", ["re:(x+)+$", "re:(a|aa)+$", "re:(\\w*)*!", "re:(a)\\1", "re:" + "a" * 201])
+def test_a_never_say_pattern_that_could_hang_a_render_is_refused(pattern: str) -> None:
+    raw = fixture_spec()
+    raw["never_say"] = [pattern]
+    assert any("not a valid pattern" in issue for issue in email_templates.validate_spec(raw))
+
+
+@pytest.mark.parametrize(
+    "pattern", ["re:\\b[A-Z]{3}\\d{5}\\b", "re:\\bQ[1-4] \\d{4}\\b", "re:(?:internal|draft) only", "re:\\$\\d+k?"]
+)
+def test_ordinary_never_say_patterns_are_accepted(pattern: str) -> None:
+    raw = fixture_spec()
+    raw["never_say"] = [pattern]
+    assert email_templates.validate_spec(raw) == []
+
+
+@pytest.mark.parametrize(
+    ("form", "message"),
+    [
+        ({"fields": {}, "promptTemplate": "Write it."}, "'fields' must be a non-empty list"),
+        (
+            {"fields": [{"key": "about", "label": "About", "type": "text"}], "promptTemplate": []},
+            "'promptTemplate' must be",
+        ),
+        ({"fields": ["about"], "promptTemplate": "Write it."}, "fields[0] must be a mapping"),
+        ({"fields": [{"key": "a b", "label": "About", "type": "text"}], "promptTemplate": "x"}, "'key' must be"),
+        ({"fields": [{"key": "about", "type": "text"}], "promptTemplate": "x"}, "'label' is required"),
+        (
+            {"fields": [{"key": "about", "label": "About", "type": "slider"}], "promptTemplate": "x"},
+            "'type' must be one of",
+        ),
+        ({"fields": [{"key": "look", "label": "Look", "type": "palette"}], "promptTemplate": "x"}, "needs 'options'"),
+        (
+            {"fields": [{"key": "about", "label": "About", "type": "text"}], "promptTemplate": "For {who}"},
+            "no field has that key",
+        ),
+    ],
+)
+def test_a_form_fleet_would_drop_is_reported(form: dict[str, Any], message: str) -> None:
+    issues = " ".join(email_templates.validate_spec(fixture_spec(**form)))
+    assert message in issues
 
 
 def test_never_say_matches_whole_phrases_only() -> None:
@@ -327,10 +382,10 @@ async def test_render_email_checks_every_header_field(tmp_path: Path, header: st
     out = tmp_path / "out"
     out.mkdir()
     args = {"client_name": "Acme", "badge_label": "On track", "status": "Pacing to plan"}
-    args[header] = "Acme (NWD48213)"
+    args[header] = "Acme (ACM48213)"
     result = await render_email(spec["sample"]["subject"], blocks, str(out), template=OPT, **args)
     assert "does not fit template" in result["error"], result
-    assert any("NWD48213" in v for v in result["violations"])
+    assert any("ACM48213" in v for v in result["violations"])
     assert list(out.iterdir()) == []
 
 

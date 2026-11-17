@@ -77,18 +77,21 @@ def _sample_theme(spec: Mapping[str, Any]) -> str:
     A template with a Style picker is rendered in the plain palette, because
     the recolor table (preview_styles) maps that palette to each look; the
     library then shows the picker's default look, and any other the person
-    picks, by recoloring. A template without one is shown in its own theme.
+    picks, by recoloring; a theme named in the sample or the template does not
+    change that, or the table would be applied to the wrong colors. A template
+    without a picker is shown in its own theme.
     """
-    sample = spec["sample"]
-    if sample.get("theme"):
-        return str(sample["theme"])
     if any(isinstance(f, Mapping) and f.get("type") == "palette" for f in spec.get("fields") or []):
         return plain_theme()
-    return str(spec.get("theme") or "")
+    return str(spec["sample"].get("theme") or spec.get("theme") or "")
 
 
-def render_sample(spec: Mapping[str, Any], colors: Mapping[str, str] | None = None) -> str:
-    """The template's sample as render_email produces it. Raises ValueError if the sample does not fit."""
+def render_sample(spec: Mapping[str, Any], colors: Mapping[str, str] | None = None, theme: str | None = None) -> str:
+    """The template's sample as render_email produces it. Raises ValueError if the sample does not fit.
+
+    `theme` renders it in that theme instead of the one an example is stored in
+    (the tests compare such a render with the recolored example).
+    """
     sample = spec["sample"]
     subject = str(sample.get("subject") or "")
     header = {key: str(sample.get(key) or "") for key in _HEADER_ARGS}
@@ -105,7 +108,7 @@ def render_sample(spec: Mapping[str, Any], colors: Mapping[str, str] | None = No
     return email_render.render_email(
         subject=subject,
         blocks=blocks,
-        theme=_sample_theme(spec),
+        theme=_sample_theme(spec) if theme is None else theme,
         colors=colors,
         **header,
     )
@@ -120,9 +123,9 @@ def standalone(page: str) -> str:
     return _CHART_IMG.sub(lambda m: f'<img src="{_chart_placeholder(m.group(2))}" alt="{m.group(2)}"', page)
 
 
-def render_preview(spec: Mapping[str, Any], colors: Mapping[str, str] | None = None) -> str:
+def render_preview(spec: Mapping[str, Any], colors: Mapping[str, str] | None = None, theme: str | None = None) -> str:
     """The template's sample as a standalone HTML page. Raises ValueError if the sample does not fit."""
-    return standalone(render_sample(spec, colors))
+    return standalone(render_sample(spec, colors, theme))
 
 
 def preview_styles(ids: list[str] | None = None) -> dict[str, Any]:

@@ -28,6 +28,7 @@ import os
 import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from re import _parser as _re_parser  # the parsed pattern, for _slow_pattern
 from typing import Any
 
 import yaml
@@ -168,6 +169,48 @@ def _validate_section(raw: Any, where: str, seen: set[str], issues: list[str]) -
             issues.append(f"{where}: {key} must be a whole number")
 
 
+# fleet's form field types (fleet docs/PROMPT-LIBRARY.md). fleet validates the
+# form in full when it lists the template; this catches what would make it
+# drop the template, before one is saved.
+FIELD_TYPES = ("text", "textarea", "select", "number", "daterange", "toggle", "recipients", "palette")
+_FIELD_KEY = re.compile(r"\w+")
+_PROMPT_TOKEN = re.compile(r"\{(\w+)\}")
+
+
+def _validate_form(fields: Any, prompt: Any, issues: list[str]) -> None:
+    if not isinstance(prompt, str) or not prompt.strip():
+        issues.append("'promptTemplate' must be non-empty text")
+    if not isinstance(fields, list) or not fields:
+        issues.append("'fields' must be a non-empty list of form fields")
+        return
+    keys: set[str] = set()
+    for i, field in enumerate(fields):
+        where = f"fields[{i}]"
+        if not isinstance(field, Mapping):
+            issues.append(f"{where} must be a mapping with key, label and type")
+            continue
+        key = field.get("key")
+        if not isinstance(key, str) or not _FIELD_KEY.fullmatch(key):
+            issues.append(f"{where}: 'key' must be letters, digits and '_'")
+        elif key in keys:
+            issues.append(f"{where}: duplicate key {key!r}")
+        else:
+            keys.add(key)
+        if not _text(field.get("label")):
+            issues.append(f"{where}: 'label' is required")
+        kind = field.get("type")
+        if kind not in FIELD_TYPES:
+            issues.append(f"{where}: 'type' must be one of {', '.join(FIELD_TYPES)}")
+        elif kind in ("select", "palette"):
+            options = field.get("options")
+            if not isinstance(options, list) or not options or not all(isinstance(o, str) and o for o in options):
+                issues.append(f"{where}: a {kind} field needs 'options', a list of names")
+    if isinstance(prompt, str):
+        unknown = sorted(set(_PROMPT_TOKEN.findall(prompt)) - keys)
+        if unknown:
+            issues.append(f"'promptTemplate' uses {{{'}, {'.join(unknown)}}} but no field has that key")
+
+
 def validate_spec(spec: Any) -> list[str]:
     """Problems with a parsed template file; empty when it is well formed."""
     if not isinstance(spec, Mapping):
@@ -208,6 +251,8 @@ def validate_spec(spec: Any) -> list[str]:
         seen: set[str] = set()
         for i, raw in enumerate(sections):
             _validate_section(raw, f"sections[{i}]", seen, issues)
+    if "fields" in spec or "promptTemplate" in spec:
+        _validate_form(spec.get("fields"), spec.get("promptTemplate"), issues)
     sample = spec.get("sample")
     if not isinstance(sample, Mapping) or not isinstance(sample.get("blocks"), list):
         issues.append("'sample' is required: the render_email arguments the preview is rendered from")
@@ -465,7 +510,11 @@ def apply_template(
     if max_chars and len(_text(subject)) > max_chars:
         violations.append(f"The subject is {len(_text(subject))} characters; the limit is {max_chars}.")
 
-    haystack = _all_text(_text(subject), [b for b in blocks if isinstance(b, Mapping)], header_values)
+    # What the reader sees: the caller's blocks, the headings the template set
+    # on them (`out`), and no bold markers, which would split a phrase.
+    haystack = _BOLD.sub(
+        r"\1", _all_text(_text(subject), [*(b for b in blocks if isinstance(b, Mapping)), *out], header_values)
+    )
     for phrase in spec.get("never_say") or []:
         pattern = _never_say_pattern(_text(phrase))
         found = pattern.search(haystack)
@@ -474,10 +523,66 @@ def apply_template(
     return out, violations
 
 
+MAX_PATTERN_CHARS = 200
+
+
+def _slow_pattern(source: str) -> str:
+    """Why a never_say pattern could take very long to run ("" when it cannot).
+
+    Every render searches the email with each pattern, and Python's `re` has no
+    time limit, so a pattern that can backtrack exponentially (a repeat inside
+    a repeat, as in `(x+)+$`) would hang the server. Those shapes are refused;
+    a phrase check never needs them.
+    """
+    if len(source) > MAX_PATTERN_CHARS:
+        return f"a pattern may be at most {MAX_PATTERN_CHARS} characters"
+    try:
+        tree = _re_parser.parse(source, re.IGNORECASE)
+    except Exception:  # noqa: BLE001 - re.compile accepted it; an unreadable tree is not trusted
+        return "the pattern could not be checked; use a simpler one"
+
+    def children(op: Any, av: Any) -> list[Any]:
+        name = str(op)
+        if name in ("MAX_REPEAT", "MIN_REPEAT", "POSSESSIVE_REPEAT"):
+            return [av[2]]
+        if name == "SUBPATTERN":
+            return [av[3]]
+        if name == "BRANCH":
+            return list(av[1])
+        if name in ("ASSERT", "ASSERT_NOT"):
+            return [av[1]]
+        if name == "ATOMIC_GROUP":
+            return [av]
+        if name == "GROUPREF_EXISTS":
+            return [item for item in av[1:] if item is not None]
+        return []
+
+    def problem(items: Any, repeated: bool) -> str:
+        for op, av in items:
+            name = str(op)
+            if name == "GROUPREF":
+                return "a pattern may not use a backreference"
+            repeats = name in ("MAX_REPEAT", "MIN_REPEAT", "POSSESSIVE_REPEAT") and av[1] > 1
+            if repeated and (repeats or name == "BRANCH"):
+                return "a pattern may not repeat a group that itself repeats or has alternatives, as in (x+)+ or (a|b)+"
+            for child in children(op, av):
+                found = problem(child, repeated or repeats)
+                if found:
+                    return found
+        return ""
+
+    return problem(tree, False)
+
+
 @functools.lru_cache(maxsize=256)
 def _never_say_pattern(phrase: str) -> re.Pattern[str]:
     """`re:<regex>` is a regular expression; anything else is a whole-phrase, any-case match."""
     if phrase.startswith("re:"):
-        return re.compile(phrase[3:].strip(), re.IGNORECASE)
+        source = phrase[3:].strip()
+        compiled = re.compile(source, re.IGNORECASE)
+        slow = _slow_pattern(source)
+        if slow:
+            raise re.error(slow)
+        return compiled
     words = [re.escape(word) for word in phrase.split()]
     return re.compile(r"(?<![A-Za-z0-9])" + r"\s+".join(words) + r"(?![A-Za-z0-9])", re.IGNORECASE)
