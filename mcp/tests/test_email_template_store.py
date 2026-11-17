@@ -245,3 +245,72 @@ async def test_one_save_at_a_time_across_server_processes(_team_dir: Path) -> No
     worker.join(timeout=10)
     assert done and done[0]["saved"] == "second"
     assert sorted(p.name for p in _team_dir.glob("*.yaml")) == ["first.yaml", "second.yaml"]
+
+
+async def test_a_save_that_fails_part_way_leaves_the_library_as_it_was(
+    _team_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Template, example and styles table are one change: a failed write puts the others back."""
+    await save_email_template("first", _spec(name="First"))
+    before = {
+        p.relative_to(_team_dir).as_posix(): p.read_text(encoding="utf-8") for p in _team_dir.rglob("*") if p.is_file()
+    }
+    real_write = email_template_store._write
+
+    def failing(path: Path, text: str) -> None:
+        if path.name == "styles.json" and '"saved-after"' not in text and "restore" not in failing.__dict__:
+            failing.__dict__["restore"] = True
+            raise OSError("disk full")
+        real_write(path, text)
+
+    monkeypatch.setattr(email_template_store, "_write", failing)
+    for template_id, spec in (("second", _spec(name="Second")), ("first", _spec(name="First, revised"))):
+        failing.__dict__.pop("restore", None)
+        saved = await save_email_template(template_id, spec)
+        assert "could not be written" in saved["error"]
+        after = {
+            p.relative_to(_team_dir).as_posix(): p.read_text(encoding="utf-8")
+            for p in _team_dir.rglob("*")
+            if p.is_file()
+        }
+        assert after == before
+    assert _team_dir.stat().st_mode & 0o222 == 0
+
+
+async def test_a_broken_neighbour_does_not_block_a_save(_team_dir: Path) -> None:
+    await save_email_template("first", _spec(name="First"))
+    _team_dir.chmod(0o755)
+    (_team_dir / "broken.yaml").write_text("name: [unclosed\n", encoding="utf-8")
+    _team_dir.chmod(0o555)
+    assert (await save_email_template("second", _spec(name="Second"))).get("error") is None
+    assert await delete_email_template("second") == {"removed": "second"}
+
+
+async def test_a_template_removed_by_another_chat_is_an_ordinary_error(
+    _team_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Listed a moment ago, gone by the time it is read: a message, not a crash."""
+    await save_email_template("first", _spec(name="First"))
+    monkeypatch.setattr(email_templates, "_template_path", lambda _id: _team_dir / "gone.yaml")
+    assert "no longer there" in (await get_email_template("first"))["error"]
+    listed = await list_email_templates()
+    assert any("no longer there" in problem for problem in listed["problems"])
+
+
+async def test_the_default_client_name_is_checked_too(
+    _team_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With client_name left out the header shows the deployment's name, so that is what is checked."""
+    spec = _spec(never_say=["Acme"])
+    spec["sample"]["client_name"] = ""
+    spec["sample"]["subject"] = "Spring Sale | Week of May 4"
+    spec["sample"]["blocks"][-1]["text"] = ["Thank you,", "The team"]
+    spec["sample"]["blocks"][-2]["text"] = "Please confirm the added budget by Thursday."
+    saved = await save_email_template("qbr", spec)
+    assert "sample does not fit the template" in saved["error"] and "Acme" in saved["error"]
+    monkeypatch.setenv("SES_TENANT_LABEL", "Globex")
+    assert (await save_email_template("qbr", spec)).get("error") is None
+    monkeypatch.setenv("SES_TENANT_LABEL", "Acme")
+    blocks = copy.deepcopy(spec["sample"]["blocks"])
+    refused = await render_email(spec["sample"]["subject"], blocks, str(tmp_path), template="qbr")
+    assert "does not fit template" in refused["error"] and any("Acme" in v for v in refused["violations"])

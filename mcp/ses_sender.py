@@ -1327,7 +1327,17 @@ async def render_email(
             spec,
             subject,
             blocks,
-            header_values=(headline, status, badge_label, preheader, client_name, date_range, date),
+            # client_name as the renderer resolves it: left out, the header
+            # shows the deployment's own name.
+            header_values=(
+                headline,
+                status,
+                badge_label,
+                preheader,
+                client_name.strip() or os.environ.get("SES_TENANT_LABEL", "").strip(),
+                date_range,
+                date,
+            ),
         )
         if violations:
             return {

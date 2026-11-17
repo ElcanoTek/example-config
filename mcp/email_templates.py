@@ -179,6 +179,10 @@ def _validate_section(raw: Any, where: str, seen: set[str], issues: list[str]) -
             issues.append(f"{where}: {key} does not apply to a {block} block")
         elif isinstance(value, bool) or not isinstance(value, int) or value < (1 if key.startswith("min_") else 0):
             issues.append(f"{where}: {key} must be a whole number")
+    for what in ("items", "bullets"):
+        low, high = limits.get(f"min_{what}"), limits.get(f"max_{what}")
+        if isinstance(low, int) and isinstance(high, int) and low > high:
+            issues.append(f"{where}: min_{what} {low} is more than max_{what} {high}; no email could fit")
 
 
 # fleet's form field types (fleet docs/PROMPT-LIBRARY.md). fleet validates the
@@ -208,8 +212,8 @@ def _validate_form(fields: Any, prompt: Any, issues: list[str]) -> None:
             issues.append(f"{where}: duplicate key {key!r}")
         else:
             keys.add(key)
-        if not _text(field.get("label")):
-            issues.append(f"{where}: 'label' is required")
+        if not isinstance(field.get("label"), str) or not field["label"].strip():
+            issues.append(f"{where}: 'label' is required, as text")
         kind = field.get("type")
         if kind not in FIELD_TYPES:
             issues.append(f"{where}: 'type' must be one of {', '.join(FIELD_TYPES)}")
@@ -352,7 +356,10 @@ def load_template(template_id: str) -> dict[str, Any]:
         known = ", ".join(template_ids()) or "none are installed"
         raise TemplateError(f"unknown email template {template_id!r}. Templates: {known}.")
     path = _template_path(wanted)
-    stat = path.stat()
+    try:
+        stat = path.stat()
+    except OSError as exc:  # removed by another chat since it was listed
+        raise TemplateError(f"unknown email template {template_id!r}: it is no longer there.") from exc
     if stat.st_size > MAX_TEMPLATE_BYTES:
         raise TemplateError(f"email template {wanted!r} exceeds {MAX_TEMPLATE_BYTES} bytes")
     return _load_cached(str(path), wanted, stat.st_mtime_ns, stat.st_size)

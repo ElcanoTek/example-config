@@ -279,6 +279,10 @@ def test_ordinary_never_say_patterns_are_accepted(pattern: str) -> None:
         ({"fields": [{"key": "a b", "label": "About", "type": "text"}], "promptTemplate": "x"}, "'key' must be"),
         ({"fields": [{"key": "about", "type": "text"}], "promptTemplate": "x"}, "'label' is required"),
         (
+            {"fields": [{"key": "about", "label": {"text": "About"}, "type": "text"}], "promptTemplate": "x"},
+            "'label' is required",
+        ),
+        (
             {"fields": [{"key": "about", "label": "About", "type": "slider"}], "promptTemplate": "x"},
             "'type' must be one of",
         ),
@@ -318,6 +322,14 @@ def test_text_fields_must_be_text(change: dict[str, Any], message: str) -> None:
     raw = fixture_spec()
     raw["sections"][0]["title"] = {"text": "Summary"}
     assert "sections[0]: 'title' must be text" in " ".join(email_templates.validate_spec(raw))
+
+
+def test_limits_no_email_could_meet_are_reported() -> None:
+    raw = fixture_spec()
+    raw["sections"][1]["limits"] = {"min_items": 5, "max_items": 4}
+    raw["sections"][2]["limits"] = {"min_bullets": 4, "max_bullets": 3}
+    issues = " ".join(email_templates.validate_spec(raw))
+    assert "min_items 5 is more than max_items 4" in issues and "min_bullets 4 is more than max_bullets 3" in issues
 
 
 def test_never_say_matches_whole_phrases_only() -> None:

@@ -26,6 +26,7 @@ from __future__ import annotations
 import base64
 import html
 import json
+import os
 import re
 import sys
 from collections.abc import Mapping
@@ -95,6 +96,8 @@ def render_sample(spec: Mapping[str, Any], colors: Mapping[str, str] | None = No
     sample = spec["sample"]
     subject = str(sample.get("subject") or "")
     header = {key: str(sample.get(key) or "") for key in _HEADER_ARGS}
+    # As render_email resolves it: a sample without a client name shows the deployment's own.
+    header["client_name"] = header["client_name"].strip() or os.environ.get("SES_TENANT_LABEL", "").strip()
     blocks, violations = email_templates.apply_template(
         spec,
         subject,

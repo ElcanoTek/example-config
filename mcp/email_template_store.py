@@ -260,9 +260,52 @@ def _team_previews(directory: Path) -> Path:
     return directory / "previews"
 
 
-def _write_styles(previews: Path) -> None:
-    styles = email_template_preview.preview_styles(email_templates.template_ids())
-    _write(previews / "styles.json", json.dumps(styles, indent=2) + "\n")
+def _styles_text(candidate: Mapping[str, Any] | None = None, without: str = "") -> str:
+    """The recolor table for the library as it will be: every template but `without`, plus `candidate`.
+
+    Worked out before anything is written. A neighbour that no longer loads is
+    left out of the table instead of blocking the save or removal of another.
+    """
+    options: dict[str, dict[str, str]] = {}
+    custom: dict[str, list[str]] = {}
+    for template_id in email_templates.template_ids():
+        if template_id == without:
+            continue
+        with contextlib.suppress(ValueError):  # TemplateError and a look the renderer no longer has
+            email_template_preview.add_styles(email_templates.load_template(template_id), options, custom)
+    if candidate is not None:
+        email_template_preview.add_styles(candidate, options, custom)
+    return json.dumps({"options": dict(sorted(options.items())), "custom": custom}, indent=2) + "\n"
+
+
+def _replace_all(files: Mapping[Path, str | None]) -> None:
+    """Write every file (None removes it), or leave all of them as they were.
+
+    A template, its example and the styles table are one change. If a later
+    write fails, the earlier ones are put back, so the library never shows a
+    template without its example or with a table that does not know it.
+    """
+    before: dict[Path, str | None] = {}
+    for path in files:
+        if path.is_symlink():
+            raise StoreError(f"{path.name} is a link, not a file; it was left alone.")
+        before[path] = path.read_text(encoding="utf-8") if path.is_file() else None
+    done: list[Path] = []
+    try:
+        for path, text in files.items():
+            done.append(path)
+            if text is None:
+                path.unlink(missing_ok=True)
+            else:
+                _write(path, text)
+    except BaseException:
+        for path in reversed(done):
+            with contextlib.suppress(OSError, StoreError):
+                if before[path] is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    _write(path, before[path])
+        raise
 
 
 def _store(
@@ -283,12 +326,15 @@ def _store(
     clean["created_at"] = str(existing.get("created_at") or now)
     if existing:
         clean["updated_at"] = now
+    styles = _styles_text(dict(clean, id=wanted), without=wanted)
     with _unlocked(directory) as previews:
-        # The preview first: a template whose example is missing is worse than
-        # an example whose template is one write behind.
-        _write(previews / f"{wanted}.html", preview)
-        _write(path, yaml.safe_dump(clean, sort_keys=False, allow_unicode=True, width=1000))
-        _write_styles(previews)
+        _replace_all(
+            {
+                previews / f"{wanted}.html": preview,
+                path: yaml.safe_dump(clean, sort_keys=False, allow_unicode=True, width=1000),
+                previews / "styles.json": styles,
+            }
+        )
     return clean, existing
 
 
@@ -319,10 +365,10 @@ def delete(template_id: str) -> dict[str, Any]:
     with _one_writer(directory), _unlocked(directory) as previews:
         if not (directory / f"{wanted}.yaml").is_file():
             raise StoreError(f"There is no team template {template_id!r}; it was removed a moment ago.")
-        (directory / f"{wanted}.yaml").unlink()
-        with contextlib.suppress(FileNotFoundError):
-            (previews / f"{wanted}.html").unlink()
-        _write_styles(previews)
+        styles = _styles_text(without=wanted)
+        _replace_all(
+            {directory / f"{wanted}.yaml": None, previews / f"{wanted}.html": None, previews / "styles.json": styles}
+        )
     return {"removed": wanted}
 
 
