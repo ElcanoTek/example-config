@@ -25,6 +25,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import datetime as _dt
+import fcntl
 import json
 import os
 import tempfile
@@ -202,6 +203,24 @@ _DIR_LOCKED, _DIR_OPEN, _FILE_MODE = 0o555, 0o755, 0o444
 
 
 @contextlib.contextmanager
+def _one_writer(directory: Path):  # noqa: ANN202 - a context manager
+    """Hold the library for one save or delete, across every chat's server process.
+
+    Each chat runs its own copy of this server. Without this, one copy could
+    lock the folder again while another is half-way through its files, or two
+    could rebuild the styles table from different lists. The lock file sits
+    beside the folder, since the folder itself is read-only at rest.
+    """
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(directory.parent / f".{directory.name}.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+@contextlib.contextmanager
 def _unlocked(directory: Path):  # noqa: ANN202 - a context manager
     previews = _team_previews(directory)
     for folder in (directory, previews):
@@ -246,10 +265,10 @@ def _write_styles(previews: Path) -> None:
     _write(previews / "styles.json", json.dumps(styles, indent=2) + "\n")
 
 
-def save(template_id: str, spec: Any, author: str = "") -> dict[str, Any]:
-    """Validate and store a team template. Returns what the caller reports back."""
-    directory = _require_team_dir()
-    wanted, clean, preview = prepare(template_id, spec)
+def _store(
+    directory: Path, wanted: str, clean: dict[str, Any], preview: str, author: str
+) -> tuple[dict[str, Any], Mapping[str, Any]]:
+    """Write one checked template; the caller holds the library (_one_writer)."""
     path = directory / f"{wanted}.yaml"
     existing: Mapping[str, Any] = {}
     if path.is_file() and not path.is_symlink():
@@ -270,6 +289,15 @@ def save(template_id: str, spec: Any, author: str = "") -> dict[str, Any]:
         _write(previews / f"{wanted}.html", preview)
         _write(path, yaml.safe_dump(clean, sort_keys=False, allow_unicode=True, width=1000))
         _write_styles(previews)
+    return clean, existing
+
+
+def save(template_id: str, spec: Any, author: str = "") -> dict[str, Any]:
+    """Validate and store a team template. Returns what the caller reports back."""
+    directory = _require_team_dir()
+    wanted, clean, preview = prepare(template_id, spec)
+    with _one_writer(directory):
+        clean, existing = _store(directory, wanted, clean, preview, author)
     return {
         "saved": wanted,
         "name": str(clean.get("name") or ""),
@@ -288,7 +316,9 @@ def delete(template_id: str) -> dict[str, Any]:
     if wanted not in email_templates.team_template_ids():
         known = ", ".join(email_templates.team_template_ids()) or "there are none"
         raise StoreError(f"There is no team template {template_id!r}. Team templates: {known}.")
-    with _unlocked(directory) as previews:
+    with _one_writer(directory), _unlocked(directory) as previews:
+        if not (directory / f"{wanted}.yaml").is_file():
+            raise StoreError(f"There is no team template {template_id!r}; it was removed a moment ago.")
         (directory / f"{wanted}.yaml").unlink()
         with contextlib.suppress(FileNotFoundError):
             (previews / f"{wanted}.html").unlink()

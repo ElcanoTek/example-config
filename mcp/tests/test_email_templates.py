@@ -237,7 +237,21 @@ def test_never_say_sees_what_the_reader_sees() -> None:
     assert any("What We Adjusted" in v for v in violations)
 
 
-@pytest.mark.parametrize("pattern", ["re:(x+)+$", "re:(a|aa)+$", "re:(\\w*)*!", "re:(a)\\1", "re:" + "a" * 201])
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "re:(x+)+$",
+        "re:(a|aa)+$",
+        "re:(\\w*)*!",
+        "re:(a)\\1",
+        "re:" + "a" * 201,
+        # Side by side, repeats multiply: open-ended ones, and many optional ones.
+        "re:a*a*a*a*a*a*a*a*a*a*b",
+        "re:\\d+\\s*x",
+        "re:" + "a?" * 25 + "a" * 25 + "b",
+        "re:a{1,50}b{1,50}",
+    ],
+)
 def test_a_never_say_pattern_that_could_hang_a_render_is_refused(pattern: str) -> None:
     raw = fixture_spec()
     raw["never_say"] = [pattern]
@@ -278,6 +292,32 @@ def test_ordinary_never_say_patterns_are_accepted(pattern: str) -> None:
 def test_a_form_fleet_would_drop_is_reported(form: dict[str, Any], message: str) -> None:
     issues = " ".join(email_templates.validate_spec(fixture_spec(**form)))
     assert message in issues
+
+
+def test_never_say_does_not_read_across_fields() -> None:
+    """The end of one bullet and the start of the next are not a phrase anyone wrote."""
+    spec, blocks = _sample_blocks()
+    next(b for b in blocks if b["section"] == "watching")["bullets"] = ["We made no", "optimizations to report yet."]
+    _, violations = email_templates.apply_template(spec, "Subject", blocks)
+    assert violations == []
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"name": {"text": "QBR"}}, "'name' must be text"),
+        ({"description": 7}, "'description' must be text"),
+        ({"rules": [{"do": "something"}]}, "'rules' must be a list of non-empty strings"),
+        ({"never_say": [7]}, "'never_say' must be a list of non-empty strings"),
+        ({"subject": {"instruction": ["a", "b"]}}, "'subject.instruction' is required"),
+        ({"header": {"headline": {"x": 1}}}, "'header' takes only"),
+    ],
+)
+def test_text_fields_must_be_text(change: dict[str, Any], message: str) -> None:
+    assert message in " ".join(email_templates.validate_spec(fixture_spec(**change)))
+    raw = fixture_spec()
+    raw["sections"][0]["title"] = {"text": "Summary"}
+    assert "sections[0]: 'title' must be text" in " ".join(email_templates.validate_spec(raw))
 
 
 def test_never_say_matches_whole_phrases_only() -> None:

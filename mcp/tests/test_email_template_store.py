@@ -225,3 +225,23 @@ async def test_the_sample_is_held_to_every_header_field_render_email_checks(_tea
     spec["sample"]["client_name"] = "Acme (ACM48213)"  # the template bans campaign codes
     saved = await save_email_template("qbr", spec)
     assert "sample does not fit the template" in saved["error"] and "ACM48213" in saved["error"]
+
+
+async def test_one_save_at_a_time_across_server_processes(_team_dir: Path) -> None:
+    """Each chat runs its own server; a save waits while another holds the library."""
+    import fcntl
+    import os
+    import threading
+
+    await save_email_template("first", _spec())
+    lock = os.open(_team_dir.parent / f".{_team_dir.name}.lock", os.O_RDWR)
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    done: list[dict[str, Any]] = []
+    worker = threading.Thread(target=lambda: done.append(email_template_store.save("second", _spec())))
+    worker.start()
+    worker.join(timeout=0.5)
+    assert worker.is_alive() and not (_team_dir / "second.yaml").exists(), "the save went ahead without the lock"
+    os.close(lock)
+    worker.join(timeout=10)
+    assert done and done[0]["saved"] == "second"
+    assert sorted(p.name for p in _team_dir.glob("*.yaml")) == ["first.yaml", "second.yaml"]

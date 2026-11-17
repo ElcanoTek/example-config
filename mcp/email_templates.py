@@ -126,6 +126,17 @@ def _block_prose(block: Mapping[str, Any]) -> tuple[list[str], list[str]]:
     return paragraphs, _strings(block.get("bullets"))
 
 
+def _require_text(mapping: Mapping[str, Any], keys: Sequence[str], where: str, issues: list[str]) -> None:
+    """Report each of `keys` that is present and not text.
+
+    The checks below read values through `_text`, which would turn a mapping or
+    a number into a string and let it pass; fleet and the writer expect text.
+    """
+    for key in keys:
+        if mapping.get(key) is not None and not isinstance(mapping[key], str):
+            issues.append(f"{where}'{key}' must be text")
+
+
 def _validate_section(raw: Any, where: str, seen: set[str], issues: list[str]) -> None:
     if not isinstance(raw, Mapping):
         issues.append(f"{where} must be a mapping")
@@ -133,6 +144,7 @@ def _validate_section(raw: Any, where: str, seen: set[str], issues: list[str]) -
     unknown = sorted(set(raw) - _SECTION_KEYS)
     if unknown:
         issues.append(f"{where}: unknown key(s) {', '.join(unknown)}")
+    _require_text(raw, ("id", "title", "heading", "block", "kind", "instruction"), f"{where}: ", issues)
     section_id = _text(raw.get("id"))
     if not _ID.fullmatch(section_id):
         issues.append(f"{where}: 'id' must be lowercase letters, digits, - or _")
@@ -219,24 +231,33 @@ def validate_spec(spec: Any) -> list[str]:
     unknown = sorted(set(spec) - _TEMPLATE_KEYS)
     if unknown:
         issues.append(f"unknown key(s) {', '.join(unknown)}")
+    _require_text(spec, ("name", "description", "audience", "use_when", "based_on", "theme"), "", issues)
     for key in ("name", "description", "use_when"):
         if not _text(spec.get(key)):
             issues.append(f"'{key}' is required")
     if _text(spec.get("audience")) not in AUDIENCES:
         issues.append(f"'audience' must be one of {', '.join(AUDIENCES)}")
     subject = spec.get("subject") or {}
-    if not isinstance(subject, Mapping) or not _text(subject.get("instruction")):
+    if (
+        not isinstance(subject, Mapping)
+        or not isinstance(subject.get("instruction"), str)
+        or not subject["instruction"].strip()
+    ):
         issues.append("'subject.instruction' is required")
     elif "max_chars" in subject and (not isinstance(subject["max_chars"], int) or subject["max_chars"] < 10):
         issues.append("'subject.max_chars' must be a whole number of 10 or more")
     header = spec.get("header")
-    if header is not None and not (isinstance(header, Mapping) and set(header) <= {"headline", "status"}):
-        issues.append("'header' takes only 'headline' and 'status' instructions")
+    if header is not None and not (
+        isinstance(header, Mapping)
+        and set(header) <= {"headline", "status"}
+        and all(isinstance(v, str) for v in header.values())
+    ):
+        issues.append("'header' takes only 'headline' and 'status' instructions, each as text")
     if "max_words" in spec and (not isinstance(spec["max_words"], int) or spec["max_words"] < 1):
         issues.append("'max_words' must be a whole number of 1 or more")
     for key in ("rules", "never_say"):
         value = spec.get(key)
-        if value is not None and not (isinstance(value, list) and all(_text(v) for v in value)):
+        if value is not None and not (isinstance(value, list) and all(isinstance(v, str) and v.strip() for v in value)):
             issues.append(f"'{key}' must be a list of non-empty strings")
         elif key == "never_say":
             for phrase in value or []:
@@ -389,7 +410,12 @@ def describe(spec: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _all_text(subject: str, blocks: Sequence[Mapping[str, Any]], extra: Sequence[Any]) -> str:
+def _all_text(subject: str, blocks: Sequence[Mapping[str, Any]], extra: Sequence[Any]) -> list[str]:
+    """Every piece of text the reader sees, one entry per field, bold markers removed.
+
+    Kept apart so a phrase is only found inside one field: joined, the end of
+    one field and the start of the next could read as a phrase nobody wrote.
+    """
     parts: list[str] = [subject, *(_text(v) for v in extra)]
 
     def walk(value: Any) -> None:
@@ -404,7 +430,7 @@ def _all_text(subject: str, blocks: Sequence[Mapping[str, Any]], extra: Sequence
                 walk(inner)
 
     walk(list(blocks))
-    return "\n".join(parts)
+    return [_BOLD.sub(r"\1", part) for part in parts if part.strip()]
 
 
 def apply_template(
@@ -510,29 +536,35 @@ def apply_template(
     if max_chars and len(_text(subject)) > max_chars:
         violations.append(f"The subject is {len(_text(subject))} characters; the limit is {max_chars}.")
 
-    # What the reader sees: the caller's blocks, the headings the template set
-    # on them (`out`), and no bold markers, which would split a phrase.
-    haystack = _BOLD.sub(
-        r"\1", _all_text(_text(subject), [*(b for b in blocks if isinstance(b, Mapping)), *out], header_values)
-    )
+    # What the reader sees: the blocks as they will be rendered, with the
+    # headings the template set on them. A block that was refused above is not
+    # in `out`; it already has a violation of its own.
+    fields = _all_text(_text(subject), out, header_values)
     for phrase in spec.get("never_say") or []:
         pattern = _never_say_pattern(_text(phrase))
-        found = pattern.search(haystack)
+        found = next((m for m in map(pattern.search, fields) if m), None)
         if found:
             violations.append(f"The email says {found.group(0)!r}; this template never says {_text(phrase)!r}.")
     return out, violations
 
 
 MAX_PATTERN_CHARS = 200
+# A repeat longer than this counts as open-ended; a pattern gets one of those
+# and a few optional or variable-length parts in all. Each multiplies the work
+# of a search, and side by side (a*a*a*b, or a?a?a?...) they multiply together.
+MAX_BOUNDED_REPEAT = 10
+MAX_PATTERN_CHOICES = 4
 
 
 def _slow_pattern(source: str) -> str:
     """Why a never_say pattern could take very long to run ("" when it cannot).
 
     Every render searches the email with each pattern, and Python's `re` has no
-    time limit, so a pattern that can backtrack exponentially (a repeat inside
-    a repeat, as in `(x+)+$`) would hang the server. Those shapes are refused;
-    a phrase check never needs them.
+    time limit, so a pattern that can backtrack without bound would hang the
+    server: a repeat inside a repeat (`(x+)+$`), or many optional or open-ended
+    parts side by side (`a*a*a*b`). Those shapes are refused; a phrase check
+    never needs them. What is accepted costs at most a small multiple of the
+    square of one field's length, and fields are searched one at a time.
     """
     if len(source) > MAX_PATTERN_CHARS:
         return f"a pattern may be at most {MAX_PATTERN_CHARS} characters"
@@ -557,12 +589,30 @@ def _slow_pattern(source: str) -> str:
             return [item for item in av[1:] if item is not None]
         return []
 
+    budget = {"open": 0, "choices": 0}
+
+    def count(op: Any, av: Any) -> str:
+        """Top-level cost: each open-ended repeat multiplies the work by the text's length."""
+        if str(op) not in ("MAX_REPEAT", "MIN_REPEAT", "POSSESSIVE_REPEAT") or av[0] == av[1]:
+            return ""
+        if av[1] > MAX_BOUNDED_REPEAT:
+            budget["open"] += 1
+        budget["choices"] += 1
+        if budget["open"] > 1:
+            return "a pattern may have one open-ended repeat (+, * or {n,}); bound the others, as in \\d{1,6}"
+        if budget["choices"] > MAX_PATTERN_CHOICES:
+            return f"a pattern may have at most {MAX_PATTERN_CHOICES} optional or variable-length parts"
+        return ""
+
     def problem(items: Any, repeated: bool) -> str:
         for op, av in items:
             name = str(op)
             if name == "GROUPREF":
                 return "a pattern may not use a backreference"
             repeats = name in ("MAX_REPEAT", "MIN_REPEAT", "POSSESSIVE_REPEAT") and av[1] > 1
+            costly = count(op, av)
+            if costly:
+                return costly
             if repeated and (repeats or name == "BRANCH"):
                 return "a pattern may not repeat a group that itself repeats or has alternatives, as in (x+)+ or (a|b)+"
             for child in children(op, av):
