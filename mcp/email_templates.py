@@ -271,7 +271,9 @@ def validate_spec(spec: Any) -> list[str]:
         if value is not None and not (isinstance(value, list) and all(isinstance(v, str) and v.strip() for v in value)):
             issues.append(f"'{key}' must be a list of non-empty strings")
         elif key == "never_say":
-            for phrase in value or []:
+            if len(value or []) > MAX_NEVER_SAY:
+                issues.append(f"'never_say' may list at most {MAX_NEVER_SAY} phrases")
+            for phrase in (value or [])[:MAX_NEVER_SAY]:
                 try:
                     _never_say_pattern(_text(phrase))
                 except re.error as exc:
@@ -568,8 +570,6 @@ def never_say_violations(spec: Mapping[str, Any], fields: Sequence[str]) -> list
     return found
 
 
-
-
 def _search(pattern: re.Pattern[str], text: str) -> re.Match[str] | None:
     """`pattern.search(text)`, a piece of `text` at a time, with the same result.
 
@@ -595,27 +595,50 @@ def _search(pattern: re.Pattern[str], text: str) -> re.Match[str] | None:
         start = end - MAX_MATCH_CHARS
 
 
+_INLINE_TAGS = frozenset({"a", "b", "strong", "i", "em", "span", "u", "small", "sup", "sub", "font", "code"})
+_UNSEEN_TAGS = ("style", "script", "head", "title")
+
+
 class _VisibleText(HTMLParser):
-    """The text a reader of an HTML email sees, one entry per text run, plus image descriptions."""
+    """The text a reader of an HTML email sees, one entry per cell, paragraph or line.
+
+    Inline markup does not break an entry: `<strong>Spend:</strong> $100` reads
+    as "Spend: $100". Any other tag does, since it starts a new cell or line.
+    """
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.runs: list[str] = []
         self._hidden = 0
+        self._line: list[str] = []
+
+    def _break(self) -> None:
+        text = " ".join("".join(self._line).split())
+        self._line = []
+        if text:
+            self.runs.append(text)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in ("style", "script", "head", "title"):
+        if tag in _UNSEEN_TAGS:
             self._hidden += 1
+        if tag not in _INLINE_TAGS:
+            self._break()
         if tag == "img":
             self.runs.extend(value for key, value in attrs if key == "alt" and value and value.strip())
 
     def handle_endtag(self, tag: str) -> None:
-        if tag in ("style", "script", "head", "title") and self._hidden:
+        if tag in _UNSEEN_TAGS and self._hidden:
             self._hidden -= 1
+        if tag not in _INLINE_TAGS:
+            self._break()
 
     def handle_data(self, data: str) -> None:
-        if not self._hidden and data.strip():
-            self.runs.append(" ".join(data.split()))
+        if not self._hidden:
+            self._line.append(data)
+
+    def close(self) -> None:
+        super().close()
+        self._break()
 
 
 def rendered_violations(spec: Mapping[str, Any], subject: str, page: str) -> list[str]:
@@ -638,11 +661,12 @@ MAX_PATTERN_CHARS = 200
 #   - a match is at most MAX_MATCH_CHARS long (the pieces overlap by that much);
 #   - no repeat is open-ended (+, *, {n,}) or longer than MAX_REPEAT;
 #   - the ways its optional and variable-length parts can combine multiply to
-#     at most MAX_PATTERN_WAYS (a{0,10}a{0,10}a{0,10} alone is 1,331);
+#     at most MAX_PATTERN_WAYS (a{0,10}a{0,10} alone is 121);
 #   - no ^ or $ (a field is a heading or a paragraph, not a line), no
 #     lookaround, no backreference, no repeat inside a repeat.
 MAX_REPEAT = 100
-MAX_PATTERN_WAYS = 1000
+MAX_PATTERN_WAYS = 128
+MAX_NEVER_SAY = 50
 _REPEATS = ("MAX_REPEAT", "MIN_REPEAT", "POSSESSIVE_REPEAT")
 
 

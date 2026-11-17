@@ -375,3 +375,38 @@ def test_a_heading_the_renderer_always_shows_cannot_be_blanked() -> None:
     raw = _spec()
     raw["sections"][1]["heading"] = ""
     assert "always shows a heading" in " ".join(email_templates.validate_spec(raw))
+
+
+async def test_the_folder_is_locked_again_when_opening_it_fails(
+    _team_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure half-way through unlocking, or while creating the previews folder, leaves nothing writable."""
+    await save_email_template("first", _spec(name="First"))
+    real_chmod, real_mkdir = os.chmod, Path.mkdir
+
+    def second_open_fails(path: Any, mode: int, *args: Any, **kwargs: Any) -> None:
+        if mode == 0o755 and Path(path).name == "previews":
+            raise PermissionError("not permitted")
+        real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(email_template_store.os, "chmod", second_open_fails)
+    assert "error" in await save_email_template("second", _spec(name="Second"))
+    assert _team_dir.stat().st_mode & 0o222 == 0
+    monkeypatch.setattr(email_template_store.os, "chmod", real_chmod)
+
+    # The previews folder is gone and cannot be made again.
+    real_chmod(_team_dir, 0o755)
+    real_chmod(_team_dir / "previews", 0o755)
+    for leftover in (_team_dir / "previews").iterdir():
+        leftover.unlink()
+    (_team_dir / "previews").rmdir()
+    real_chmod(_team_dir, 0o555)
+
+    def no_room(self: Path, *args: Any, **kwargs: Any) -> None:
+        if self.name == "previews":
+            raise OSError("no space left on device")
+        real_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", no_room)
+    assert "error" in await save_email_template("second", _spec(name="Second"))
+    assert _team_dir.stat().st_mode & 0o222 == 0

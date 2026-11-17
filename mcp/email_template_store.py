@@ -228,25 +228,35 @@ def _one_writer(directory: Path):  # noqa: ANN202 - a context manager
 
 @contextlib.contextmanager
 def _unlocked(directory: Path):  # noqa: ANN202 - a context manager
-    previews = _team_previews(directory)
-    for folder in (directory, previews):
-        os.chmod(folder, _DIR_OPEN)
-    left_open: list[str] = []
+    """Open the library's folders for one change and lock them again, whatever happens.
+
+    Everything that can leave a folder writable is inside the try: creating the
+    folders on first use, opening the first and failing on the second, and the
+    change itself.
+    """
+    folders = (directory, directory / "previews")
+    failed = True
     try:
+        previews = _team_previews(directory)
+        for folder in folders:
+            os.chmod(folder, _DIR_OPEN)
         yield previews
+        failed = False
     finally:
-        for folder in (previews, directory):
-            try:
-                os.chmod(folder, _DIR_LOCKED)
-            except OSError as exc:
-                left_open.append(f"{folder.name}: {exc}")
-    if left_open:
-        # Only reached when the change itself went through: say so, and say
-        # that the folder is not protected the way it should be.
-        raise StoreError(
-            "The change was made, but the team templates folder could not be made read-only again "
-            f"({'; '.join(left_open)}). Tell whoever runs this deployment."
-        )
+        left_open: list[str] = []
+        for folder in reversed(folders):
+            if folder.is_dir() and not folder.is_symlink():
+                try:
+                    os.chmod(folder, _DIR_LOCKED)
+                except OSError as exc:
+                    left_open.append(f"{folder.name}: {exc}")
+        if left_open and not failed:
+            # The change went through: say so, and say that the folder is not
+            # protected the way it should be.
+            raise StoreError(
+                "The change was made, but the team templates folder could not be made read-only again "
+                f"({'; '.join(left_open)}). Tell whoever runs this deployment."
+            )
 
 
 def _team_previews(directory: Path) -> Path:

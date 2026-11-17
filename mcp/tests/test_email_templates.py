@@ -254,6 +254,7 @@ def test_never_say_sees_what_the_reader_sees() -> None:
         "re:" + "a?" * 25 + "a" * 25 + "b",
         "re:a{1,50}b{1,50}",
         "re:a{0,10}a{0,10}a{0,10}a{1,9}b",
+        "re:(a|aa)(a|aa)(a|aa)(a|aa)(a|aa)(a|aa)(a|aa)(a|aa)(a|aa)z",
         "re:(x{1,3}){2,5}",
         "re:(ab|cd){2,5}",
         # A match longer than the pieces a long field is searched in overlap by.
@@ -288,6 +289,25 @@ def test_ordinary_never_say_patterns_are_accepted(pattern: str) -> None:
     raw = fixture_spec()
     raw["never_say"] = [pattern]
     assert email_templates.validate_spec(raw) == []
+
+
+def test_never_say_is_a_short_list() -> None:
+    raw = fixture_spec()
+    raw["never_say"] = [f"phrase {n}" for n in range(51)]
+    assert "'never_say' may list at most 50 phrases" in " ".join(email_templates.validate_spec(raw))
+
+
+def test_rendered_text_reads_across_inline_markup_only() -> None:
+    page = (
+        "<html><head><title>Not seen</title><style>.x{color:#111}</style></head><body><table>"
+        "<tr><td><strong>Spend:</strong> $100</td><td>Clicks</td></tr>"
+        '<tr><td>No</td><td>optimizations</td></tr></table><img src="cid:c" alt="Daily spend"></body></html>'
+    )
+    spec = fixture_spec(never_say=["Spend: $100", "Daily spend", "No optimizations", "Not seen", "$100 Clicks"])
+    said = " ".join(email_templates.rendered_violations(spec, "Subject", page))
+    assert "'Spend: $100'" in said and "'Daily spend'" in said
+    # Separate cells are separate text, and the head is not text at all.
+    assert "No optimizations" not in said and "Not seen" not in said and "$100 Clicks" not in said
 
 
 def test_a_long_field_is_searched_in_pieces_with_the_same_result() -> None:
