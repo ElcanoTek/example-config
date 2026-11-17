@@ -60,7 +60,7 @@ never_say: ["a phrase", "re:\\bID-\\d{3,}\\b"]    # enforced; `re:` marks a regu
 sections:
   - id: summary                          # what a block names in "section"
     title: Summary                       # shown in the library
-    heading: Summary                     # optional; set on the block for the writer ("" removes it)
+    heading: Summary                     # optional; set on the block for the writer ("" removes it, except on metrics and callouts)
     block: text                          # a render_email block type
     kind: opportunity                    # callout sections only: risk | opportunity
     required: true                       # default true; false = leave out when there is nothing true to say

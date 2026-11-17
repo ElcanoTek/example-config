@@ -88,6 +88,10 @@ _ID = re.compile(r"[a-z0-9]+(?:[-_][a-z0-9]+)*")
 _WORD = re.compile(r"[^\s]+")
 _BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
 MAX_TEMPLATE_BYTES = 256 << 10
+# The longest text a never_say pattern may match, and the size of the pieces a
+# long field is searched in (_search).
+MAX_MATCH_CHARS = 200
+SEARCH_WINDOW = 3 * MAX_MATCH_CHARS
 
 
 class TemplateError(ValueError):
@@ -164,6 +168,8 @@ def _validate_section(raw: Any, where: str, seen: set[str], issues: list[str]) -
         issues.append(f"{where}: 'required' must be true or false")
     if raw.get("heading") is not None and block not in _HEADING_KEY:
         issues.append(f"{where}: a {block} block has no heading")
+    if raw.get("heading") == "" and block in ("metrics", "headline_metrics", "callout"):
+        issues.append(f"{where}: a {block} block always shows a heading; give one, or leave 'heading' out")
     if block == "callout":
         if _text(raw.get("kind")) not in ("risk", "opportunity"):
             issues.append(f"{where}: a callout section needs kind: risk or opportunity")
@@ -552,31 +558,41 @@ def apply_template(
 
 
 def never_say_violations(spec: Mapping[str, Any], fields: Sequence[str]) -> list[str]:
-    """One violation per banned phrase found in any of `fields`.
-
-    Each field is searched on its own, a window at a time: the cost of one
-    search grows with the square of the text it is given, and a field can be
-    as long as the caller likes.
-    """
+    """One violation per banned phrase found in any of `fields`, each searched on its own."""
     found: list[str] = []
     for phrase in spec.get("never_say") or []:
         pattern = _never_say_pattern(_text(phrase))
-        match = next((m for field in fields for window in _windows(field) if (m := pattern.search(window))), None)
+        match = next((m for field in fields if (m := _search(pattern, field))), None)
         if match:
             found.append(f"The email says {match.group(0)!r}; this template never says {_text(phrase)!r}.")
     return found
 
 
-SEARCH_WINDOW = 600
-_WINDOW_OVERLAP = 200
 
 
-def _windows(text: str) -> list[str]:
-    """`text` in overlapping pieces of at most SEARCH_WINDOW characters (a phrase longer than the overlap is not one)."""
-    if len(text) <= SEARCH_WINDOW:
-        return [text]
-    step = SEARCH_WINDOW - _WINDOW_OVERLAP
-    return [text[i : i + SEARCH_WINDOW] for i in range(0, len(text) - _WINDOW_OVERLAP, step)]
+def _search(pattern: re.Pattern[str], text: str) -> re.Match[str] | None:
+    """`pattern.search(text)`, a piece of `text` at a time, with the same result.
+
+    A field can be as long as the caller likes, and a search costs more than
+    its length. Each piece is SEARCH_WINDOW characters of the whole string
+    (pos/endpos, so a word boundary still looks at the real neighbours) and
+    overlaps the next by MAX_MATCH_CHARS, the longest any pattern can match.
+    A match that touches a piece's cut-off end is not taken from that piece:
+    the cut may have made it (a word boundary where a word carries on), and if
+    it is real the next piece holds it whole.
+    """
+    size = len(text)
+    start = 0
+    while True:
+        end = min(start + SEARCH_WINDOW, size)
+        match = pattern.search(text, start, end)
+        while match and match.end() == end and end < size and match.start() < end:
+            match = pattern.search(text, match.start() + 1, end)
+        if match and (match.end() < end or end == size):
+            return match
+        if end == size:
+            return None
+        start = end - MAX_MATCH_CHARS
 
 
 class _VisibleText(HTMLParser):
@@ -616,80 +632,80 @@ def rendered_violations(spec: Mapping[str, Any], subject: str, page: str) -> lis
 
 
 MAX_PATTERN_CHARS = 200
-# A repeat longer than this counts as open-ended; a pattern gets one of those
-# and a few optional or variable-length parts in all. Each multiplies the work
-# of a search, and side by side (a*a*a*b, or a?a?a?...) they multiply together.
-MAX_BOUNDED_REPEAT = 10
-MAX_PATTERN_CHOICES = 4
+# What a never_say pattern may be, so that searching with it is always quick
+# and searching a long field piece by piece finds exactly what searching it
+# whole would:
+#   - a match is at most MAX_MATCH_CHARS long (the pieces overlap by that much);
+#   - no repeat is open-ended (+, *, {n,}) or longer than MAX_REPEAT;
+#   - the ways its optional and variable-length parts can combine multiply to
+#     at most MAX_PATTERN_WAYS (a{0,10}a{0,10}a{0,10} alone is 1,331);
+#   - no ^ or $ (a field is a heading or a paragraph, not a line), no
+#     lookaround, no backreference, no repeat inside a repeat.
+MAX_REPEAT = 100
+MAX_PATTERN_WAYS = 1000
+_REPEATS = ("MAX_REPEAT", "MIN_REPEAT", "POSSESSIVE_REPEAT")
 
 
 def _slow_pattern(source: str) -> str:
-    """Why a never_say pattern could take very long to run ("" when it cannot).
+    """Why a never_say pattern is refused ("" when it is fine).
 
     Every render searches the email with each pattern, and Python's `re` has no
-    time limit, so a pattern that can backtrack without bound would hang the
-    server: a repeat inside a repeat (`(x+)+$`), or many optional or open-ended
-    parts side by side (`a*a*a*b`). Those shapes are refused; a phrase check
-    never needs them. What is accepted costs at most a small multiple of the
-    square of the text searched, and that text is one window of one field at a
-    time (never_say_violations), so a very long field cannot make it slow.
+    time limit, so a pattern that can backtrack a great deal would hang the
+    server. The limits above keep every accepted pattern cheap, and simple
+    enough that a phrase check loses nothing: `\\bQ[1-4] \\d{4}\\b`,
+    `(?:internal|draft) only`, `\\$\\d{1,9}k?` all pass.
     """
     if len(source) > MAX_PATTERN_CHARS:
         return f"a pattern may be at most {MAX_PATTERN_CHARS} characters"
     try:
         tree = _re_parser.parse(source, re.IGNORECASE)
+        widest = tree.getwidth()[1]
     except Exception:  # noqa: BLE001 - re.compile accepted it; an unreadable tree is not trusted
         return "the pattern could not be checked; use a simpler one"
-
-    def children(op: Any, av: Any) -> list[Any]:
-        name = str(op)
-        if name in ("MAX_REPEAT", "MIN_REPEAT", "POSSESSIVE_REPEAT"):
-            return [av[2]]
-        if name == "SUBPATTERN":
-            return [av[3]]
-        if name == "BRANCH":
-            return list(av[1])
-        if name in ("ASSERT", "ASSERT_NOT"):
-            return [av[1]]
-        if name == "ATOMIC_GROUP":
-            return [av]
-        if name == "GROUPREF_EXISTS":
-            return [item for item in av[1:] if item is not None]
-        return []
-
-    budget = {"open": 0, "choices": 0}
-
-    def count(op: Any, av: Any) -> str:
-        """Top-level cost: each open-ended repeat multiplies the work by the text's length."""
-        if str(op) not in ("MAX_REPEAT", "MIN_REPEAT", "POSSESSIVE_REPEAT") or av[0] == av[1]:
-            return ""
-        if av[1] > MAX_BOUNDED_REPEAT:
-            budget["open"] += 1
-        budget["choices"] += 1
-        if budget["open"] > 1:
-            return "a pattern may have one open-ended repeat (+, * or {n,}); bound the others, as in \\d{1,6}"
-        if budget["choices"] > MAX_PATTERN_CHOICES:
-            return f"a pattern may have at most {MAX_PATTERN_CHOICES} optional or variable-length parts"
-        return ""
+    ways = 1
 
     def problem(items: Any, repeated: bool) -> str:
+        nonlocal ways
         for op, av in items:
             name = str(op)
-            if name == "GROUPREF":
+            if name in ("GROUPREF", "GROUPREF_EXISTS"):
                 return "a pattern may not use a backreference"
-            repeats = name in ("MAX_REPEAT", "MIN_REPEAT", "POSSESSIVE_REPEAT") and av[1] > 1
-            costly = count(op, av)
-            if costly:
-                return costly
-            if repeated and (repeats or name == "BRANCH"):
-                return "a pattern may not repeat a group that itself repeats or has alternatives, as in (x+)+ or (a|b)+"
-            for child in children(op, av):
+            if name in ("ASSERT", "ASSERT_NOT"):
+                return "a pattern may not use lookahead or lookbehind"
+            if name == "AT" and str(av) not in ("AT_BOUNDARY", "AT_NON_BOUNDARY"):
+                return "a pattern may not use ^ or $; \\b marks the edge of a word"
+            inner: list[Any] = []
+            repeats = False
+            if name in _REPEATS:
+                low, high, body = av
+                if high > MAX_REPEAT:
+                    return f"a repeat needs an upper limit of at most {MAX_REPEAT}: \\d{{1,9}} instead of \\d+"
+                repeats = high > 1
+                if repeated and repeats:
+                    return "a pattern may not repeat a group that itself repeats, as in (x{1,3}){2,5}"
+                ways *= high - low + 1
+                inner = [body]
+            elif name == "BRANCH":
+                if repeated:
+                    return "a pattern may not repeat a group that has alternatives, as in (a|b){2,5}"
+                ways *= len(av[1])
+                inner = list(av[1])
+            elif name == "SUBPATTERN":
+                inner = [av[3]]
+            elif name == "ATOMIC_GROUP":
+                inner = [av]
+            if ways > MAX_PATTERN_WAYS:
+                return "a pattern has too many optional or variable-length parts; fix some lengths, as in \\d{4}"
+            for child in inner:
                 found = problem(child, repeated or repeats)
                 if found:
                     return found
         return ""
 
-    return problem(tree, False)
+    found = problem(tree, False)
+    if not found and widest > MAX_MATCH_CHARS:
+        return f"a pattern may match at most {MAX_MATCH_CHARS} characters"
+    return found
 
 
 @functools.lru_cache(maxsize=256)
@@ -702,5 +718,8 @@ def _never_say_pattern(phrase: str) -> re.Pattern[str]:
         if slow:
             raise re.error(slow)
         return compiled
+    if len(phrase) > MAX_MATCH_CHARS // 2:
+        raise re.error(f"a phrase may be at most {MAX_MATCH_CHARS // 2} characters")
     words = [re.escape(word) for word in phrase.split()]
-    return re.compile(r"(?<![A-Za-z0-9])" + r"\s+".join(words) + r"(?![A-Za-z0-9])", re.IGNORECASE)
+    # Up to three spaces or line breaks between words: bounded, like every pattern here (_search).
+    return re.compile(r"(?<![A-Za-z0-9])" + r"\s{1,3}".join(words) + r"(?![A-Za-z0-9])", re.IGNORECASE)

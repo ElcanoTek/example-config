@@ -311,7 +311,7 @@ async def test_the_default_client_name_is_checked_too(
     spec["sample"]["blocks"][-2]["text"] = "Please confirm the added budget by Thursday."
     saved = await save_email_template("qbr", spec)
     assert "sample does not fit the template" in saved["error"] and "Acme" in saved["error"]
-    monkeypatch.setenv("SES_TENANT_LABEL", "Globex")
+    monkeypatch.setenv("SES_TENANT_LABEL", "DemandCo")
     assert (await save_email_template("qbr", spec)).get("error") is None
     monkeypatch.setenv("SES_TENANT_LABEL", "Acme")
     blocks = copy.deepcopy(spec["sample"]["blocks"])
@@ -344,9 +344,34 @@ async def test_the_rendered_email_is_what_never_say_is_about(_team_dir: Path, tm
     assert "does not fit template" in refused["error"] and list(out.iterdir()) == []
 
 
-def test_a_very_long_field_is_searched_in_windows() -> None:
-    """One open-ended repeat over 200,000 characters would take minutes in one piece."""
-    spec = _spec(never_say=["re:a+b", "re:needle in the haystack"])
-    assert email_templates.never_say_violations(spec, ["a" * 200_000]) == []
-    found = email_templates.never_say_violations(spec, ["x" * 150_000 + " needle in the haystack " + "y" * 9_000])
-    assert len(found) == 1 and "needle in the haystack" in found[0]
+async def test_a_sample_block_of_the_wrong_shape_is_a_message_not_a_crash(_team_dir: Path) -> None:
+    spec = _spec()
+    spec["sections"][1]["limits"] = {}
+    spec["sample"]["blocks"][1]["items"] = 5
+    checked = await check_email_template("qbr", spec)
+    assert checked["valid"] is False and "sample" in checked["problems"]
+    assert "error" in await save_email_template("qbr", spec)
+    assert not _team_dir.exists() or list(_team_dir.glob("*.yaml")) == []
+
+
+async def test_a_folder_that_cannot_be_locked_again_is_reported(
+    _team_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await save_email_template("first", _spec(name="First"))
+    real_chmod = os.chmod
+
+    def stubborn(path: Any, mode: int, *args: Any, **kwargs: Any) -> None:
+        if mode == 0o555:
+            raise PermissionError("not permitted")
+        real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(email_template_store.os, "chmod", stubborn)
+    saved = await save_email_template("second", _spec(name="Second"))
+    assert "could not be made read-only again" in saved["error"]
+    assert (_team_dir / "second.yaml").is_file()
+
+
+def test_a_heading_the_renderer_always_shows_cannot_be_blanked() -> None:
+    raw = _spec()
+    raw["sections"][1]["heading"] = ""
+    assert "always shows a heading" in " ".join(email_templates.validate_spec(raw))

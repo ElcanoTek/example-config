@@ -245,26 +245,83 @@ def test_never_say_sees_what_the_reader_sees() -> None:
         "re:(\\w*)*!",
         "re:(a)\\1",
         "re:" + "a" * 201,
-        # Side by side, repeats multiply: open-ended ones, and many optional ones.
+        # Open-ended repeats, alone or side by side.
+        "re:a+b",
+        "re:x.+y",
         "re:a*a*a*a*a*a*a*a*a*a*b",
         "re:\\d+\\s*x",
+        # Bounded ones whose combinations multiply.
         "re:" + "a?" * 25 + "a" * 25 + "b",
         "re:a{1,50}b{1,50}",
+        "re:a{0,10}a{0,10}a{0,10}a{1,9}b",
+        "re:(x{1,3}){2,5}",
+        "re:(ab|cd){2,5}",
+        # A match longer than the pieces a long field is searched in overlap by.
+        "re:secret.{0,90}.{0,90}.{0,90}draft",
+        "re:secret.{0,500}draft",
+        # A field is not a line: no anchors, and no lookaround.
+        "re:^Draft",
+        "re:draft$",
+        "re:draft(?= only)",
+        "phrase " * 20,
     ],
 )
-def test_a_never_say_pattern_that_could_hang_a_render_is_refused(pattern: str) -> None:
+def test_a_never_say_pattern_that_could_be_slow_or_ambiguous_is_refused(pattern: str) -> None:
     raw = fixture_spec()
     raw["never_say"] = [pattern]
-    assert any("not a valid pattern" in issue for issue in email_templates.validate_spec(raw))
+    assert any("not a valid pattern" in issue for issue in email_templates.validate_spec(raw)), pattern
 
 
 @pytest.mark.parametrize(
-    "pattern", ["re:\\b[A-Z]{3}\\d{5}\\b", "re:\\bQ[1-4] \\d{4}\\b", "re:(?:internal|draft) only", "re:\\$\\d+k?"]
+    "pattern",
+    [
+        "re:\\b[A-Z]{3}\\d{5}\\b",
+        "re:\\bQ[1-4] \\d{4}\\b",
+        "re:(?:internal|draft) only",
+        "re:\\$\\d{1,9}k?",
+        "re:\\b20\\d\\d-\\d\\d-\\d\\d\\b",
+        "re:secret.{0,100}draft",
+        "we are excited",
+    ],
 )
 def test_ordinary_never_say_patterns_are_accepted(pattern: str) -> None:
     raw = fixture_spec()
     raw["never_say"] = [pattern]
     assert email_templates.validate_spec(raw) == []
+
+
+def test_a_long_field_is_searched_in_pieces_with_the_same_result() -> None:
+    """Whatever a whole-string search finds, the piecewise one finds, and nothing else."""
+    import random
+
+    rng = random.Random(20261117)
+    patterns = [
+        email_templates._never_say_pattern(p)
+        for p in ("re:\\bdraft\\b", "re:secret.{0,100}draft", "no optimizations", "re:\\ba{1,100}b", "re:\\$\\d{1,9}k?")
+    ]
+    words = [
+        "draft",
+        "drafts",
+        "overdraft",
+        "secret",
+        "no",
+        "optimizations",
+        "a" * 40,
+        "ab",
+        "$120k",
+        "x" * 97,
+        "\n",
+        " ",
+    ]
+    for _ in range(300):
+        text = "".join(rng.choice(words) + rng.choice(["", " ", "  "]) for _ in range(rng.randrange(1, 160)))
+        for pattern in patterns:
+            whole, pieces = pattern.search(text), email_templates._search(pattern, text)
+            assert bool(whole) == bool(pieces), (pattern.pattern, len(text))
+            if pieces:
+                assert pattern.fullmatch(pieces.group(0)) or pattern.search(pieces.group(0))
+    # A very long field stays quick: this is 200,000 characters of near-miss.
+    assert email_templates._search(patterns[3], "a" * 200_000) is None
 
 
 @pytest.mark.parametrize(

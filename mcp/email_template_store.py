@@ -182,6 +182,12 @@ def prepare(template_id: str, spec: Any) -> tuple[str, dict[str, Any], str]:
         page = email_template_preview.render_sample(candidate)
     except (ValueError, email_render.RenderError) as exc:
         raise StoreError(f"The template's sample does not fit the template: {exc}") from exc
+    except (TypeError, AttributeError, KeyError, IndexError) as exc:
+        # A block of the wrong shape (items: 5, rows that are not lists) that the renderer tripped over.
+        raise StoreError(
+            f"The template's sample has a block the renderer cannot read ({type(exc).__name__}: {exc}). "
+            "Give each sample block the fields render_email takes for its type."
+        ) from exc
     errors, _ = partition_findings(
         validate(page, subject=str(spec["sample"].get("subject") or ""), content_type="text/html")
     )
@@ -225,12 +231,22 @@ def _unlocked(directory: Path):  # noqa: ANN202 - a context manager
     previews = _team_previews(directory)
     for folder in (directory, previews):
         os.chmod(folder, _DIR_OPEN)
+    left_open: list[str] = []
     try:
         yield previews
     finally:
         for folder in (previews, directory):
-            with contextlib.suppress(OSError):
+            try:
                 os.chmod(folder, _DIR_LOCKED)
+            except OSError as exc:
+                left_open.append(f"{folder.name}: {exc}")
+    if left_open:
+        # Only reached when the change itself went through: say so, and say
+        # that the folder is not protected the way it should be.
+        raise StoreError(
+            "The change was made, but the team templates folder could not be made read-only again "
+            f"({'; '.join(left_open)}). Tell whoever runs this deployment."
+        )
 
 
 def _team_previews(directory: Path) -> Path:
