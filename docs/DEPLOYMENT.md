@@ -26,7 +26,6 @@ Names, identifiers and where secrets are kept only. **No secret values.**
 | Email: root domain or `reports.` subdomain | |
 | Email: sender / reply-to / recipient policy | |
 | Email: history to migrate? | |
-| Solution engineer | |
 | Secrets stored in | (password manager vault / item names) |
 
 ## Inventory
@@ -87,7 +86,6 @@ Tick each with its evidence (command and result, date).
 - [ ] `estate.json` + README updated in production-support (PR: )
 - [ ] `ses-s3/README.md` rollout table updated (PR: )
 - [ ] This file and `docs/EMAIL-DEPLOYMENT.md` filled in from live checks (PR: )
-- [ ] Solution engineer handed the client (protocols, users)
 
 ## Verification
 
