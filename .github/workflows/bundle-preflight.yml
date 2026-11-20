@@ -18,6 +18,10 @@
 #   PERSONA / PERSONA_DEFAULT; bundle_env below supplies the same values a box
 #   sets (README, "Set both persona variables") so the stricter gate holds.
 #
+# `agent_policy` gates too: it fails on a policy-list member fleet would drop
+#   or ignore at boot (for example a critical_tool_no_session_approval member
+#   that is not in critical_tools), which a box only logs as a warning.
+#
 # WHY `mcp_catalog` AND NOT `mcp_servers`: `mcp_servers` inspects only the
 # servers left enabled after `enabled_env` gating, and this runner holds no
 # production secrets — so most of this bundle's connectors are filtered out
@@ -45,7 +49,7 @@ jobs:
   validate:
     uses: ElcanoTek/fleet/.github/workflows/validate-bundle.yml@main
     with:
-      gate_checks: "manifest,mcp_catalog"
+      gate_checks: "manifest,mcp_catalog,agent_policy"
       # Non-secret only: this file is repository content.
       bundle_env: |
         PERSONA=personas/victoria.yaml
