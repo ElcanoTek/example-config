@@ -1072,8 +1072,11 @@ agent_policy:
   critical_tool_no_session_approval:
     # Team email templates: each save or removal changes what the whole team
     # sees and what later emails are held to, so each gets its own card.
-    - mcp_ses_outbound_save_email_template
-    - mcp_ses_outbound_delete_email_template
+    # Spelled as in critical_tools (bare suffixes): fleet reports any member
+    # that is not a critical_tools entry, and a bare suffix also covers a
+    # named-account ses_outbound seat.
+    - save_email_template
+    - delete_email_template
     # Lens job control: each start spends credit that can't be refunded and each
     # cancel stops a specific run, so neither may ride an "apply to all".
     - mcp_lens_create_job

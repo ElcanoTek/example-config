@@ -83,10 +83,12 @@ def test_email_templates_are_saved_only_behind_an_approval_card() -> None:
     assert "mcp_ses_outbound_check_email_template" in policy["parallel_safe_tools"]
     assert "mcp_ses_outbound_save_email_template" not in policy["parallel_safe_tools"]
     assert "mcp_ses_outbound_delete_email_template" not in policy["parallel_safe_tools"]
-    # Each save and removal gets its own card: no "apply to all".
-    assert {"mcp_ses_outbound_save_email_template", "mcp_ses_outbound_delete_email_template"} <= set(
-        policy["critical_tool_no_session_approval"]
-    )
+    # Each save and removal gets its own card: no "apply to all". Listed by the
+    # same bare suffix as critical_tools; fleet reports a connector-prefixed
+    # member as not in critical_tools.
+    no_session = set(policy["critical_tool_no_session_approval"])
+    assert {"save_email_template", "delete_email_template"} <= no_session
+    assert not {"mcp_ses_outbound_save_email_template", "mcp_ses_outbound_delete_email_template"} & no_session
     # The directory fleet lists in its library and mounts read-only in every sandbox.
     assert outbound["env"]["EMAIL_TEMPLATES_TEAM_DIR"] == "${FLEET_WORKSPACE_ROOT}/mcp-runs/email-templates"
     # The author is fleet's record of the signed-in person, not an argument.
