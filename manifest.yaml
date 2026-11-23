@@ -434,8 +434,10 @@ mcp_servers:
   #   fleet-<deployment>` (scopes email:search and email:read, both read-only;
   #   Explorer stores only its hash). Only mail whose sender the receiver
   #   authenticated is returned (Explorer's EMAIL_SENDER_AUTH, default
-  #   required); skipped mail is reported in search_warnings. Outbound mail is
-  #   ses_outbound's.
+  #   required); skipped mail is reported in search_warnings. Sending is
+  #   ses_outbound's; search_outbox reads the copies it keeps (the client
+  #   Outbox, mcp/outbox.py). An Explorer older than search_outbox simply does
+  #   not offer it.
   - name: explorer
     optional: true
     enabled_by_default: true
@@ -451,6 +453,7 @@ mcp_servers:
       - search_emails
       - search_emails_fuzzy
       - find_latest_report
+      - search_outbox
       - get_email
       - extract_download_links
       - list_archived_attachments
@@ -790,6 +793,7 @@ agent_policy:
     - mcp_explorer_search_emails
     - mcp_explorer_search_emails_fuzzy
     - mcp_explorer_find_latest_report
+    - mcp_explorer_search_outbox
     - mcp_explorer_get_email
     - mcp_explorer_extract_download_links
     - mcp_explorer_list_archived_attachments

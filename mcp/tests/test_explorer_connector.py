@@ -30,6 +30,7 @@ CATALOG = {
     "search_emails",
     "search_emails_fuzzy",
     "find_latest_report",
+    "search_outbox",
     "get_email",
     "extract_download_links",
     "list_archived_attachments",
