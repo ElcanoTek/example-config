@@ -88,7 +88,17 @@ root:root`, written by production-support's email provisioning):
 - Outbound: `SES_OUTBOUND_AWS_ACCESS_KEY_ID`,
   `SES_OUTBOUND_AWS_SECRET_ACCESS_KEY`, `SES_OUTBOUND_AWS_REGION`,
   `SES_OUTBOUND_FROM_EMAIL`, `SES_OUTBOUND_REPLY_TO`,
-  `SES_OUTBOUND_ALLOW_UNLISTED_RECIPIENTS`.
+  `SES_OUTBOUND_ALLOW_UNLISTED_RECIPIENTS`, `SES_OUTBOUND_OUTBOX_BUCKET`.
+- Outbox: with `SES_OUTBOUND_OUTBOX_BUCKET` set to the tenant's email bucket,
+  every email `send_email` sends is copied to
+  `outbox/YYYY/MM/DD/<ses-message-id>.eml` with a `.json` record beside it
+  (recipients including Bcc, subject, attachments, the signed-in sender, the
+  task), and Explorer shows the Outbox to the whole organization. The sender's
+  IAM user may `s3:PutObject` only under `outbox/`. A copy that fails to save
+  is reported in the tool result and never fails or resends the email.
+  `private=True` skips the copy, and is refused unless every recipient is the
+  signed-in person (a note to self). Login mail is sent by Auth under its own
+  IAM user, so it never reaches the Outbox.
   `ses_outbound` pins its configured roots when the server starts (a root not
   created yet is reached later from its nearest existing ancestor, pinned
   then, by a no-follow walk). A root it did not know at startup is opened with

@@ -495,6 +495,17 @@ mcp_servers:
       # report emails and the sender label in audit records. Keep it equal to
       # branding.app_name (mcp/tests/test_email_render.py checks).
       SES_TENANT_LABEL: "Northwind"
+      # The client Outbox (mcp/outbox.py): every sent email is copied to
+      # <bucket>/outbox/YYYY/MM/DD/<ses-message-id>.eml plus a .json record,
+      # and Explorer shows it to everyone in the organization. The bucket is
+      # the tenant's email bucket; the sender's IAM user may only PutObject
+      # under outbox/. Unset keeps the Outbox off.
+      SES_OUTBOX_BUCKET: "${SES_OUTBOUND_OUTBOX_BUCKET}"
+      SES_OUTBOX_PREFIX: "${SES_OUTBOUND_OUTBOX_PREFIX:-outbox/}"
+      # The signed-in person of a chat turn (empty in a scheduled run): the
+      # Outbox record's sent_by, and the only recipient a private=True note
+      # to self may have. From fleet, never a model argument.
+      SES_TURN_USER_EMAIL: "${FLEET_USER_EMAIL}"
       # content_file / attachments may only be read from allowlisted roots.
       # ${FLEET_WORKSPACE} (the per-run ledger dir below) carries a random
       # suffix the model cannot know, so the deployment workspace ROOT, where
@@ -524,6 +535,8 @@ mcp_servers:
       - SES_ALLOWED_RECIPIENT_DOMAINS
       - SES_ALLOW_UNLISTED_RECIPIENTS
       - SES_REPLY_TO
+      - SES_OUTBOX_BUCKET
+      - SES_TURN_USER_EMAIL
       - CUTLASS_ALLOWED_DIRS
       - CUTLASS_RUN_WORKDIR
       - CUTLASS_MOC_TASK_ID

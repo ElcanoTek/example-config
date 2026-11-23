@@ -10,7 +10,7 @@ Elcano Explorer's `explorer` connector, a remote server):
 | --- | --- | --- | --- |
 | Demo Handbook | `knowledge_base.py` | always registered, off by default (demo content) | none |
 | Example REST API | `example_api.py` | credential-gated | `EXAMPLE_API_KEY` |
-| Amazon SES Email (`ses_outbound`) | `ses_sender.py` (+ `email_render.py`, `email_lint.py`) | credential-gated, every send approval-gated | `SES_OUTBOUND_AWS_*`, `SES_OUTBOUND_FROM_EMAIL` |
+| Amazon SES Email (`ses_outbound`) | `ses_sender.py` (+ `email_render.py`, `email_lint.py`, `outbox.py`) | credential-gated, every send approval-gated | `SES_OUTBOUND_AWS_*`, `SES_OUTBOUND_FROM_EMAIL` |
 
 All are stdio servers built on `mcp.server.fastmcp.FastMCP`. fleet launches
 each as a host-side subprocess with only the environment its manifest entry
