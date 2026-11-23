@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from email_fixtures import framed
+from email_fixtures import framed, sent_attachments, sent_body, sent_message
 from ses_sender import send_email, validate_email_address
 
 _HTML = framed("<p>Report attached.</p>")
@@ -31,7 +31,7 @@ def capture_request(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-async def test_builds_simple_ses_v2_request(ses_env, capture_request, monkeypatch):
+async def test_builds_raw_ses_v2_request(ses_env, capture_request, monkeypatch):
     monkeypatch.setenv("SES_CONFIGURATION_SET", "northwind-email-outbound")
 
     result = await send_email(
@@ -45,16 +45,22 @@ async def test_builds_simple_ses_v2_request(ses_env, capture_request, monkeypatc
     assert result["status"] == "queued"
     assert result["message_id"] == "ses-message-id"
     assert capture_request["FromEmailAddress"] == "victoria@northwind.example"
-    assert capture_request["ReplyToAddresses"] == ["victoria@northwind.example"]
     assert capture_request["ConfigurationSetName"] == "northwind-email-outbound"
     assert capture_request["Destination"] == {
         "ToAddresses": ["alice@example.com", "bob@example.com"],
         "CcAddresses": ["carol@example.com"],
         "BccAddresses": ["audit@example.com"],
     }
-    simple = capture_request["Content"]["Simple"]
-    assert simple["Subject"] == {"Data": "Northwind report", "Charset": "UTF-8"}
-    assert simple["Body"]["Html"]["Data"] == _HTML
+    message = sent_message(capture_request)
+    assert message["From"] == "victoria@northwind.example"
+    assert message["To"] == "alice@example.com, bob@example.com"
+    assert message["Cc"] == "carol@example.com"
+    assert message["Reply-To"] == "victoria@northwind.example"
+    assert message["Subject"] == "Northwind report"
+    # Bcc travels only in the Destination: a header would show it to everyone.
+    assert message["Bcc"] is None
+    # MIME ends every text part with a newline.
+    assert sent_body(capture_request) == ("text/html", _HTML + "\n")
 
 
 @pytest.mark.asyncio
@@ -74,12 +80,13 @@ async def test_regular_and_inline_attachments_use_ses_attachment_shape(ses_env, 
 
     assert result["attachments_count"] == 1
     assert result["inline_attachments_count"] == 1
-    attachments = capture_request["Content"]["Simple"]["Attachments"]
-    assert attachments[0]["RawContent"].startswith(b"date,revenue")
-    assert attachments[0]["ContentDisposition"] == "ATTACHMENT"
-    assert attachments[1]["RawContent"] == b"not-a-real-png"
-    assert attachments[1]["ContentDisposition"] == "INLINE"
-    assert attachments[1]["ContentId"] == "brand-logo"
+    inline, regular = sent_attachments(capture_request)
+    assert regular["RawContent"].startswith(b"date,revenue")
+    assert regular["ContentDisposition"] == "ATTACHMENT"
+    assert regular["FileName"] == "report.csv"
+    assert inline["RawContent"] == b"not-a-real-png"
+    assert inline["ContentDisposition"] == "INLINE"
+    assert inline["ContentId"] == "brand-logo"
 
 
 @pytest.mark.asyncio

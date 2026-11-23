@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from email_fixtures import framed
+from email_fixtures import framed, sent_attachments
 from ses_sender import _locate_attachment, send_email
 
 _VALID_HTML = framed("<p>Hello there.</p>")
@@ -129,7 +129,7 @@ async def test_send_email_attaches_recovered_file_and_accepts_object_entries(run
     assert result.get("status") == "queued", result
     assert result.get("attachments_count") == 1
     assert result["attachments"][0]["name"] == "deal_daily_export.csv"
-    assert capture_request["Content"]["Simple"]["Attachments"][0]["FileName"] == "deal_daily_export.csv"
+    assert sent_attachments(capture_request)[0]["FileName"] == "deal_daily_export.csv"
 
 
 @pytest.mark.asyncio
@@ -294,8 +294,9 @@ async def test_inline_attachment_path_is_passed_raw(run_roots, ses_send_env, cap
     )
     assert result.get("status") == "queued", result
     assert result["inline_attachments"][0]["size"] == len(b"spaced")
-    inline = capture_request["Content"]["Simple"]["Attachments"][0]
-    assert inline["FileName"] == "chart.png "
+    inline = sent_attachments(capture_request)[0]
+    # The spaced file is the one read; the MIME filename header trims the space.
+    assert inline["FileName"] == "chart.png"
     assert inline["RawContent"] == b"spaced"
 
 

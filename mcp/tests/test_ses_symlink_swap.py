@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 import ses_sender
-from email_fixtures import framed
+from email_fixtures import framed, sent_attachments
 
 SECRET = b"host-secret: do not mail me\n"
 
@@ -90,7 +90,7 @@ def _dir_swap(directory: Path, target_dir: Path):
 
 
 def _attachment_bytes(request: dict[str, Any]) -> list[bytes]:
-    return [a["RawContent"] for a in request["Content"]["Simple"].get("Attachments", [])]
+    return [a["RawContent"] for a in sent_attachments(request)]
 
 
 @pytest.mark.asyncio
@@ -397,4 +397,4 @@ async def test_a_root_swapped_between_two_calls_is_refused(workspace, sent, tmp_
         attachments=[str(ws / "report.csv")],
     )
     assert "error" in second, second
-    assert all(SECRET not in a["RawContent"] for r in sent for a in r["Content"]["Simple"].get("Attachments", []))
+    assert all(SECRET not in body for r in sent for body in _attachment_bytes(r))

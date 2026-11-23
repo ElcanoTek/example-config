@@ -16,6 +16,7 @@ from typing import Any
 import email_render
 import pytest
 import yaml
+from email_fixtures import sent_attachments, sent_body
 from email_lint import partition_findings, validate
 from ses_sender import render_email, send_email
 
@@ -477,8 +478,8 @@ async def test_render_email_tool_writes_a_file_send_email_accepts(tmp_path: Path
         inline_attachments=rendered["inline_attachments"],
     )
     assert sent["status"] == "queued", sent
-    assert captured["Content"]["Simple"]["Body"]["Html"]["Data"] == path.read_text(encoding="utf-8")
-    [logo] = captured["Content"]["Simple"]["Attachments"]
+    assert sent_body(captured) == ("text/html", path.read_text(encoding="utf-8"))
+    [logo] = sent_attachments(captured)
     assert logo["RawContent"] == email_render.LOGO_PATH.read_bytes()
 
 
@@ -735,7 +736,7 @@ async def test_send_email_accepts_a_deliberate_plain_text_note(monkeypatch: pyte
         to_email="alice@example.com", subject="Quick note", content="Thanks, Alice. I will send the numbers Friday."
     )
     assert sent["status"] == "queued", sent
-    assert "Text" in captured["Content"]["Simple"]["Body"]
+    assert sent_body(captured)[0] == "text/plain"
 
 
 @pytest.mark.asyncio
