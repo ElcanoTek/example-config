@@ -322,3 +322,20 @@ async def test_message_over_the_ses_limit_is_refused_before_sending(env, sent, s
 
     assert "SES accepts at most 40MB" in result["error"]
     assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_fleet_meta_reaches_the_tool_through_a_real_mcp_call(env, sent, s3):
+    # Fleet sends the person's choice as tools/call `_meta`, exactly as the MCP
+    # SDK carries it, and the send_email tool served by this server reads it.
+    from mcp.shared.memory import create_connected_server_and_client_session
+    from ses_sender import mcp as server
+
+    args = {"to_email": "alice@client.example", "subject": "Reminder", "content": _HTML}
+    async with create_connected_server_and_client_session(server) as client:
+        private = await client.call_tool("send_email", args, meta={"fleet/private_emails": True})
+        saved = await client.call_tool("send_email", {**args, "subject": "Reminder 2"})
+
+    assert json.loads(private.content[0].text)["outbox"] == {"status": "private"}
+    assert json.loads(saved.content[0].text)["outbox"]["status"] == "saved"
+    assert len(sent) == 2 and len(s3.puts) == 2
