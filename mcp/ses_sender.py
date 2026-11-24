@@ -683,27 +683,6 @@ def _reject_disallowed_recipients(addresses: Sequence[str] | None) -> str | None
     return None
 
 
-def _reject_private_send(addresses: Sequence[str] | None) -> str | None:
-    """Return an error unless every recipient is the signed-in person.
-
-    A private send skips the team Outbox, so it is only for a note to
-    yourself. The person comes from fleet (SES_TURN_USER_EMAIL, mapped from
-    ${FLEET_USER_EMAIL}), never from a model argument; a scheduled run has no
-    signed-in person, so it can never send privately.
-    """
-    me = os.environ.get("SES_TURN_USER_EMAIL", "").strip().lower()
-    if not me:
-        return "private=True needs a signed-in person (a chat turn); this send has none. Send it without private."
-    recipients = [parseaddr(r)[1].lower() for r in _normalize_recipients(addresses)]
-    others = [r for r in recipients if r != me]
-    if not recipients or others:
-        return (
-            "private=True is only for a note to yourself: every recipient must be "
-            f"{me}. Send without private so the email is copied to the team Outbox."
-        )
-    return None
-
-
 def _missing_cid_message(problem: str, missing: list[str]) -> str:
     message = f"{problem} Missing inline cids: {', '.join(missing)}"
     if email_render.LOGO_CID in missing:
@@ -832,9 +811,11 @@ async def send_email(
         inline_attachments: Optional list of inline CID attachments. Each item must include
                             'path' and 'cid', and may include 'mime_type'.
         private: Leave False. Every email sent is copied to the team's shared Outbox,
-            which everyone in the organization can read. Set True ONLY when the signed-in
-            person asked for a private note to themselves: it is refused unless every
-            recipient (to, cc and bcc) is that person, and the email is then not copied.
+            which everyone in the organization can read. Set True ONLY when the person
+            asked to keep this email out of the Outbox ("keep it private", "don't save
+            it to the Outbox"), never on your own initiative. The email is still sent,
+            to anyone, but not copied. The person's own choice wins: the Private box
+            on fleet's approval card, or a scheduled task set to send privately.
 
     Returns:
         Dictionary with: status="queued", message_id, content_type, html_validated,
@@ -842,6 +823,11 @@ async def send_email(
         outbox: {"status": "saved"|"private"|"disabled"|"failed"}. A failed Outbox
         copy does not mean the email failed: it was sent, so never resend it.
     """
+
+    # The person's choice (approval card, private task) overrides the argument.
+    choice = outbox.fleet_private_choice()
+    if choice is not None:
+        private = choice
 
     # Cross-run send-once guard (issue #673): the Go orchestrator dedups
     # identical send_email calls within one run, but its fingerprint set dies
@@ -887,10 +873,6 @@ async def send_email(
     recipient_error = _reject_disallowed_recipients([to_email, *(cc_emails or []), *(bcc_emails or [])])
     if recipient_error:
         return {"error": recipient_error}
-    if private:
-        private_error = _reject_private_send([to_email, *(cc_emails or []), *(bcc_emails or [])])
-        if private_error:
-            return {"error": private_error}
 
     # Handle content_file parameter - read content from file if provided
     actual_content = content

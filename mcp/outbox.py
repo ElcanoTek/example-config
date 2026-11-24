@@ -16,6 +16,12 @@ Archiving runs only after SES has accepted the email, and it never fails the
 send: an S3 error is reported in the tool result (``outbox.status=failed``)
 and logged, but the email has gone out and must not be retried for it.
 ``SES_OUTBOX_BUCKET`` unset keeps the Outbox off (``status=disabled``).
+
+A private send is not copied. The person decides that: the model passes
+``private=True`` only when they asked, and fleet's ``fleet/private_emails``
+request ``_meta`` (``fleet_private_choice``) overrides the argument with the
+person's own choice: the Private box on the approval card, or a scheduled
+task set to send its emails privately.
 """
 
 from __future__ import annotations
@@ -35,6 +41,7 @@ from typing import Any
 
 from botocore.config import Config
 from botocore.exceptions import ClientError
+from mcp.server.lowlevel.server import request_ctx
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +56,31 @@ _S3_CONFIG = Config(connect_timeout=5, read_timeout=15, retries={"max_attempts":
 _ARCHIVE_DEADLINE_SECONDS = 20.0
 # SES refuses a message over 40MB after encoding.
 MAX_MESSAGE_BYTES = 40 * 1024 * 1024
+# The tools/call `_meta` entry fleet sets when the person chose whether an
+# email is private: true for a card approved with Private ticked or any call in
+# a run of a task set to send privately, false for a card approved unticked.
+PRIVATE_META_KEY = "fleet/private_emails"
 # 7bit makes every non-ASCII text part quoted-printable or base64: an 8bit part
 # can be mangled when a configuration set rewrites the body (open/click
 # tracking), and some relays still refuse it.
 _POLICY = policy.SMTP.clone(cte_type="7bit")
+
+
+def fleet_private_choice() -> bool | None:
+    """The person's private choice fleet sent with the current tools/call, or None.
+
+    Read from the request being served, so a tool that sends through
+    ses_sender from inside another server (a deal sheet's email) follows the
+    choice made for its own call. None outside a request, when fleet sent no
+    choice, or when the value is not a boolean.
+    """
+    try:
+        ctx = request_ctx.get()
+    except LookupError:
+        return None
+    extra = getattr(getattr(ctx, "meta", None), "model_extra", None) or {}
+    value = extra.get(PRIVATE_META_KEY)
+    return value if isinstance(value, bool) else None
 
 
 def build_message(

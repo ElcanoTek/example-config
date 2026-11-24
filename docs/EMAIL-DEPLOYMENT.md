@@ -96,9 +96,12 @@ root:root`, written by production-support's email provisioning):
   task), and Explorer shows the Outbox to the whole organization. The sender's
   IAM user may `s3:PutObject` only under `outbox/`. A copy that fails to save
   is reported in the tool result and never fails or resends the email.
-  `private=True` skips the copy, and is refused unless every recipient is the
-  signed-in person (a note to self). Login mail is sent by Auth under its own
-  IAM user, so it never reaches the Outbox.
+  A private send skips the copy, to any recipient. The model passes
+  `private=True` only when the person asked; fleet's `fleet/private_emails`
+  request `_meta` overrides it with the person's own choice (the Private box
+  on the approval card, or a scheduled task set to send privately), which
+  also covers an email another server sends through `ses_sender`. Login mail
+  is sent by Auth under its own IAM user, so it never reaches the Outbox.
   `ses_outbound` pins its configured roots when the server starts (a root not
   created yet is reached later from its nearest existing ancestor, pinned
   then, by a no-follow walk). A root it did not know at startup is opened with
