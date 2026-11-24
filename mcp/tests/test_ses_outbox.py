@@ -10,6 +10,9 @@ from typing import Any
 import pytest
 from botocore.exceptions import ClientError
 from email_fixtures import framed, sent_body, sent_message
+from mcp.server.lowlevel.server import request_ctx
+from mcp.shared.context import RequestContext
+from mcp.types import CallToolRequestParams
 from ses_sender import send_email
 
 _HTML = framed("<p>Weekly numbers attached.</p>")
@@ -191,9 +194,27 @@ async def test_failed_send_is_not_saved(env, s3, monkeypatch):
     assert s3.puts == []
 
 
+def _fleet_meta(meta: dict[str, Any]) -> None:
+    """Serve the rest of the test as fleet's tools/call carrying these `_meta`
+    entries. Call it inside the async test: the request context is the test
+    task's own, so it ends with the test."""
+    request = CallToolRequestParams.model_validate({"name": "send_email", "arguments": {}, "_meta": meta})
+    request_ctx.set(RequestContext(request_id=1, meta=request.meta, session=None, lifespan_context=None))
+
+
+@pytest.mark.parametrize(
+    ("to", "cc", "bcc"),
+    [
+        ("dana@northwind.example", None, None),
+        ("alice@client.example", None, None),
+        ("dana@northwind.example", ["alice@client.example"], ["bob@client.example"]),
+    ],
+)
 @pytest.mark.asyncio
-async def test_private_note_to_self_is_sent_but_not_saved(env, sent, s3):
-    result = await send_email(to_email="Dana <DANA@northwind.example>", subject="Reminder", content=_HTML, private=True)
+async def test_private_send_goes_to_anyone_but_is_not_saved(env, sent, s3, to, cc, bcc):
+    result = await send_email(
+        to_email=to, cc_emails=cc, bcc_emails=bcc, subject="Reminder", content=_HTML, private=True
+    )
 
     assert result["status"] == "queued"
     assert result["outbox"] == {"status": "private"}
@@ -201,32 +222,49 @@ async def test_private_note_to_self_is_sent_but_not_saved(env, sent, s3):
     assert s3.puts == []
 
 
-@pytest.mark.parametrize(
-    ("to", "cc", "bcc"),
-    [
-        ("alice@client.example", None, None),
-        ("dana@northwind.example", ["alice@client.example"], None),
-        ("dana@northwind.example", None, ["alice@client.example"]),
-    ],
-)
 @pytest.mark.asyncio
-async def test_private_refused_when_anyone_else_receives_it(env, sent, s3, to, cc, bcc):
-    result = await send_email(
-        to_email=to, cc_emails=cc, bcc_emails=bcc, subject="Reminder", content=_HTML, private=True
-    )
-
-    assert "only for a note to yourself" in result["error"]
-    assert sent == [] and s3.puts == []
-
-
-@pytest.mark.asyncio
-async def test_private_refused_without_a_signed_in_person(env, sent, s3, monkeypatch):
+async def test_private_send_needs_no_signed_in_person(env, sent, s3, monkeypatch):
+    # A scheduled run has no signed-in person, and may still send privately.
     monkeypatch.delenv("SES_TURN_USER_EMAIL")
 
-    result = await send_email(to_email="dana@northwind.example", subject="Reminder", content=_HTML, private=True)
+    result = await send_email(to_email="alice@client.example", subject="Reminder", content=_HTML, private=True)
 
-    assert "needs a signed-in person" in result["error"]
-    assert sent == [] and s3.puts == []
+    assert result["outbox"] == {"status": "private"}
+    assert len(sent) == 1 and s3.puts == []
+
+
+@pytest.mark.asyncio
+async def test_fleet_private_choice_makes_the_send_private(env, sent, s3):
+    # A card approved with Private ticked, or a run of a private task.
+    _fleet_meta({"fleet/private_emails": True})
+
+    result = await send_email(to_email="alice@client.example", subject="Reminder", content=_HTML)
+
+    assert result["outbox"] == {"status": "private"}
+    assert len(sent) == 1 and s3.puts == []
+
+
+@pytest.mark.asyncio
+async def test_fleet_choice_unticked_overrides_the_argument(env, sent, s3):
+    # The model asked for private, the person unticked the box: it is saved.
+    _fleet_meta({"fleet/private_emails": False})
+
+    result = await send_email(to_email="alice@client.example", subject="Reminder", content=_HTML, private=True)
+
+    assert result["outbox"]["status"] == "saved"
+    assert len(s3.puts) == 2
+
+
+@pytest.mark.parametrize("meta", [{}, {"fleet/private_emails": "yes"}, {"progressToken": 7}])
+@pytest.mark.asyncio
+async def test_no_boolean_choice_leaves_the_argument(env, sent, s3, meta):
+    _fleet_meta(meta)
+
+    saved = await send_email(to_email="alice@client.example", subject="Reminder", content=_HTML)
+    private = await send_email(to_email="alice@client.example", subject="Reminder 2", content=_HTML, private=True)
+
+    assert saved["outbox"]["status"] == "saved"
+    assert private["outbox"] == {"status": "private"}
 
 
 @pytest.mark.asyncio
@@ -284,3 +322,20 @@ async def test_message_over_the_ses_limit_is_refused_before_sending(env, sent, s
 
     assert "SES accepts at most 40MB" in result["error"]
     assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_fleet_meta_reaches_the_tool_through_a_real_mcp_call(env, sent, s3):
+    # Fleet sends the person's choice as tools/call `_meta`, exactly as the MCP
+    # SDK carries it, and the send_email tool served by this server reads it.
+    from mcp.shared.memory import create_connected_server_and_client_session
+    from ses_sender import mcp as server
+
+    args = {"to_email": "alice@client.example", "subject": "Reminder", "content": _HTML}
+    async with create_connected_server_and_client_session(server) as client:
+        private = await client.call_tool("send_email", args, meta={"fleet/private_emails": True})
+        saved = await client.call_tool("send_email", {**args, "subject": "Reminder 2"})
+
+    assert json.loads(private.content[0].text)["outbox"] == {"status": "private"}
+    assert json.loads(saved.content[0].text)["outbox"]["status"] == "saved"
+    assert len(sent) == 2 and len(s3.puts) == 2

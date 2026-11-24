@@ -506,8 +506,7 @@ mcp_servers:
       SES_OUTBOX_BUCKET: "${SES_OUTBOUND_OUTBOX_BUCKET}"
       SES_OUTBOX_PREFIX: "${SES_OUTBOUND_OUTBOX_PREFIX:-outbox/}"
       # The signed-in person of a chat turn (empty in a scheduled run): the
-      # Outbox record's sent_by, and the only recipient a private=True note
-      # to self may have. From fleet, never a model argument.
+      # Outbox record's sent_by. From fleet, never a model argument.
       SES_TURN_USER_EMAIL: "${FLEET_USER_EMAIL}"
       # content_file / attachments may only be read from allowlisted roots.
       # ${FLEET_WORKSPACE} (the per-run ledger dir below) carries a random
