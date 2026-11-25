@@ -56,7 +56,7 @@ READ_ONLY = {
     "list_input_files",
     "get_options",
 }
-GATED = {"create_job", "cancel_job"}
+GATED = {"create_job", "cancel_job", "pause_job", "resume_job", "prioritize_job"}
 CATALOG = READ_ONLY | GATED
 
 

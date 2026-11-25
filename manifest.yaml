@@ -415,6 +415,9 @@ mcp_servers:
       - get_job_results
       - get_download_link
       - cancel_job
+      - pause_job
+      - resume_job
+      - prioritize_job
       - list_input_files
       - get_options
 
@@ -884,6 +887,9 @@ agent_policy:
     # suffix matching must not catch another server's create_job/cancel_job.
     - mcp_lens_create_job
     - mcp_lens_cancel_job
+    - mcp_lens_pause_job
+    - mcp_lens_resume_job
+    - mcp_lens_prioritize_job
     # Microsoft 365 (microsoft-365 remote MCP) full write surface (defense in
     # depth alongside the server's --enabled-tools allowlist). Every draft
     # creation, upload-ticket/upload-session minting tool, outbound send,
@@ -1097,6 +1103,9 @@ agent_policy:
     # cancel stops a specific run, so neither may ride an "apply to all".
     - mcp_lens_create_job
     - mcp_lens_cancel_job
+    - mcp_lens_pause_job
+    - mcp_lens_resume_job
+    - mcp_lens_prioritize_job
     # Generic Microsoft 365 Graph batch / discovery executors: each call can run
     # a completely different Graph mutation, so neither may ride an "apply to all".
     - graph-batch
@@ -1125,6 +1134,9 @@ agent_policy:
     # flow, instead of the card settling silently until the user types again.
     - mcp_lens_create_job
     - mcp_lens_cancel_job
+    - mcp_lens_pause_job
+    - mcp_lens_resume_job
+    - mcp_lens_prioritize_job
     # Microsoft 365 outbound email and Teams sends: approving a send card
     # starts one new turn so the agent confirms the message was delivered,
     # without burning the per-hour resume budget on fine-grained range/task edits.

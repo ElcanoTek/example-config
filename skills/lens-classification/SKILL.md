@@ -39,6 +39,13 @@ before calling it. Scheduled runs pass the usual audit gate instead.
 `mcp_lens_cancel_job(job_id)` also needs approval; it stops further work but
 refunds nothing already spent.
 
+To let a smaller or urgent job jump ahead of a long run without losing
+progress, use `mcp_lens_pause_job(job_id)` (gracefully stops the running job,
+keeping `progress.json` intact and freeing the worker slot),
+`mcp_lens_prioritize_job(job_id, position=1)` (moves a queued job to the front
+of the queue), and `mcp_lens_resume_job(job_id, front=false)` (re-queues a
+paused job to pick up where it left off). All three require approval in chat.
+
 ## 2. Wait for it
 
 `mcp_lens_get_job(job_id)` returns `status`, `progress` (processed / total),
